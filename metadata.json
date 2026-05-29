@@ -1,0 +1,8 @@
+{
+  "name": "Calendar Goals & AI Coach",
+  "description": "Smart calendar planner that automatically schedules workout sessions and study blocks, tracks goal completion rates with interactive charts, and features an AI Coach for daily optimizations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

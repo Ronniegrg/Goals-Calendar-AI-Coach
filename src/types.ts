@@ -1,0 +1,68 @@
+export enum GoalType {
+  WORKOUT = "workout",
+  STUDY = "study"
+}
+
+export enum TimePreference {
+  ANY = "any",
+  MORNING = "morning", // 08:00 - 12:00
+  AFTERNOON = "afternoon", // 12:00 - 17:00
+  EVENING = "evening" // 17:00 - 21:00
+}
+
+export interface Goal {
+  id: string;
+  name: string;
+  type: GoalType;
+  category: string; // e.g. "Legs", "React", "Calculus", "Cardio"
+  weeklyTarget: number; // times per week
+  durationMinutes: number;
+  timePreference: TimePreference;
+  completedCount: number;
+  color: string;
+  createdAt: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  type: "workout" | "study" | "external" | "personal";
+  start: string; // ISO string
+  end: string; // ISO string
+  goalId?: string; // if tied to a goal
+  completed: boolean;
+  notes?: string;
+}
+
+export interface AvailabilityWindow {
+  dayOfWeek: number; // 0 (Sunday) to 6 (Saturday)
+  startTime: string; // "HH:MM"
+  endTime: string; // "HH:MM"
+  active: boolean;
+}
+
+export interface AppNotification {
+  id: string;
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+  type: "upcoming" | "warning" | "motivation" | "success" | "sync";
+}
+
+export interface CoachMessage {
+  id: string;
+  sender: "user" | "coach";
+  text: string;
+  timestamp: string;
+}
+
+export interface SyncData {
+  goals: Goal[];
+  events: CalendarEvent[];
+  availability: AvailabilityWindow[];
+  notifications: AppNotification[];
+  coachMessages: CoachMessage[];
+  userEmail: string;
+  lastSyncedAt?: string;
+}
