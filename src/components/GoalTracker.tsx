@@ -40,6 +40,8 @@ export default function GoalTracker({
   const [type, setType] = useState<GoalType>(GoalType.WORKOUT);
   const [category, setCategory] = useState("");
   const [weeklyTarget, setWeeklyTarget] = useState(3);
+  const [isCustomTarget, setIsCustomTarget] = useState(false);
+  const [customTargetVal, setCustomTargetVal] = useState("10");
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [timePreference, setTimePreference] = useState<TimePreference>(TimePreference.ANY);
   const [color, setColor] = useState("#f43f5e");
@@ -76,6 +78,8 @@ export default function GoalTracker({
     setName("");
     setCategory("");
     setWeeklyTarget(3);
+    setIsCustomTarget(false);
+    setCustomTargetVal("10");
     setDurationMinutes(60);
     setTimePreference(TimePreference.ANY);
     setShowAddGoal(false);
@@ -302,18 +306,54 @@ export default function GoalTracker({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
                 <label className="block text-[10px] font-bold text-slate-300 mb-1">Weekly Target Frequency</label>
-                <select
-                  id="goal_freq_select"
-                  value={weeklyTarget}
-                  onChange={(e) => setWeeklyTarget(Number(e.target.value))}
-                  className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white"
-                >
-                  <option value={1} className="bg-[#0f111a]">1 time per week</option>
-                  <option value={2} className="bg-[#0f111a]">2 times per week</option>
-                  <option value={3} className="bg-[#0f111a]">3 times per week</option>
-                  <option value={4} className="bg-[#0f111a]">4 times per week</option>
-                  <option value={5} className="bg-[#0f111a]">5 times per week</option>
-                </select>
+                <div className="flex gap-2">
+                  <select
+                    id="goal_freq_select"
+                    value={isCustomTarget ? "custom" : weeklyTarget}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === "custom") {
+                        setIsCustomTarget(true);
+                        setWeeklyTarget(Number(customTargetVal) || 10);
+                      } else {
+                        setIsCustomTarget(false);
+                        setWeeklyTarget(Number(val));
+                      }
+                    }}
+                    className="flex-1 text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white"
+                  >
+                    <option value={1} className="bg-[#0f111a]">1 time per week</option>
+                    <option value={2} className="bg-[#0f111a]">2 times per week</option>
+                    <option value={3} className="bg-[#0f111a]">3 times per week</option>
+                    <option value={4} className="bg-[#0f111a]">4 times per week</option>
+                    <option value={5} className="bg-[#0f111a]">5 times per week</option>
+                    <option value={6} className="bg-[#0f111a]">6 times per week</option>
+                    <option value={7} className="bg-[#0f111a]">7 times per week (Every Day)</option>
+                    <option value="custom" className="bg-[#0f111a]">Custom count per week...</option>
+                  </select>
+                  
+                  {isCustomTarget && (
+                    <div className="flex items-center gap-1 shrink-0 w-24">
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        id="goal_custom_freq_input"
+                        placeholder="e.g. 10"
+                        value={customTargetVal}
+                        onChange={(e) => {
+                          const valStr = e.target.value;
+                          setCustomTargetVal(valStr);
+                          const valNum = Number(valStr);
+                          if (valNum > 0) {
+                            setWeeklyTarget(valNum);
+                          }
+                        }}
+                        className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400 font-bold"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>
