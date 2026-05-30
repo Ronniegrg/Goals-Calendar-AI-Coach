@@ -14,6 +14,60 @@ import {
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent } from "../types";
 
+// Premium Goal Quick-Add Templates Presets
+const PRESET_TEMPLATES = [
+  {
+    name: "Couch to 5K Workout",
+    type: GoalType.WORKOUT,
+    category: "Cardio",
+    weeklyTarget: 3,
+    durationMinutes: 30,
+    timePreference: TimePreference.MORNING,
+    color: "#f43f5e",
+    description: "Build stamina with walk-run sequences 3x a week."
+  },
+  {
+    name: "Full Stack Coding Block",
+    type: GoalType.STUDY,
+    category: "Dev Skills",
+    weeklyTarget: 4,
+    durationMinutes: 90,
+    timePreference: TimePreference.AFTERNOON,
+    color: "#06b6d4",
+    description: "Deep-dive intensive learning sessions."
+  },
+  {
+    name: "Full Body Strength",
+    type: GoalType.WORKOUT,
+    category: "Strength",
+    weeklyTarget: 3,
+    durationMinutes: 60,
+    timePreference: TimePreference.EVENING,
+    color: "#8b5cf6",
+    description: "Hypertrophy training for full-body strength."
+  },
+  {
+    name: "LeetCode & Algorithms",
+    type: GoalType.STUDY,
+    category: "Algorithms",
+    weeklyTarget: 5,
+    durationMinutes: 45,
+    timePreference: TimePreference.EVENING,
+    color: "#f59e0b",
+    description: "Challenging computer science micro-sessions."
+  },
+  {
+    name: "Zen Mindfulness Breathing",
+    type: GoalType.WORKOUT,
+    category: "Mindfulness",
+    weeklyTarget: 7,
+    durationMinutes: 15,
+    timePreference: TimePreference.ANY,
+    color: "#10b981",
+    description: "Centering sequence to foster daily mental clarity."
+  }
+];
+
 interface GoalTrackerProps {
   goals: Goal[];
   availability: AvailabilityWindow[];
@@ -49,6 +103,24 @@ export default function GoalTracker({
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [timePreference, setTimePreference] = useState<TimePreference>(TimePreference.ANY);
   const [color, setColor] = useState("#f43f5e");
+
+  const handleApplyPresetTemplate = (preset: typeof PRESET_TEMPLATES[number]) => {
+    setName(preset.name);
+    setType(preset.type);
+    setCategory(preset.category);
+    setWeeklyTarget(preset.weeklyTarget);
+    setIsCustomTarget(false);
+    setDurationMinutes(preset.durationMinutes);
+    setTimePreference(preset.timePreference);
+    setColor(preset.color);
+    setEditingGoalId(null);
+    setShowAddGoal(true);
+    
+    // Smooth scroll down to the form anchor
+    setTimeout(() => {
+      document.getElementById("add_goal_form_anchor")?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+  };
 
   // State to manage availability input edits
   const [editAvailability, setEditAvailability] = useState<AvailabilityWindow[]>([...availability]);
@@ -224,6 +296,16 @@ export default function GoalTracker({
         const availDay = availability.find(a => a.dayOfWeek === dayOfWeek);
         if (!availDay || !availDay.active) continue;
 
+        // Prevent scheduling the same goal multiple times per day (unless frequency target is > 7)
+        const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
+        const targetDayString = targetDay.toDateString();
+        const sessionsOnTargetDay = [...events, ...newScheduledEvents].filter(evt => {
+          if (evt.goalId !== goal.id) return false;
+          return new Date(evt.start).toDateString() === targetDayString;
+        }).length;
+
+        if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
+
         // Determine hour boundaries based on availability and goal preference
         let [availStartHour, availStartMin] = availDay.startTime.split(":").map(Number);
         let [availEndHour, availEndMin] = availDay.endTime.split(":").map(Number);
@@ -337,9 +419,44 @@ export default function GoalTracker({
           </button>
         </div>
 
+        {/* Preset Goal Quick-Add Templates Slider */}
+        <div id="goal_presets_slider" className="mb-5 bg-white/5 border border-white/10 p-4 rounded-xl">
+          <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-2.5 flex items-center gap-1">
+            <Sparkles className="w-3.5 h-3.5 text-yellow-400 animate-pulse" /> Click to Quick-Add Goal Presets
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3" id="goal_presets_slider_grid">
+            {PRESET_TEMPLATES.map((tmpl, idx) => {
+              const DotBg = tmpl.type === GoalType.WORKOUT ? "bg-rose-500 animate-pulse" : "bg-cyan-500 animate-pulse";
+              const BorderCol = tmpl.type === GoalType.WORKOUT ? "border-rose-500/20 hover:border-rose-500/40" : "border-cyan-500/20 hover:border-cyan-500/40";
+              return (
+                <button
+                  type="button"
+                  key={idx}
+                  onClick={() => handleApplyPresetTemplate(tmpl)}
+                  className={`text-left p-3 rounded-xl border bg-[#0d0f19] ${BorderCol} hover:bg-white/5 cursor-pointer transition flex flex-col justify-between h-full group`}
+                >
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className={`w-2 h-2 rounded-full ${DotBg}`} />
+                      <span className="text-[9px] font-bold text-slate-400 capitalize">{tmpl.category}</span>
+                    </div>
+                    <h4 className="text-xs font-bold text-white leading-tight group-hover:text-indigo-300 transition">{tmpl.name}</h4>
+                    <p className="text-[9px] text-slate-350 mt-1 lines-clamp-2 leading-relaxed">{tmpl.description}</p>
+                  </div>
+                  
+                  <div className="mt-3.5 pt-2 border-t border-white/5 flex items-center justify-between text-[8px] font-mono font-bold text-slate-400">
+                    <span>{tmpl.weeklyTarget}x/wk</span>
+                    <span>{tmpl.durationMinutes} min</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Add Goal Form Container */}
         {showAddGoal && (
-          <form onSubmit={handleSubmitGoalForm} className="bg-white/5 p-4 rounded-xl mb-4 border border-white/10 space-y-3.5">
+          <form id="add_goal_form_anchor" onSubmit={handleSubmitGoalForm} className="bg-white/5 p-4 rounded-xl mb-4 border border-white/10 space-y-3.5">
             <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider mb-2">
               {editingGoalId ? `Editing Goal: ${name}` : 'Create New Goal'}
             </h4>

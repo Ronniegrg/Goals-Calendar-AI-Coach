@@ -131,6 +131,68 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [goals]);
 
+  // 4. Handle incoming action parameters (from Google Calendar description quick links)
+  useEffect(() => {
+    // Wait until initial data is populated
+    if (events.length === 0 && goals.length === 0) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const action = params.get("action");
+    const eventId = params.get("eventId");
+    const goalId = params.get("goalId");
+
+    if (action) {
+      if (action === "complete_event" && eventId) {
+        const foundEvent = events.find(e => e.id === eventId);
+        if (foundEvent) {
+          if (!foundEvent.completed) {
+            handleToggleEventComplete(eventId);
+            triggerSystemNotification(
+              "Progress Marked Completed!",
+              `Success: "${foundEvent.title}" was marked as completed directly via your Google Calendar quick action link!`,
+              "success"
+            );
+          } else {
+            triggerSystemNotification(
+              "Already Done",
+              `"${foundEvent.title}" is already marked as completed on your calendar dashboard.`,
+              "sync"
+            );
+          }
+        }
+        // Scrub action params gracefully
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+      } else if (action === "edit_goal" && goalId) {
+        const foundGoal = goals.find(g => g.id === goalId);
+        if (foundGoal) {
+          setActiveTab("calendar");
+          // Save global target to auto-trigger the editor form in CalendarView
+          (window as any)._autoEditGoal = foundGoal;
+          triggerSystemNotification(
+            "Goal Editor Active",
+            `Locating goal details for "${foundGoal.name}" in your workspace interactive panel.`,
+            "sync"
+          );
+        }
+        // Scrub action params gracefully
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+      } else if (action === "add_goal") {
+        setActiveTab("calendar");
+        (window as any)._autoAddGoal = true;
+        triggerSystemNotification(
+          "Create Goal Flow Active",
+          "Preparing workspace form to register your new physical/intellectual calendar goal.",
+          "sync"
+        );
+        // Scrub action params gracefully
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+    }
+  }, [events, goals]);
+
   // Dynamic system notification pusher
   const triggerSystemNotification = (
     title: string,
@@ -242,6 +304,39 @@ export default function App() {
     syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
   };
 
+  // CC. Edit existing calendar event attributes
+  const handleEditEvent = (id: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => {
+    let nextGoals = [...goals];
+    const nextEvents = events.map(evt => {
+      if (evt.id === id) {
+        if (updatedFields.completed !== undefined && evt.completed !== updatedFields.completed && evt.goalId) {
+          const toggleVal = updatedFields.completed;
+          nextGoals = goals.map(g => {
+            if (g.id === evt.goalId) {
+              const countChange = toggleVal ? 1 : -1;
+              return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
+            }
+            return g;
+          });
+          
+          if (toggleVal) {
+            triggerSystemNotification(
+              "Session Achieved!",
+              `Success: "${updatedFields.title || evt.title}" marked as done!`,
+              "success"
+            );
+          }
+        }
+        return { ...evt, ...updatedFields } as CalendarEvent;
+      }
+      return evt;
+    });
+
+    setEvents(nextEvents);
+    setGoals(nextGoals);
+    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+  };
+
   // D. Create custom Goal Object
   const handleAddGoal = (newGoalRaw: Omit<Goal, "id" | "completedCount" | "createdAt">) => {
     const newGoal: Goal = {
@@ -266,7 +361,7 @@ export default function App() {
   };
 
   // EE. Edit custom Goal in cloud database
-  const handleEditGoal = (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "completedCount" | "createdAt">>) => {
+  const handleEditGoal = (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => {
     const nextGoals = goals.map(g => 
       g.id === goalId ? { ...g, ...updatedFields } : g
     );
@@ -624,6 +719,10 @@ export default function App() {
               onToggleCompleteEvent={handleToggleEventComplete}
               onDeleteEvent={handleDeleteEvent}
               onImportCalendar={handleImportCalendar}
+              onAddGoal={handleAddGoal}
+              onEditGoal={handleEditGoal}
+              onDeleteGoal={handleDeleteGoal}
+              onEditEvent={handleEditEvent}
             />
           </div>
         )}

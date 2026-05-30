@@ -254,7 +254,7 @@ export default function AICoach({
               type="submit"
               id="coach_message_send_btn"
               disabled={loading || !inputText.trim()}
-              className="p-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition shadow-lg shadow-indigo-650/20 disabled:opacity-40 cursor-pointer"
+              className="p-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition shadow-lg shadow-indigo-600/20 disabled:opacity-40 cursor-pointer"
               title="Send Message"
             >
               <Send className="w-4 h-4" />

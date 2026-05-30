@@ -21,7 +21,19 @@ import {
   Download,
   Lock
 } from "lucide-react";
-import { CalendarEvent, Goal, GoalType } from "../types";
+import { 
+  Pencil, 
+  Activity, 
+  BookOpen, 
+  Sparkles, 
+  X,
+  Target,
+  Trophy,
+  Sliders,
+  CheckCircle,
+  HelpCircle
+} from "lucide-react";
+import { CalendarEvent, Goal, GoalType, TimePreference } from "../types";
 
 interface CalendarViewProps {
   events: CalendarEvent[];
@@ -30,6 +42,10 @@ interface CalendarViewProps {
   onToggleCompleteEvent: (eventId: string) => void;
   onDeleteEvent: (eventId: string) => void;
   onImportCalendar: (name: string, dataString: string, realEvents?: CalendarEvent[]) => void;
+  onAddGoal?: (goal: Omit<Goal, "id" | "completedCount" | "createdAt">) => void;
+  onEditGoal?: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
+  onDeleteGoal?: (goalId: string) => void;
+  onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
 }
 
 export default function CalendarView({
@@ -38,10 +54,25 @@ export default function CalendarView({
   onAddEvent,
   onToggleCompleteEvent,
   onDeleteEvent,
-  onImportCalendar
+  onImportCalendar,
+  onAddGoal,
+  onEditGoal,
+  onDeleteGoal,
+  onEditEvent
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">("week");
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  
+  // Goals Sidebar Form/Mode States
+  const [showGoalForm, setShowGoalForm] = useState(false);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [goalName, setGoalName] = useState("");
+  const [goalType, setGoalType] = useState<GoalType>(GoalType.WORKOUT);
+  const [goalCategory, setGoalCategory] = useState("");
+  const [goalWeeklyTarget, setGoalWeeklyTarget] = useState(3);
+  const [goalDuration, setGoalDuration] = useState(60);
+  const [goalTimePref, setGoalTimePref] = useState<TimePreference>(TimePreference.ANY);
+  const [goalColor, setGoalColor] = useState("#f43f5e");
   
   // Event Form State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -52,11 +83,12 @@ export default function CalendarView({
   const [newEndTime, setNewEndTime] = useState("10:00");
   const [newNotes, setNewNotes] = useState("");
   const [newGoalId, setNewGoalId] = useState("");
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
 
   // External Calendar Sync State
   const [externalSource, setExternalSource] = useState("");
   const [externalName, setExternalName] = useState("");
-  const [showSyncPanel, setShowSyncPanel] = useState(false);
+  const [showSyncPanel, setShowSyncPanel] = useState(true);
   const [icsInput, setIcsInput] = useState("");
 
   // Google Calendar Integration State
@@ -69,12 +101,39 @@ export default function CalendarView({
   const [exportingAll, setExportingAll] = useState(false);
   const [exportStatus, setExportStatus] = useState<{ [id: string]: "idle" | "syncing" | "success" | "error" }>({});
 
-  // Implicit flow parser
+  // Custom modal dialog to replace blocking system alerts/confirms that get blocked in sandbox iframes
+  const [customDialog, setCustomDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    onConfirm: () => void;
+    isAlertOnly?: boolean;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
+
+  const unexportedCount = events.filter(e => e.type !== "external" && exportStatus[e.id] !== "success").length;
+
+  // Implicit flow parser and popup controller
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.hash) {
       const params = new URLSearchParams(window.location.hash.substring(1));
       const token = params.get("access_token");
       if (token) {
+        if (window.opener) {
+          try {
+            window.opener.postMessage({ type: "GOOGLE_OAUTH_TOKEN", token }, window.location.origin);
+            window.close();
+            return;
+          } catch (e) {
+            console.error("Failed to post message to main window: ", e);
+          }
+        }
         setGoogleAccessToken(token);
         localStorage.setItem("gcal_access_token", token);
         setGcalStatus("Successfully connected!");
@@ -85,6 +144,59 @@ export default function CalendarView({
       fetchGoogleProfile(googleAccessToken);
     }
   }, []);
+
+  // Popup message handler listener for the main application window
+  useEffect(() => {
+    const handleGoogleMessage = (e: MessageEvent) => {
+      // Accept messages from preview container domains or local server
+      if (e.origin && !e.origin.endsWith(".run.app") && !e.origin.includes("localhost") && !e.origin.includes("127.0.0.1")) {
+        return;
+      }
+      if (e.data && e.data.type === "GOOGLE_OAUTH_TOKEN" && e.data.token) {
+        const token = e.data.token;
+        setGoogleAccessToken(token);
+        localStorage.setItem("gcal_access_token", token);
+        setGcalStatus("Successfully verified with Google Calendar via secure popup!");
+        fetchGoogleProfile(token);
+      }
+    };
+    window.addEventListener("message", handleGoogleMessage);
+    return () => window.removeEventListener("message", handleGoogleMessage);
+  }, []);
+
+  // Listen for external URL trigger events forwarded from App.tsx
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if ((window as any)._autoEditGoal) {
+        const g: Goal = (window as any)._autoEditGoal;
+        delete (window as any)._autoEditGoal;
+        
+        // Open edit panel preloaded with attributes
+        setEditingGoalId(g.id);
+        setGoalName(g.name);
+        setGoalType(g.type);
+        setGoalCategory(g.category);
+        setGoalWeeklyTarget(g.weeklyTarget);
+        setGoalDuration(g.durationMinutes);
+        setGoalTimePref(g.timePreference);
+        setGoalColor(g.color);
+        setShowGoalForm(true);
+      } else if ((window as any)._autoAddGoal) {
+        delete (window as any)._autoAddGoal;
+        
+        // Open clean add panel
+        setEditingGoalId(null);
+        setGoalName("");
+        setGoalType(GoalType.WORKOUT);
+        setGoalCategory("");
+        setGoalWeeklyTarget(3);
+        setGoalDuration(60);
+        setGoalTimePref(TimePreference.ANY);
+        setGoalColor("#f43f5e");
+        setShowGoalForm(true);
+      }
+    }
+  }, [events, goals]);
 
   const fetchGoogleProfile = async (token: string) => {
     try {
@@ -104,12 +216,32 @@ export default function CalendarView({
   };
 
   const handleLaunchGoogleOAuth = () => {
-    const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email");
+    const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email");
     const redirectUri = encodeURIComponent(window.location.origin + window.location.pathname);
     const implicitUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=742721019992-0bmb2dajms66ehm65j8siv3clj08v70l.apps.googleusercontent.com&redirect_uri=${redirectUri}&response_type=token&scope=${scope}&prompt=consent`;
     
-    // Attempt redirect
-    window.location.href = implicitUrl;
+    // Open Google Accounts Auth directly in a popup (Google prohibits loading inside iframes)
+    const width = 600;
+    const height = 650;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
+    
+    const popup = window.open(
+      implicitUrl,
+      "google_oauth_popup",
+      `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`
+    );
+    
+    if (popup) {
+      popup.focus();
+      setGcalStatus("Authentication popup initiated. Please sign in there...");
+    } else {
+      // Fallback if browser blocks popups
+      setGcalStatus("Popup window blocked! Please allow popups for this site, or we will redirect your page...");
+      setTimeout(() => {
+        window.location.href = implicitUrl;
+      }, 2500);
+    }
   };
 
   const handleManualTokenSubmit = (e: React.FormEvent) => {
@@ -138,17 +270,27 @@ export default function CalendarView({
     if (!googleAccessToken) return;
     setImportingGcal(true);
     setGcalStatus("Initiating sync with Google Calendar API...");
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 7500); // 7.5 seconds timeout limit
+
     try {
       const timeMin = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString(); // 30 days before
       const timeMax = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(); // 1 month after
       
       const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime&maxResults=150`, {
-        headers: { Authorization: `Bearer ${googleAccessToken}` }
+        headers: { Authorization: `Bearer ${googleAccessToken}` },
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         if (res.status === 401) {
-          throw new Error("Invalid or expired OAuth Access Token. Please re-authenticate.");
+          handleDisconnectGoogle();
+          throw new Error("Invalid or expired OAuth Access Token. Your session has been safely reset; please click 'Connect Google Calendar' again to re-authenticate.");
         }
         throw new Error(`Google API request failed with status: ${res.status}`);
       }
@@ -173,30 +315,66 @@ export default function CalendarView({
       onImportCalendar("Google Calendar", "", normalizedEvents);
       setGcalStatus(`Successfully synchronized ${normalizedEvents.length} events from your Google Calendar!`);
     } catch (err: any) {
+      clearTimeout(timeoutId);
       console.error("Google Calendar import failed: ", err);
-      setGcalStatus(`Error syncing Calendar items: ${err.message || err}`);
+      if (err.name === "AbortError" || err.message?.includes("aborted")) {
+        setGcalStatus("Connection timed out (7.5s limit). This is normally caused by: 1) browser extensions (e.g. Brave Shields, AdBlockers, privacy/cookie filters) intercepting API requests, or 2) sandbox iframe security. Try opening the app in a NEW TAB!");
+      } else {
+        setGcalStatus(`Error syncing Calendar items: ${err.message || err}`);
+      }
     } finally {
       setImportingGcal(false);
     }
   };
 
+  // Helper to show a safe alert inside sandboxed iframes
+  const showCustomAlert = (title: string, message: string) => {
+    setCustomDialog({
+      isOpen: true,
+      title,
+      message,
+      confirmText: "Close",
+      isAlertOnly: true,
+      onConfirm: () => setCustomDialog(prev => ({ ...prev, isOpen: false })),
+    });
+  };
+
   // 📤 EXPORT: Export custom workouts or study blocks to actual Google Calendar
-  const handleExportToGoogleCalendar = async (evt: CalendarEvent) => {
+  const handleExportToGoogleCalendar = (evt: CalendarEvent) => {
     if (!googleAccessToken) return;
     
+    setCustomDialog({
+      isOpen: true,
+      title: "Export Calendar Event",
+      message: `Would you like to sync "${evt.title}" straight to your main Google Calendar account (${googleEmail || "Active Account"})? This will post the scheduled block to your calendar.`,
+      confirmText: "📤 Export Event",
+      cancelText: "Cancel",
+      onConfirm: () => proceedSingleExport(evt),
+    });
+  };
+
+  const proceedSingleExport = async (evt: CalendarEvent) => {
+    setCustomDialog(prev => ({ ...prev, isOpen: false }));
     setExportStatus(prev => ({ ...prev, [evt.id]: "syncing" }));
     try {
-      // Prompt user confirmation for mutating API operations (mandatory as per policy!)
-      const confirmed = window.confirm(`Update Google Calendar? We will post "${evt.title}" into your main calendar.`);
-      if (!confirmed) {
-        setExportStatus(prev => ({ ...prev, [evt.id]: "idle" }));
-        return;
-      }
+      const appUrl = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "https://ai-studio.google";
+      const doneLink = `${appUrl}?action=complete_event&eventId=${evt.id}`;
+      const editGoalLink = evt.goalId ? `${appUrl}?action=edit_goal&goalId=${evt.goalId}` : "";
+      const addGoalLink = `${appUrl}?action=add_goal`;
 
-      const duration = new Date(evt.end).getTime() - new Date(evt.start).getTime();
+      let desc = evt.notes || "Scheduled conflict-free using smart AI routine engine.";
+      desc += "\n\n──────────────────────────────";
+      desc += "\n🎯 QUICK WORKSPACE ACTIONS:";
+      desc += `\n✅ Click to Mark This Hour Done:\n   ${doneLink}`;
+      if (editGoalLink) {
+        desc += `\n\n✏️ Click to Edit Associated Goal:\n   ${editGoalLink}`;
+      }
+      desc += `\n\n➕ Click to Register a New Goal:\n   ${addGoalLink}`;
+      desc += "\n──────────────────────────────";
+
       const postBody = {
         summary: `${evt.type === "workout" ? "🏋️" : "📚"} ${evt.title}`,
-        description: `${evt.notes || ""}\n\nScheduled conflict-free using smart AI routine engine.`,
+        description: desc,
         start: { dateTime: evt.start },
         end: { dateTime: evt.end }
       };
@@ -211,6 +389,10 @@ export default function CalendarView({
       });
 
       if (!res.ok) {
+        if (res.status === 401) {
+          handleDisconnectGoogle();
+          throw new Error("Invalid or expired OAuth Access Token. Your session has been safely reset; please click 'Connect Google Calendar' again to re-authenticate.");
+        }
         throw new Error(`Google POST request failed with status: ${res.status}`);
       }
 
@@ -225,30 +407,77 @@ export default function CalendarView({
     } catch (err: any) {
       console.error("Failed to export slot to Google: ", err);
       setExportStatus(prev => ({ ...prev, [evt.id]: "error" }));
-      alert(`Export Failed: ${err.message || err}`);
+      showCustomAlert("Export Failed", `Failed to export "${evt.title}": ${err.message || err}`);
     }
   };
 
   // Bulk Export all unexported workouts & study events
-  const handleBulkExportUnexported = async () => {
-    const unexported = events.filter(e => e.type !== "external" && !exportStatus[e.id]);
+  const handleBulkExportUnexported = () => {
+    let unexported = events.filter(e => e.type !== "external" && exportStatus[e.id] !== "success" && exportStatus[e.id] !== "syncing");
+    
     if (unexported.length === 0) {
-      alert("No printable workouts or study sessions are currently unexported!");
-      return;
+      const totalCustomCount = events.filter(e => e.type !== "external").length;
+      if (totalCustomCount === 0) {
+        showCustomAlert(
+          "No Sessions Scheduled",
+          "You don't have any scheduled sessions (workouts, study blocks, etc.) on your calendar to export yet!\n\nPro-Tips to get started:\n1. Click the 'Goal Tracker' tab.\n2. Add some active goals (e.g. Learning React) if you haven't yet.\n3. Click 'Run Smart Auto-Scheduler' to automatically generate a conflict-free routine.\n4. Or, double-click empty timeslots in this Calendar to add them manually.\n5. Once you have events, click this button to sync them with your real Google Calendar!"
+        );
+        return;
+      } else {
+        setCustomDialog({
+          isOpen: true,
+          title: "All Sessions Synced",
+          message: "All of your active routines are already successfully synced and exported to Google Calendar!\n\nWould you like to re-export all of them anyway?",
+          confirmText: "Re-export All",
+          cancelText: "Cancel",
+          onConfirm: () => {
+            const allCustom = events.filter(e => e.type !== "external" && exportStatus[e.id] !== "syncing");
+            triggerBulkExportExecution(allCustom);
+          }
+        });
+        return;
+      }
     }
 
-    const confirmed = window.confirm(`Export Routine? Let's write ${unexported.length} scheduled workout and study hours to your main Google Calendar.`);
-    if (!confirmed) return;
+    setCustomDialog({
+      isOpen: true,
+      title: "Bulk Export Routine",
+      message: `Export Routine? Let's write ${unexported.length} scheduled workout and study hours to your main Google Calendar.`,
+      confirmText: "📤 Export Routine",
+      cancelText: "Cancel",
+      onConfirm: () => triggerBulkExportExecution(unexported),
+    });
+  };
 
+  const triggerBulkExportExecution = async (unexported: CalendarEvent[]) => {
+    setCustomDialog(prev => ({ ...prev, isOpen: false }));
     setExportingAll(true);
     setGcalStatus(`Exporting ${unexported.length} scheduled slots to Google Calendar...`);
     
     let successCount = 0;
+    let failCount = 0;
+
     for (const evt of unexported) {
+      setExportStatus(prev => ({ ...prev, [evt.id]: "syncing" }));
       try {
+        const appUrl = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "https://ai-studio.google";
+        const doneLink = `${appUrl}?action=complete_event&eventId=${evt.id}`;
+        const editGoalLink = evt.goalId ? `${appUrl}?action=edit_goal&goalId=${evt.goalId}` : "";
+        const addGoalLink = `${appUrl}?action=add_goal`;
+
+        let desc = evt.notes || "Auto-programmed with conflict-free AI scheduler.";
+        desc += "\n\n──────────────────────────────";
+        desc += "\n🎯 QUICK WORKSPACE ACTIONS:";
+        desc += `\n✅ Click to Mark This Hour Done:\n   ${doneLink}`;
+        if (editGoalLink) {
+          desc += `\n\n✏️ Click to Edit Associated Goal:\n   ${editGoalLink}`;
+        }
+        desc += `\n\n➕ Click to Register a New Goal:\n   ${addGoalLink}`;
+        desc += "\n──────────────────────────────";
+
         const postBody = {
           summary: `${evt.type === "workout" ? "🏋️" : "📚"} ${evt.title}`,
-          description: evt.notes || "Auto-programmed with conflict-free AI scheduler.",
+          description: desc,
           start: { dateTime: evt.start },
           end: { dateTime: evt.end }
         };
@@ -265,14 +494,35 @@ export default function CalendarView({
         if (res.ok) {
           successCount++;
           setExportStatus(prev => ({ ...prev, [evt.id]: "success" }));
+        } else {
+          const errMsg = await res.text();
+          console.error(`Google Event POST failed for [${evt.title}]: `, errMsg);
+          if (res.status === 401) {
+            handleDisconnectGoogle();
+            setGcalStatus("Your Google Calendar connection has expired. Your session has been safely reset — please click 'Connect Google Calendar' again.");
+            showCustomAlert(
+              "Authentication Expired",
+              "Your Google Calendar session has expired or is invalid. Your session has been safely reset; please click 'Connect Google Calendar' again to renew access."
+            );
+            failCount += unexported.length - successCount;
+            break;
+          }
+          failCount++;
+          setExportStatus(prev => ({ ...prev, [evt.id]: "error" }));
         }
-      } catch {
+      } catch (err) {
+        console.error(`Google Event POST failed for [${evt.title}] with network error: `, err);
+        failCount++;
         setExportStatus(prev => ({ ...prev, [evt.id]: "error" }));
       }
     }
 
     setExportingAll(false);
-    setGcalStatus(`Export Finished! Successfully wrote ${successCount} slots into your real Google Calendar.`);
+    if (failCount > 0) {
+      setGcalStatus(`Export processed with some errors. Connected but failed to write ${failCount} slots properly. Successfully wrote ${successCount} slots into your real Google Calendar.`);
+    } else {
+      setGcalStatus(`Export Finished! Successfully wrote ${successCount} slots into your real Google Calendar.`);
+    }
   };
 
   // Helper: Get start of current week (Sunday)
@@ -323,7 +573,7 @@ export default function CalendarView({
     setCurrentDate(new Date());
   };
 
-  // Submit new manual event
+  // Submit new manual event or edit current
   const handleCreateEvent = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
@@ -331,21 +581,134 @@ export default function CalendarView({
     const startISO = `${newDay}T${newStartTime}:00`;
     const endISO = `${newDay}T${newEndTime}:00`;
 
-    onAddEvent({
-      title: newTitle,
-      type: newType,
-      start: new Date(startISO).toISOString(),
-      end: new Date(endISO).toISOString(),
-      completed: false,
-      notes: newNotes,
-      goalId: newGoalId || undefined
-    });
+    if (editingEventId) {
+      if (onEditEvent) {
+        onEditEvent(editingEventId, {
+          title: newTitle,
+          type: newType,
+          start: new Date(startISO).toISOString(),
+          end: new Date(endISO).toISOString(),
+          notes: newNotes,
+          goalId: newGoalId || undefined
+        });
+      }
+    } else {
+      onAddEvent({
+        title: newTitle,
+        type: newType,
+        start: new Date(startISO).toISOString(),
+        end: new Date(endISO).toISOString(),
+        completed: false,
+        notes: newNotes,
+        goalId: newGoalId || undefined
+      });
+    }
 
     // Reset Form
     setNewTitle("");
     setNewNotes("");
     setNewGoalId("");
+    setEditingEventId(null);
     setShowAddModal(false);
+  };
+
+  // Prepopulate modal form with existing event fields for editing
+  const handleTriggerEditEvent = (evt: CalendarEvent) => {
+    const sDate = new Date(evt.start);
+    const eDate = new Date(evt.end);
+    
+    // Format to YYYY-MM-DD
+    const y = sDate.getFullYear();
+    const m = String(sDate.getMonth() + 1).padStart(2, "0");
+    const d = String(sDate.getDate()).padStart(2, "0");
+    const formattedDay = `${y}-${m}-${d}`;
+
+    const formattedStart = `${String(sDate.getHours()).padStart(2, "0")}:${String(sDate.getMinutes()).padStart(2, "0")}`;
+    const formattedEnd = `${String(eDate.getHours()).padStart(2, "0")}:${String(eDate.getMinutes()).padStart(2, "0")}`;
+
+    setEditingEventId(evt.id);
+    setNewTitle(evt.title);
+    setNewType(evt.type);
+    setNewDay(formattedDay);
+    setNewStartTime(formattedStart);
+    setNewEndTime(formattedEnd);
+    setNewNotes(evt.notes || "");
+    setNewGoalId(evt.goalId || "");
+    setShowAddModal(true);
+  };
+
+  // Open helper with clean defaults for adding a goal
+  const handleOpenAddGoal = () => {
+    setEditingGoalId(null);
+    setGoalName("");
+    setGoalType(GoalType.WORKOUT);
+    setGoalCategory("");
+    setGoalWeeklyTarget(3);
+    setGoalDuration(60);
+    setGoalTimePref(TimePreference.ANY);
+    setGoalColor("#f43f5e");
+    setShowGoalForm(true);
+  };
+
+  // Open helper preloaded to edit an existing goal
+  const handleOpenEditGoal = (g: Goal) => {
+    setEditingGoalId(g.id);
+    setGoalName(g.name);
+    setGoalType(g.type);
+    setGoalCategory(g.category);
+    setGoalWeeklyTarget(g.weeklyTarget);
+    setGoalDuration(g.durationMinutes);
+    setGoalTimePref(g.timePreference);
+    setGoalColor(g.color);
+    setShowGoalForm(true);
+  };
+
+  // Submit Goal action: Creates or saves edited attributes
+  const handleSaveGoal = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!goalName.trim()) return;
+
+    const trimmedCategory = goalCategory.trim() || (goalType === GoalType.WORKOUT ? "Fitness" : "Study");
+
+    if (editingGoalId) {
+      if (onEditGoal) {
+        onEditGoal(editingGoalId, {
+          name: goalName.trim(),
+          type: goalType,
+          category: trimmedCategory,
+          weeklyTarget: Number(goalWeeklyTarget),
+          durationMinutes: Number(goalDuration),
+          timePreference: goalTimePref,
+          color: goalColor
+        });
+      }
+    } else {
+      if (onAddGoal) {
+        onAddGoal({
+          name: goalName.trim(),
+          type: goalType,
+          category: trimmedCategory,
+          weeklyTarget: Number(goalWeeklyTarget),
+          durationMinutes: Number(goalDuration),
+          timePreference: goalTimePref,
+          color: goalColor
+        });
+      }
+    }
+
+    // Reset Form
+    setShowGoalForm(false);
+    setEditingGoalId(null);
+    setGoalName("");
+  };
+
+  // Quick action: makes the goal done or toggles completion states directly!
+  const handleToggleCompleteGoalDirect = (g: Goal) => {
+    if (!onEditGoal) return;
+    const isCompleted = g.completedCount >= g.weeklyTarget;
+    // Highlight done or toggle around
+    const newCount = isCompleted ? 0 : g.weeklyTarget;
+    onEditGoal(g.id, { completedCount: newCount });
   };
 
   // Simulate Calendar file import (or preset feeds)
@@ -457,7 +820,7 @@ export default function CalendarView({
                 onClick={() => setViewMode(mode)}
                 className={`text-xs px-3 py-1.5 rounded-md font-semibold capitalize transition cursor-pointer ${
                   viewMode === mode 
-                    ? "bg-indigo-650 text-white shadow-md shadow-indigo-650/10" 
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/10" 
                     : "text-slate-400 hover:text-white"
                 }`}
               >
@@ -469,10 +832,11 @@ export default function CalendarView({
           <button
             id="open_sync_sidebar_btn"
             onClick={() => setShowSyncPanel(!showSyncPanel)}
-            className="p-2 border border-white/10 bg-white/5 text-slate-300 hover:text-indigo-400 hover:bg-white/10 rounded-xl transition-all cursor-pointer"
+            className="p-2 border border-white/10 bg-white/5 text-slate-300 hover:text-indigo-400 hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold px-3"
             title="External Calendar Feeds"
           >
             <Link2 className="w-4 h-4" />
+            <span>Connect & Sync</span>
           </button>
 
           <button
@@ -549,7 +913,7 @@ export default function CalendarView({
                       type="button"
                       id="gcal_connect_oauth_btn"
                       onClick={handleLaunchGoogleOAuth}
-                      className="w-full bg-indigo-650 hover:bg-indigo-600 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg border border-white/5 shadow-indigo-650/15 flex items-center justify-center gap-2 transition cursor-pointer"
+                      className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg border border-white/5 shadow-indigo-600/15 flex items-center justify-center gap-2 transition cursor-pointer"
                     >
                       <Globe className="w-4 h-4" /> Connect Automatically
                     </button>
@@ -581,7 +945,7 @@ export default function CalendarView({
                           />
                           <button
                             type="submit"
-                            className="bg-indigo-650 text-white text-[11.5px] px-3 py-1.5 rounded font-bold hover:bg-indigo-500 cursor-pointer"
+                            className="bg-indigo-600 text-white text-[11.5px] px-3 py-1.5 rounded font-bold hover:bg-indigo-500 cursor-pointer"
                           >
                             Set Token
                           </button>
@@ -629,14 +993,18 @@ export default function CalendarView({
                         id="gcal_bulk_export_btn"
                         disabled={exportingAll}
                         onClick={handleBulkExportUnexported}
-                        className="bg-indigo-650/20 hover:bg-indigo-650/30 text-indigo-200 text-xs font-bold py-2.5 px-3 border border-indigo-500/20 rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                        className={`text-xs font-bold py-2.5 px-3 border rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                          unexportedCount > 0
+                            ? "bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500 shadow-md shadow-indigo-600/20 hover:shadow-indigo-600/30 font-extrabold"
+                            : "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10"
+                        }`}
                       >
                         {exportingAll ? (
-                          <RefreshCw className="w-4 h-4 animate-spin text-pink-400" />
+                          <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
                         ) : (
-                          <Send className="w-4 h-4 text-pink-400" />
+                          <Send className={`w-4 h-4 ${unexportedCount > 0 ? "text-emerald-300 animate-pulse" : "text-pink-400"}`} />
                         )}
-                        <span>{exportingAll ? "Exporting..." : "📤 Export All Routines"}</span>
+                        <span>{exportingAll ? "Exporting..." : `📤 Export Routines (${unexportedCount})`}</span>
                       </button>
                     </div>
 
@@ -673,7 +1041,7 @@ export default function CalendarView({
                       {day.toLocaleDateString("en-US", { weekday: "short" })}
                     </div>
                     <div className={`text-sm mt-0.5 font-bold rounded-lg inline-block w-7 h-7 leading-7 ${
-                      todayFlag ? "bg-indigo-650 text-white text-center shadow-lg shadow-indigo-500/25" : ""
+                      todayFlag ? "bg-indigo-600 text-white text-center shadow-lg shadow-indigo-500/25" : ""
                     }`}>
                       {day.getDate()}
                     </div>
@@ -745,7 +1113,8 @@ export default function CalendarView({
                   <div
                     key={evt.id}
                     id={`event_card_week_${evt.id}`}
-                    className={`absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all overflow-hidden ${getEventColors(evt.type)}`}
+                    onClick={() => handleTriggerEditEvent(evt)}
+                    className={`absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all overflow-hidden cursor-pointer ${getEventColors(evt.type)}`}
                     style={{
                       left: `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 2px)`,
                       width: `calc(((100% - 80px) / 7) - 4px)`,
@@ -879,7 +1248,8 @@ export default function CalendarView({
                             <div 
                               key={evt.id} 
                               id={`event_card_day_${evt.id}`}
-                              className={`p-3 rounded-xl shadow-md max-w-sm flex-1 ${getStyle(evt.type)}`}
+                              onClick={() => handleTriggerEditEvent(evt)}
+                              className={`p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-pointer transition hover:scale-[1.01] ${getStyle(evt.type)}`}
                             >
                               <div className="flex justify-between items-start mb-1.5">
                                 <h4 className={`text-xs font-bold ${evt.completed ? "line-through opacity-50" : ""}`}>{evt.title}</h4>
@@ -891,7 +1261,10 @@ export default function CalendarView({
                               <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 gap-1">
                                 <button
                                   id={`complete_event_btn_day_${evt.id}`}
-                                  onClick={() => onToggleCompleteEvent(evt.id)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onToggleCompleteEvent(evt.id);
+                                  }}
                                   className={`text-[10px] px-2.5 py-1 rounded-md font-bold transition flex items-center gap-1 cursor-pointer ${
                                     evt.completed 
                                       ? "bg-emerald-600 text-white" 
@@ -933,7 +1306,10 @@ export default function CalendarView({
 
                                 <button 
                                   id={`delete_event_btn_day_${evt.id}`}
-                                  onClick={() => onDeleteEvent(evt.id)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDeleteEvent(evt.id);
+                                  }}
                                   className="text-red-400 opacity-70 hover:opacity-100 transition p-1 cursor-pointer"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -974,7 +1350,8 @@ export default function CalendarView({
                       <div 
                         key={evt.id} 
                         id={`event_card_list_${evt.id}`}
-                        className={`p-3 border border-white/10 rounded-xl flex items-center justify-between gap-3 bg-white/5 hover:bg-white/10 transition ${
+                        onClick={() => handleTriggerEditEvent(evt)}
+                        className={`p-3 border border-white/10 rounded-xl flex items-center justify-between gap-3 bg-white/5 hover:bg-white/10 transition cursor-pointer ${
                           evt.completed ? "bg-white/[0.02] opacity-60" : ""
                         }`}
                       >
@@ -996,7 +1373,10 @@ export default function CalendarView({
                         <div className="flex items-center gap-2">
                           <button
                             id={`complete_event_btn_list_${evt.id}`}
-                            onClick={() => onToggleCompleteEvent(evt.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleCompleteEvent(evt.id);
+                            }}
                             className={`text-[10px] p-2 px-3 leading-none rounded-lg font-bold cursor-pointer transition ${
                               evt.completed 
                                 ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" 
@@ -1019,7 +1399,7 @@ export default function CalendarView({
                                   : exportStatus[evt.id] === "error"
                                   ? "bg-red-500/10 text-red-400"
                                   : exportStatus[evt.id] === "syncing"
-                                  ? "bg-indigo-650/10 text-indigo-400 animate-spin"
+                                  ? "bg-indigo-600/10 text-indigo-400 animate-spin"
                                   : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 focus:text-indigo-400"
                               }`}
                               title={
@@ -1038,8 +1418,11 @@ export default function CalendarView({
 
                           <button
                             id={`delete_event_btn_list_${evt.id}`}
-                            onClick={() => onDeleteEvent(evt.id)}
-                            className="bg-white/5 hover:bg-rose-500/20 text-slate-450 hover:text-rose-450 p-2 rounded-lg transition border border-white/5 cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteEvent(evt.id);
+                            }}
+                            className="bg-white/5 hover:bg-rose-500/20 text-slate-455 hover:text-rose-455 p-2 rounded-lg transition border border-white/5 cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1059,7 +1442,7 @@ export default function CalendarView({
           <div id="add_event_modal_card" className="bg-[#0f111a] border border-white/12 rounded-2xl shadow-2xl w-full max-w-md p-6 relative">
             <h3 className="font-sans font-semibold text-white text-base mb-4 flex items-center gap-1.5">
               <CalendarIcon className="w-5 h-5 text-indigo-400" />
-              Manually Schedule Slot
+              {editingEventId ? "Edit Scheduled Slot" : "Manually Schedule Slot"}
             </h3>
 
             <form onSubmit={handleCreateEvent} className="space-y-4">
@@ -1162,7 +1545,13 @@ export default function CalendarView({
                 <button
                   type="button"
                   id="close_add_event_modal_btn"
-                  onClick={() => setShowAddModal(false)}
+                  onClick={() => {
+                    setShowAddModal(false);
+                    setEditingEventId(null);
+                    setNewTitle("");
+                    setNewNotes("");
+                    setNewGoalId("");
+                  }}
                   className="text-xs font-semibold px-4 py-2.5 border border-white/10 bg-white/5 hover:bg-white/10 text-white rounded-xl transition cursor-pointer"
                 >
                   Cancel
@@ -1170,12 +1559,53 @@ export default function CalendarView({
                 <button
                   type="submit"
                   id="submit_add_event_btn"
-                  className="text-xs font-semibold px-4 py-2.5 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/25 cursor-pointer transition"
+                  className="text-xs font-semibold px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/25 cursor-pointer transition"
                 >
-                  Confirm Slot
+                  {editingEventId ? "Save Changes" : "Confirm Slot"}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* CUSTOM DIALOG MODAL (Saves from cross-origin iframe window.confirm blockages) */}
+      {customDialog.isOpen && (
+        <div id="custom_dialog_backdrop" className="fixed inset-0 bg-[#020205]/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div id="custom_dialog_card" className="bg-[#111322] border border-white/10 rounded-2xl shadow-2xl w-full max-w-sm p-6 relative">
+            <div className="flex items-center gap-2.5 mb-3 text-indigo-400">
+              <span className="p-2 bg-indigo-500/10 rounded-xl">
+                <CalendarCheck className="w-5 h-5 text-indigo-400" />
+              </span>
+              <h3 className="font-sans font-extrabold text-white text-base">
+                {customDialog.title}
+              </h3>
+            </div>
+            
+            <div className="text-xs text-slate-300 leading-relaxed font-sans mb-5 whitespace-pre-wrap">
+              {customDialog.message}
+            </div>
+            
+            <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-white/5">
+              {!customDialog.isAlertOnly && (
+                <button
+                  type="button"
+                  id="custom_dialog_cancel_btn"
+                  onClick={() => setCustomDialog(prev => ({ ...prev, isOpen: false }))}
+                  className="text-xs font-semibold px-4 py-2 border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl transition cursor-pointer"
+                >
+                  {customDialog.cancelText || "Cancel"}
+                </button>
+              )}
+              <button
+                type="button"
+                id="custom_dialog_confirm_btn"
+                onClick={customDialog.onConfirm}
+                className="text-xs font-bold px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/25 cursor-pointer transition flex items-center gap-1.5"
+              >
+                {customDialog.confirmText || "OK"}
+              </button>
+            </div>
           </div>
         </div>
       )}
