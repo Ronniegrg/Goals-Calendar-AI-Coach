@@ -265,6 +265,45 @@ export default function App() {
     syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
   };
 
+  // EE. Edit custom Goal in cloud database
+  const handleEditGoal = (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "completedCount" | "createdAt">>) => {
+    const nextGoals = goals.map(g => 
+      g.id === goalId ? { ...g, ...updatedFields } : g
+    );
+
+    // If name or type changed, synchronize tied event attributes
+    let nextEvents = [...events];
+    if (updatedFields.name !== undefined || updatedFields.type !== undefined) {
+      const oldGoal = goals.find(g => g.id === goalId);
+      nextEvents = events.map(evt => {
+        if (evt.goalId === goalId) {
+          let newTitle = evt.title;
+          if (oldGoal && updatedFields.name !== undefined) {
+            if (evt.title.includes(oldGoal.name)) {
+              newTitle = evt.title.replace(oldGoal.name, updatedFields.name);
+            } else if (evt.title.includes("(Auto-Scheduled)")) {
+              newTitle = `${updatedFields.name} (Auto-Scheduled)`;
+            } else {
+              newTitle = updatedFields.name;
+            }
+          }
+          return {
+            ...evt,
+            title: newTitle,
+            type: updatedFields.type !== undefined
+              ? (updatedFields.type === GoalType.WORKOUT ? "workout" : "study")
+              : evt.type
+          } as CalendarEvent;
+        }
+        return evt;
+      });
+    }
+
+    setGoals(nextGoals);
+    setEvents(nextEvents);
+    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+  };
+
   // F. Push solver bulk scheduled blocks
   const handleBulkAddEvents = (newEvents: CalendarEvent[]) => {
     const nextEvents = [...newEvents, ...events];
@@ -279,37 +318,52 @@ export default function App() {
   };
 
   // H. Reset or import external components
-  const handleImportCalendar = (name: string, dataString: string) => {
-    // Generate some simulated non-overlapping external events
-    const today = new Date();
-    const mockExternalEvents: CalendarEvent[] = [
-      {
-        id: `ext_${Date.now()}_1`,
-        title: `Busy: ${name}`,
-        type: "external",
-        start: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 10, 0).toISOString(),
-        end: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 12, 0).toISOString(),
-        completed: false,
-        notes: "Imported conflict constraint blocks schedule solver."
-      },
-      {
-        id: `ext_${Date.now()}_2`,
-        title: `Busy: ${name}`,
-        type: "external",
-        start: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3, 14, 0).toISOString(),
-        end: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3, 16, 0).toISOString(),
-        completed: false,
-        notes: "Overlap safety constraint."
-      }
-    ];
+  const handleImportCalendar = (name: string, dataString: string, realEvents?: CalendarEvent[]) => {
+    let nextEvents = [...events];
+    if (realEvents && realEvents.length > 0) {
+      // Remove any previously imported gcal events of same id to avoid duplicate items
+      const importedIds = new Set(realEvents.map(re => re.id));
+      nextEvents = nextEvents.filter(e => !importedIds.has(e.id));
+      nextEvents = [...realEvents, ...nextEvents];
+      
+      triggerSystemNotification(
+        "Google Calendar Synced Successfully",
+        `Successfully imported ${realEvents.length} events from Google Calendar. These slots are now blocked as busy conflict exclusions!`,
+        "sync"
+      );
+    } else {
+      // Generate some simulated non-overlapping external events
+      const today = new Date();
+      const mockExternalEvents: CalendarEvent[] = [
+        {
+          id: `ext_${Date.now()}_1`,
+          title: `Busy: ${name}`,
+          type: "external",
+          start: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 10, 0).toISOString(),
+          end: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 12, 0).toISOString(),
+          completed: false,
+          notes: "Imported conflict constraint blocks schedule solver."
+        },
+        {
+          id: `ext_${Date.now()}_2`,
+          title: `Busy: ${name}`,
+          type: "external",
+          start: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3, 14, 0).toISOString(),
+          end: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3, 16, 0).toISOString(),
+          completed: false,
+          notes: "Overlap safety constraint."
+        }
+      ];
 
-    const nextEvents = [...mockExternalEvents, ...events];
+      nextEvents = [...mockExternalEvents, ...events];
+      triggerSystemNotification(
+        "Existing Calendar Synced",
+        `Successfully loaded constraints from external RSS/ICS feed. Schedulers will avoid these hours.`,
+        "sync"
+      );
+    }
+
     setEvents(nextEvents);
-    triggerSystemNotification(
-      "Existing Calendar Synced",
-      `Successfully loaded constraints from external RSS/ICS feed. Schedulers will avoid these hours.`,
-      "sync"
-    );
     syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
   };
 
@@ -581,6 +635,7 @@ export default function App() {
             events={events}
             onAddGoal={handleAddGoal}
             onDeleteGoal={handleDeleteGoal}
+            onEditGoal={handleEditGoal}
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}

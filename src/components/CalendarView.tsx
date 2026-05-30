@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Calendar as CalendarIcon, 
   ChevronLeft, 
@@ -10,7 +10,16 @@ import {
   Upload, 
   Link2, 
   AlertTriangle,
-  Info
+  Info,
+  RefreshCw,
+  LogOut,
+  Key,
+  Globe,
+  Send,
+  CheckCircle2,
+  CalendarCheck,
+  Download,
+  Lock
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType } from "../types";
 
@@ -20,7 +29,7 @@ interface CalendarViewProps {
   onAddEvent: (event: Omit<CalendarEvent, "id">) => void;
   onToggleCompleteEvent: (eventId: string) => void;
   onDeleteEvent: (eventId: string) => void;
-  onImportCalendar: (name: string, dataString: string) => void;
+  onImportCalendar: (name: string, dataString: string, realEvents?: CalendarEvent[]) => void;
 }
 
 export default function CalendarView({
@@ -49,6 +58,222 @@ export default function CalendarView({
   const [externalName, setExternalName] = useState("");
   const [showSyncPanel, setShowSyncPanel] = useState(false);
   const [icsInput, setIcsInput] = useState("");
+
+  // Google Calendar Integration State
+  const [googleAccessToken, setGoogleAccessToken] = useState(() => localStorage.getItem("gcal_access_token") || "");
+  const [googleEmail, setGoogleEmail] = useState(() => localStorage.getItem("gcal_email") || "");
+  const [gcalStatus, setGcalStatus] = useState<string>("");
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [manualTokenVal, setManualTokenVal] = useState("");
+  const [importingGcal, setImportingGcal] = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
+  const [exportStatus, setExportStatus] = useState<{ [id: string]: "idle" | "syncing" | "success" | "error" }>({});
+
+  // Implicit flow parser
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash) {
+      const params = new URLSearchParams(window.location.hash.substring(1));
+      const token = params.get("access_token");
+      if (token) {
+        setGoogleAccessToken(token);
+        localStorage.setItem("gcal_access_token", token);
+        setGcalStatus("Successfully connected!");
+        window.location.hash = ""; // Clear hash
+        fetchGoogleProfile(token);
+      }
+    } else if (googleAccessToken) {
+      fetchGoogleProfile(googleAccessToken);
+    }
+  }, []);
+
+  const fetchGoogleProfile = async (token: string) => {
+    try {
+      const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.email) {
+          setGoogleEmail(data.email);
+          localStorage.setItem("gcal_email", data.email);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not retrieve email from Google Account payload", err);
+    }
+  };
+
+  const handleLaunchGoogleOAuth = () => {
+    const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email");
+    const redirectUri = encodeURIComponent(window.location.origin + window.location.pathname);
+    const implicitUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=742721019992-0bmb2dajms66ehm65j8siv3clj08v70l.apps.googleusercontent.com&redirect_uri=${redirectUri}&response_type=token&scope=${scope}&prompt=consent`;
+    
+    // Attempt redirect
+    window.location.href = implicitUrl;
+  };
+
+  const handleManualTokenSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = manualTokenVal.trim();
+    if (token) {
+      setGoogleAccessToken(token);
+      localStorage.setItem("gcal_access_token", token);
+      setGcalStatus("Connected manually using custom Developer Token!");
+      setManualTokenVal("");
+      setShowTokenInput(false);
+      fetchGoogleProfile(token);
+    }
+  };
+
+  const handleDisconnectGoogle = () => {
+    setGoogleAccessToken("");
+    setGoogleEmail("");
+    localStorage.removeItem("gcal_access_token");
+    localStorage.removeItem("gcal_email");
+    setGcalStatus("Disconnected Google Account.");
+  };
+
+  // 📥 IMPORT: Fetch and import Google Calendar events within current week bounds
+  const handleImportGoogleCalendar = async () => {
+    if (!googleAccessToken) return;
+    setImportingGcal(true);
+    setGcalStatus("Initiating sync with Google Calendar API...");
+    try {
+      const timeMin = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString(); // 30 days before
+      const timeMax = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(); // 1 month after
+      
+      const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime&maxResults=150`, {
+        headers: { Authorization: `Bearer ${googleAccessToken}` }
+      });
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error("Invalid or expired OAuth Access Token. Please re-authenticate.");
+        }
+        throw new Error(`Google API request failed with status: ${res.status}`);
+      }
+
+      const data = await res.json();
+      const items = data.items || [];
+      
+      const normalizedEvents: CalendarEvent[] = items.map((item: any) => {
+        const startRaw = item.start?.dateTime || item.start?.date || new Date().toISOString();
+        const endRaw = item.end?.dateTime || item.end?.date || new Date(Date.now() + 1 * 3600 * 1000).toISOString();
+        return {
+          id: `gcal_${item.id}`,
+          title: item.summary || "Google Calendar Event (Busy)",
+          type: "external" as const,
+          start: new Date(startRaw).toISOString(),
+          end: new Date(endRaw).toISOString(),
+          completed: false,
+          notes: item.description || "Synced directly from your Google Calendar."
+        };
+      });
+
+      onImportCalendar("Google Calendar", "", normalizedEvents);
+      setGcalStatus(`Successfully synchronized ${normalizedEvents.length} events from your Google Calendar!`);
+    } catch (err: any) {
+      console.error("Google Calendar import failed: ", err);
+      setGcalStatus(`Error syncing Calendar items: ${err.message || err}`);
+    } finally {
+      setImportingGcal(false);
+    }
+  };
+
+  // 📤 EXPORT: Export custom workouts or study blocks to actual Google Calendar
+  const handleExportToGoogleCalendar = async (evt: CalendarEvent) => {
+    if (!googleAccessToken) return;
+    
+    setExportStatus(prev => ({ ...prev, [evt.id]: "syncing" }));
+    try {
+      // Prompt user confirmation for mutating API operations (mandatory as per policy!)
+      const confirmed = window.confirm(`Update Google Calendar? We will post "${evt.title}" into your main calendar.`);
+      if (!confirmed) {
+        setExportStatus(prev => ({ ...prev, [evt.id]: "idle" }));
+        return;
+      }
+
+      const duration = new Date(evt.end).getTime() - new Date(evt.start).getTime();
+      const postBody = {
+        summary: `${evt.type === "workout" ? "🏋️" : "📚"} ${evt.title}`,
+        description: `${evt.notes || ""}\n\nScheduled conflict-free using smart AI routine engine.`,
+        start: { dateTime: evt.start },
+        end: { dateTime: evt.end }
+      };
+
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${googleAccessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(postBody)
+      });
+
+      if (!res.ok) {
+        throw new Error(`Google POST request failed with status: ${res.status}`);
+      }
+
+      setExportStatus(prev => ({ ...prev, [evt.id]: "success" }));
+      setTimeout(() => {
+        setExportStatus(prev => {
+          const next = { ...prev };
+          delete next[evt.id];
+          return next;
+        });
+      }, 5000);
+    } catch (err: any) {
+      console.error("Failed to export slot to Google: ", err);
+      setExportStatus(prev => ({ ...prev, [evt.id]: "error" }));
+      alert(`Export Failed: ${err.message || err}`);
+    }
+  };
+
+  // Bulk Export all unexported workouts & study events
+  const handleBulkExportUnexported = async () => {
+    const unexported = events.filter(e => e.type !== "external" && !exportStatus[e.id]);
+    if (unexported.length === 0) {
+      alert("No printable workouts or study sessions are currently unexported!");
+      return;
+    }
+
+    const confirmed = window.confirm(`Export Routine? Let's write ${unexported.length} scheduled workout and study hours to your main Google Calendar.`);
+    if (!confirmed) return;
+
+    setExportingAll(true);
+    setGcalStatus(`Exporting ${unexported.length} scheduled slots to Google Calendar...`);
+    
+    let successCount = 0;
+    for (const evt of unexported) {
+      try {
+        const postBody = {
+          summary: `${evt.type === "workout" ? "🏋️" : "📚"} ${evt.title}`,
+          description: evt.notes || "Auto-programmed with conflict-free AI scheduler.",
+          start: { dateTime: evt.start },
+          end: { dateTime: evt.end }
+        };
+
+        const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${googleAccessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(postBody)
+        });
+
+        if (res.ok) {
+          successCount++;
+          setExportStatus(prev => ({ ...prev, [evt.id]: "success" }));
+        }
+      } catch {
+        setExportStatus(prev => ({ ...prev, [evt.id]: "error" }));
+      }
+    }
+
+    setExportingAll(false);
+    setGcalStatus(`Export Finished! Successfully wrote ${successCount} slots into your real Google Calendar.`);
+  };
 
   // Helper: Get start of current week (Sunday)
   const getStartOfWeek = (date: Date) => {
@@ -303,38 +528,124 @@ export default function CalendarView({
 
             <div className="bg-white/5 border border-white/10 p-4 rounded-xl flex flex-col justify-between">
               <div>
-                <h3 className="font-sans font-semibold text-white text-sm mb-1">
-                  Connect & Exclude Busy Calendars
+                <h3 className="font-sans font-semibold text-white text-sm mb-1.5 flex items-center gap-1.5">
+                  <Globe className="w-4 h-4 text-indigo-400" />
+                  Google Calendar Live Sync
                 </h3>
-                <p className="text-xs text-slate-400 mb-3 leading-relaxed">
-                  Toggle presets to block dates from the automated auto-scheduler. This ensures workouts are scheduled in conflict-free slots.
-                </p>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between p-2 hover:bg-white/10 rounded-lg border border-white/5">
-                    <span className="text-xs font-semibold text-slate-300">Google Workspace (Work Sync)</span>
-                    <button 
+
+                {gcalStatus && (
+                  <p className="text-[11px] text-pink-400 bg-pink-500/10 border border-pink-500/20 px-2.5 py-1.5 rounded-lg mb-3">
+                    {gcalStatus}
+                  </p>
+                )}
+
+                {!googleAccessToken ? (
+                  <div className="space-y-3.5 pt-1">
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Connect your Google Calendar live to import conflicts (so the smart auto-scheduler avoids overlaps) and export scheduled routines!
+                    </p>
+                    
+                    <button
                       type="button"
-                      onClick={() => handleSelectPresetImport("Google Work", "work")}
-                      className="text-[10px] text-indigo-450 hover:bg-indigo-950/40 font-bold px-2.5 py-1 border border-white/10 rounded-md transition cursor-pointer"
+                      id="gcal_connect_oauth_btn"
+                      onClick={handleLaunchGoogleOAuth}
+                      className="w-full bg-indigo-650 hover:bg-indigo-600 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg border border-white/5 shadow-indigo-650/15 flex items-center justify-center gap-2 transition cursor-pointer"
                     >
-                      Connect
+                      <Globe className="w-4 h-4" /> Connect Automatically
                     </button>
+
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        id="toggle_manual_token_form_btn"
+                        onClick={() => setShowTokenInput(!showTokenInput)}
+                        className="text-[10.5px] text-slate-400 hover:text-white font-medium underline transition"
+                      >
+                        {showTokenInput ? "Hide Developer Auth" : "Advanced: Developer Token Connection"}
+                      </button>
+                    </div>
+
+                    {showTokenInput && (
+                      <form onSubmit={handleManualTokenSubmit} className="bg-slate-900/40 p-3 rounded-lg border border-white/5 mt-2 space-y-2">
+                        <p className="text-[10px] text-slate-400 leading-normal">
+                          For instant, reliable iframe connection, you can copy an ACCESS TOKEN from the <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-indigo-400 underline hover:text-indigo-300">Google OAuth Playground</a> (Calendar API v3), then paste it here:
+                        </p>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="text"
+                            required
+                            placeholder="ya29.a0Acv..."
+                            value={manualTokenVal}
+                            onChange={(e) => setManualTokenVal(e.target.value)}
+                            className="bg-white/5 text-[11px] p-2 rounded border border-white/10 text-white flex-1 focus:outline-none focus:border-indigo-400"
+                          />
+                          <button
+                            type="submit"
+                            className="bg-indigo-650 text-white text-[11.5px] px-3 py-1.5 rounded font-bold hover:bg-indigo-500 cursor-pointer"
+                          >
+                            Set Token
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </div>
-                  <div className="flex items-center justify-between p-2 hover:bg-white/10 rounded-lg border border-white/5">
-                    <span className="text-xs font-semibold text-slate-300">Apple iCloud (Personal Calendar)</span>
-                    <button 
-                      type="button"
-                      onClick={() => handleSelectPresetImport("iCloud Personal", "personal")}
-                      className="text-[10px] text-indigo-450 hover:bg-indigo-950/40 font-bold px-2.5 py-1 border border-white/10 rounded-md transition cursor-pointer"
-                    >
-                      Connect
-                    </button>
+                ) : (
+                  <div className="space-y-3.5">
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Connected Account</p>
+                        <p className="text-xs font-mono text-slate-200 mt-0.5 max-w-[200px] truncate" title={googleEmail}>
+                          {googleEmail || "Active OAuth User"}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleDisconnectGoogle}
+                        className="text-[10px] bg-white/5 hover:bg-red-500/10 text-slate-300 hover:text-red-400 border border-white/10 p-1.5 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                        title="Disconnect"
+                      >
+                        <LogOut className="w-3.5 h-3.5" /> Disconnect
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-center">
+                      <button
+                        type="button"
+                        id="gcal_import_btn"
+                        disabled={importingGcal}
+                        onClick={handleImportGoogleCalendar}
+                        className="bg-white/5 hover:bg-white/10 text-slate-100 text-xs font-bold py-2.5 px-3 border border-white/10 rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        {importingGcal ? (
+                          <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                        ) : (
+                          <Download className="w-4 h-4 text-indigo-400" />
+                        )}
+                        <span>{importingGcal ? "Importing..." : "📥 Import Busy Blocks"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        id="gcal_bulk_export_btn"
+                        disabled={exportingAll}
+                        onClick={handleBulkExportUnexported}
+                        className="bg-indigo-650/20 hover:bg-indigo-650/30 text-indigo-200 text-xs font-bold py-2.5 px-3 border border-indigo-500/20 rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        {exportingAll ? (
+                          <RefreshCw className="w-4 h-4 animate-spin text-pink-400" />
+                        ) : (
+                          <Send className="w-4 h-4 text-pink-400" />
+                        )}
+                        <span>{exportingAll ? "Exporting..." : "📤 Export All Routines"}</span>
+                      </button>
+                    </div>
+
+                    <p className="text-[10px] text-slate-400 leading-normal italic text-center">
+                      * Imported Google events act as busy exclusions in auto-scheduling. Exporting pushes workouts & study blocks to your Google app.
+                    </p>
                   </div>
-                </div>
+                )}
               </div>
-              <span className="text-[10px] text-slate-400 mt-2 block italic">
-                * Simulated OAuth integration avoids overlapping core slots.
-              </span>
             </div>
           </div>
         </div>
@@ -456,7 +767,7 @@ export default function CalendarView({
                         </p>
                       </div>
 
-                      <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-1">
+                      <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-1 gap-1">
                         <button
                           id={`complete_event_btn_week_${evt.id}`}
                           onClick={(e) => {
@@ -472,6 +783,37 @@ export default function CalendarView({
                           <Check className="w-2.5 h-2.5 font-bold" />
                           {evt.completed ? "Done" : "Mark Done"}
                         </button>
+                        
+                        {googleAccessToken && evt.type !== "external" && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleExportToGoogleCalendar(evt);
+                            }}
+                            disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                            className={`p-1 rounded transition cursor-pointer ${
+                              exportStatus[evt.id] === "success"
+                                ? "text-emerald-400"
+                                : exportStatus[evt.id] === "error"
+                                ? "text-red-400"
+                                : exportStatus[evt.id] === "syncing"
+                                ? "text-indigo-400 animate-spin"
+                                : "text-slate-400 hover:text-indigo-400"
+                            }`}
+                            title={
+                              exportStatus[evt.id] === "success"
+                                ? "Synced to Google!"
+                                : "Export to Google Calendar"
+                            }
+                          >
+                            {exportStatus[evt.id] === "success" ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
+                            ) : (
+                              <CalendarCheck className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+
                         <button
                           id={`delete_event_btn_week_${evt.id}`}
                           onClick={(e) => {
@@ -546,7 +888,7 @@ export default function CalendarView({
                                 </span>
                               </div>
                               {evt.notes && <p className="text-[10px] opacity-75 mb-2 italic">"{evt.notes}"</p>}
-                              <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5">
+                              <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 gap-1">
                                 <button
                                   id={`complete_event_btn_day_${evt.id}`}
                                   onClick={() => onToggleCompleteEvent(evt.id)}
@@ -558,6 +900,37 @@ export default function CalendarView({
                                 >
                                   {evt.completed ? "Done" : "Mark Done"}
                                 </button>
+
+                                {googleAccessToken && evt.type !== "external" && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleExportToGoogleCalendar(evt);
+                                    }}
+                                    disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                                    className={`p-1.5 rounded transition cursor-pointer ${
+                                      exportStatus[evt.id] === "success"
+                                        ? "text-emerald-400"
+                                        : exportStatus[evt.id] === "error"
+                                        ? "text-red-400"
+                                        : exportStatus[evt.id] === "syncing"
+                                        ? "text-indigo-400 animate-spin"
+                                        : "text-slate-400 hover:text-indigo-400"
+                                    }`}
+                                    title={
+                                      exportStatus[evt.id] === "success"
+                                        ? "Synced to Google!"
+                                        : "Export to Google Calendar"
+                                    }
+                                  >
+                                    {exportStatus[evt.id] === "success" ? (
+                                      <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
+                                    ) : (
+                                      <CalendarCheck className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                )}
+
                                 <button 
                                   id={`delete_event_btn_day_${evt.id}`}
                                   onClick={() => onDeleteEvent(evt.id)}
@@ -632,6 +1005,37 @@ export default function CalendarView({
                           >
                             {evt.completed ? "Completed!" : "Complete"}
                           </button>
+
+                          {googleAccessToken && evt.type !== "external" && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleExportToGoogleCalendar(evt);
+                              }}
+                              disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                              className={`p-2 border rounded-lg transition border-white/10 cursor-pointer ${
+                                exportStatus[evt.id] === "success"
+                                  ? "bg-emerald-500/10 text-emerald-400"
+                                  : exportStatus[evt.id] === "error"
+                                  ? "bg-red-500/10 text-red-400"
+                                  : exportStatus[evt.id] === "syncing"
+                                  ? "bg-indigo-650/10 text-indigo-400 animate-spin"
+                                  : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 focus:text-indigo-400"
+                              }`}
+                              title={
+                                exportStatus[evt.id] === "success"
+                                  ? "Synced to Google!"
+                                  : "Export to Google Calendar"
+                              }
+                            >
+                              {exportStatus[evt.id] === "success" ? (
+                                <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
+                              ) : (
+                                <CalendarCheck className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          )}
+
                           <button
                             id={`delete_event_btn_list_${evt.id}`}
                             onClick={() => onDeleteEvent(evt.id)}

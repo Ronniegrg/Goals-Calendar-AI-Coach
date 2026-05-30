@@ -9,7 +9,8 @@ import {
   Check, 
   Calendar,
   Layers,
-  Settings
+  Settings,
+  Pencil
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent } from "../types";
 
@@ -19,6 +20,7 @@ interface GoalTrackerProps {
   events: CalendarEvent[];
   onAddGoal: (goal: Omit<Goal, "id" | "completedCount" | "createdAt">) => void;
   onDeleteGoal: (goalId: string) => void;
+  onEditGoal: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "completedCount" | "createdAt">>) => void;
   onUpdateAvailability: (avail: AvailabilityWindow[]) => void;
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
@@ -30,12 +32,14 @@ export default function GoalTracker({
   events,
   onAddGoal,
   onDeleteGoal,
+  onEditGoal,
   onUpdateAvailability,
   onBulkAddEvents,
   onAddNotification
 }: GoalTrackerProps) {
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState<GoalType>(GoalType.WORKOUT);
   const [category, setCategory] = useState("");
@@ -60,19 +64,43 @@ export default function GoalTracker({
     "#3b82f6"  // blue
   ];
 
-  const handleCreateGoal = (e: React.FormEvent) => {
+  const handleSubmitGoalForm = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    onAddGoal({
-      name,
-      type,
-      category: category.trim() || (type === GoalType.WORKOUT ? "Fitness" : "Learning"),
-      weeklyTarget,
-      durationMinutes,
-      timePreference,
-      color
-    });
+    if (editingGoalId) {
+      onEditGoal(editingGoalId, {
+        name,
+        type,
+        category: category.trim() || (type === GoalType.WORKOUT ? "Fitness" : "Learning"),
+        weeklyTarget,
+        durationMinutes,
+        timePreference,
+        color
+      });
+
+      onAddNotification(
+        "Goal Updated Successfully",
+        `Goal "${name}" was updated successfully.`,
+        "success"
+      );
+    } else {
+      onAddGoal({
+        name,
+        type,
+        category: category.trim() || (type === GoalType.WORKOUT ? "Fitness" : "Learning"),
+        weeklyTarget,
+        durationMinutes,
+        timePreference,
+        color
+      });
+
+      onAddNotification(
+        "Goal Created Successfully",
+        `New goal "${name}" added! Press 'Run Smart Auto-Scheduler' to plot slots.`,
+        "success"
+      );
+    }
 
     // Reset Form
     setName("");
@@ -83,11 +111,61 @@ export default function GoalTracker({
     setDurationMinutes(60);
     setTimePreference(TimePreference.ANY);
     setShowAddGoal(false);
-    onAddNotification(
-      "Goal Created Successfully",
-      `New goal "${name}" added! Press 'Run Smart Auto-Scheduler' to plot slots.`,
-      "success"
-    );
+    setEditingGoalId(null);
+  };
+
+  const handleAddNewGoalClick = () => {
+    if (editingGoalId) {
+      setEditingGoalId(null);
+      setName("");
+      setCategory("");
+      setWeeklyTarget(3);
+      setIsCustomTarget(false);
+      setCustomTargetVal("10");
+      setDurationMinutes(60);
+      setTimePreference(TimePreference.ANY);
+      setColor("#f43f5e");
+      setShowAddGoal(true);
+    } else {
+      setShowAddGoal(!showAddGoal);
+    }
+  };
+
+  const handleCancelClick = () => {
+    setName("");
+    setCategory("");
+    setWeeklyTarget(3);
+    setIsCustomTarget(false);
+    setCustomTargetVal("10");
+    setDurationMinutes(60);
+    setTimePreference(TimePreference.ANY);
+    setShowAddGoal(false);
+    setEditingGoalId(null);
+  };
+
+  const handleStartEdit = (g: Goal) => {
+    setEditingGoalId(g.id);
+    setName(g.name);
+    setType(g.type);
+    setCategory(g.category);
+    setWeeklyTarget(g.weeklyTarget);
+    if (g.weeklyTarget > 7) {
+      setIsCustomTarget(true);
+      setCustomTargetVal(String(g.weeklyTarget));
+    } else {
+      setIsCustomTarget(false);
+      setCustomTargetVal("10");
+    }
+    setDurationMinutes(g.durationMinutes);
+    setTimePreference(g.timePreference);
+    setColor(g.color);
+    setShowAddGoal(true);
+    
+    // Smooth scroll to catalog header form
+    const element = document.getElementById("goals_catalog_card");
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth" });
+    }
   };
 
   // Availability Change Handlers
@@ -252,7 +330,7 @@ export default function GoalTracker({
           </div>
           <button
             id="toggle_add_goal_form_btn"
-            onClick={() => setShowAddGoal(!showAddGoal)}
+            onClick={handleAddNewGoalClick}
             className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/20 text-indigo-300 px-3.5 py-1.5 rounded-xl font-bold flex items-center gap-1 transition cursor-pointer"
           >
             <Plus className="w-4 h-4" /> Add New Goal
@@ -261,7 +339,10 @@ export default function GoalTracker({
 
         {/* Add Goal Form Container */}
         {showAddGoal && (
-          <form onSubmit={handleCreateGoal} className="bg-white/5 p-4 rounded-xl mb-4 border border-white/10 space-y-3.5">
+          <form onSubmit={handleSubmitGoalForm} className="bg-white/5 p-4 rounded-xl mb-4 border border-white/10 space-y-3.5">
+            <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider mb-2">
+              {editingGoalId ? `Editing Goal: ${name}` : 'Create New Goal'}
+            </h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[10px] font-bold text-slate-300 mb-1">Goal Name</label>
@@ -410,7 +491,7 @@ export default function GoalTracker({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddGoal(false)}
+                  onClick={handleCancelClick}
                   className="text-xs px-3 py-1.5 text-slate-400 hover:text-white font-semibold cursor-pointer"
                 >
                   Cancel
@@ -420,7 +501,7 @@ export default function GoalTracker({
                   id="submit_new_goal_btn"
                   className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 border border-white/5 rounded-lg font-bold shadow-lg shadow-indigo-600/20 transition cursor-pointer"
                 >
-                  Create Goal Object
+                  {editingGoalId ? "Save Goal Changes" : "Create Goal Object"}
                 </button>
               </div>
             </div>
@@ -447,14 +528,24 @@ export default function GoalTracker({
                       <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${g.color}25`, color: g.color }}>
                         {g.category}
                       </span>
-                      <button
-                        id={`delete_goal_btn_${g.id}`}
-                        onClick={() => onDeleteGoal(g.id)}
-                        className="text-slate-400 hover:text-red-400 opacity-60 hover:opacity-100 p-1 rounded transition cursor-pointer"
-                        title="Delete Goal"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          id={`edit_goal_btn_${g.id}`}
+                          onClick={() => handleStartEdit(g)}
+                          className="text-slate-400 hover:text-indigo-400 opacity-60 hover:opacity-100 p-1 rounded transition cursor-pointer"
+                          title="Edit Goal"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          id={`delete_goal_btn_${g.id}`}
+                          onClick={() => onDeleteGoal(g.id)}
+                          className="text-slate-400 hover:text-red-400 opacity-60 hover:opacity-100 p-1 rounded transition cursor-pointer"
+                          title="Delete Goal"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <h4 className="font-sans font-bold text-xs text-white tracking-tight leading-tight pt-1">
