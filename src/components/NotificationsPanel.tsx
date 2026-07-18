@@ -9,7 +9,8 @@ import {
   Info, 
   Volume2, 
   VolumeX,
-  Plus
+  Plus,
+  Sun
 } from "lucide-react";
 import { AppNotification } from "../types";
 
@@ -18,13 +19,15 @@ interface NotificationsPanelProps {
   onMarkRead: (id: string) => void;
   onClearAll: () => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
+  onTriggerDailyDigest?: () => void;
 }
 
 export default function NotificationsPanel({
   notifications,
   onMarkRead,
   onClearAll,
-  onAddNotification
+  onAddNotification,
+  onTriggerDailyDigest
 }: NotificationsPanelProps) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
@@ -202,6 +205,18 @@ export default function NotificationsPanel({
               className="w-full bg-indigo-600 hover:bg-indigo-550 border border-white/10 text-white font-bold p-2.5 rounded-xl text-center text-[10px] uppercase tracking-wider transition mt-1 cursor-pointer"
             >
               Request daily motivational tip
+            </button>
+            <button
+              onClick={() => {
+                if (onTriggerDailyDigest) {
+                  onTriggerDailyDigest();
+                  playBeepSound();
+                }
+              }}
+              className="w-full bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 hover:border-emerald-500 text-emerald-300 hover:text-white font-bold p-2.5 rounded-xl text-center text-[10px] uppercase tracking-wider transition mt-2.5 cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <Sun className="w-3.5 h-3.5" />
+              Simulate 8:00 AM Daily Digest
             </button>
           </div>
         </div>

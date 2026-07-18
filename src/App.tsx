@@ -113,7 +113,7 @@ export default function App() {
             const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
 
             setGoals(localGoalsList);
-            setEvents(localEvents);
+            setEvents(localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
             if (localAvailability.length > 0) {
               setAvailability(localAvailability);
             } else {
@@ -134,7 +134,7 @@ export default function App() {
           } else {
             // Cloud is newer, load cloud data and update local cache
             setGoals(data.goals || []);
-            setEvents(data.events || []);
+            setEvents((data.events || []).map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
             setAvailability(data.availability || []);
             setNotifications(data.notifications || []);
             setCoachMessages(data.coachMessages || []);
@@ -325,7 +325,7 @@ export default function App() {
           if (!overlap) {
             newScheduledEvents.push({
               id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-              title: `${goal.name} (Auto-Scheduled)`,
+              title: goal.name,
               type: goal.type === GoalType.WORKOUT ? "workout" :
                     goal.type === GoalType.STUDY ? "study" :
                     goal.type === GoalType.JOB_SEARCH ? "job_search" :
@@ -434,6 +434,78 @@ export default function App() {
         window.history.replaceState({}, document.title, cleanUrl);
       }
     }
+  }, [events, goals]);
+
+  // Generate and send daily digest (summarizing scheduled goals and upcoming high-priority tasks)
+  const generateAndTriggerDailyDigest = (dateStr?: string) => {
+    const todayEvents = events.filter(evt => {
+      if (evt.type === "external") return false;
+      return new Date(evt.start).toDateString() === new Date().toDateString();
+    });
+
+    const highPriorityGoals = goals.filter(g => {
+      const isUnderCompleted = g.completedCount < g.weeklyTarget;
+      const hasUncompletedSubtasks = g.subtasks?.some(s => !s.completed) || false;
+      return isUnderCompleted || hasUncompletedSubtasks;
+    });
+
+    let eventsSummary = "";
+    if (todayEvents.length > 0) {
+      eventsSummary = todayEvents.map(evt => {
+        const timeStr = new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        return `• ${evt.title} at ${timeStr}`;
+      }).join("\n");
+    } else {
+      eventsSummary = "• No goal blocks or tasks scheduled for today.";
+    }
+
+    let goalsSummary = "";
+    if (highPriorityGoals.length > 0) {
+      goalsSummary = highPriorityGoals.slice(0, 3).map(g => {
+        const subCount = g.subtasks?.filter(s => !s.completed).length || 0;
+        const subText = subCount > 0 ? ` (${subCount} pending milestones)` : "";
+        return `• ${g.name}: ${g.completedCount}/${g.weeklyTarget} weekly sessions done${subText}`;
+      }).join("\n");
+    } else {
+      goalsSummary = "• All weekly goal targets are fully completed and up to date!";
+    }
+
+    const message = `📋 TODAY'S SCHEDULED BLOCKS:\n${eventsSummary}\n\n🎯 HIGH PRIORITY FOCUS:\n${goalsSummary}`;
+
+    triggerSystemNotification(
+      "🌅 Morning Daily Digest - 8:00 AM",
+      message,
+      "sync"
+    );
+
+    if (dateStr) {
+      localStorage.setItem("last_daily_digest_sent", dateStr);
+    }
+  };
+
+  // Daily Digest 8:00 AM automatic trigger checker
+  useEffect(() => {
+    if (goals.length === 0 && events.length === 0) return;
+
+    const checkDailyDigest = () => {
+      const now = new Date();
+      // Check if it is at or after 8:00 AM
+      if (now.getHours() >= 8) {
+        const todayStr = now.toDateString();
+        const lastSent = localStorage.getItem("last_daily_digest_sent");
+        if (lastSent !== todayStr) {
+          generateAndTriggerDailyDigest(todayStr);
+        }
+      }
+    };
+
+    const delayTimer = setTimeout(checkDailyDigest, 2000);
+    const interval = setInterval(checkDailyDigest, 30000);
+
+    return () => {
+      clearTimeout(delayTimer);
+      clearInterval(interval);
+    };
   }, [events, goals]);
 
   // Dynamic system notification pusher
@@ -617,13 +689,7 @@ export default function App() {
         if (evt.goalId === goalId) {
           let newTitle = evt.title;
           if (oldGoal && updatedFields.name !== undefined) {
-            if (evt.title.includes(oldGoal.name)) {
-              newTitle = evt.title.replace(oldGoal.name, updatedFields.name);
-            } else if (evt.title.includes("(Auto-Scheduled)")) {
-              newTitle = `${updatedFields.name} (Auto-Scheduled)`;
-            } else {
-              newTitle = updatedFields.name;
-            }
+            newTitle = updatedFields.name;
           }
           return {
             ...evt,
@@ -789,7 +855,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0c14] text-white flex flex-col font-sans antialiased pb-12 selection:bg-indigo-500/30 selection:text-indigo-200" style={{ backgroundImage: "radial-gradient(circle at 0% 0%, #1e1b4b 0%, transparent 60%), radial-gradient(circle at 100% 100%, #311042 0%, transparent 60%)" }}>
+    <div className="min-h-screen bg-[#0a0c14] text-white flex flex-col font-sans antialiased pb-24 md:pb-12 selection:bg-indigo-500/30 selection:text-indigo-200" style={{ backgroundImage: "radial-gradient(circle at 0% 0%, #1e1b4b 0%, transparent 60%), radial-gradient(circle at 100% 100%, #311042 0%, transparent 60%)" }}>
       
       {/* GLORIOUS ACCENT TOP REGION (Frosted Glass Theme) */}
       <div className="bg-white/5 backdrop-blur-md border-b border-white/10 shadow-lg relative overflow-hidden" id="dash_global_accent_header">
@@ -864,7 +930,7 @@ export default function App() {
       </div>
 
       {/* DASHBOARD TAB NAVIGATION BAR */}
-      <div className="bg-[#0a0c14]/75 backdrop-blur-md border-b border-white/10 sticky top-0 z-40" id="dash_navigation_row">
+      <div className="hidden md:block bg-[#0a0c14]/75 backdrop-blur-md border-b border-white/10 sticky top-0 z-40" id="dash_navigation_row">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex space-x-1.5 py-3 overflow-x-auto scrollbar-none">
             
@@ -1024,6 +1090,7 @@ export default function App() {
             onMarkRead={handleMarkNotificationRead}
             onClearAll={handleClearAllNotifications}
             onAddNotification={triggerSystemNotification}
+            onTriggerDailyDigest={() => generateAndTriggerDailyDigest()}
           />
         )}
 
@@ -1046,6 +1113,81 @@ export default function App() {
           Factory Reset App Data
         </button>
       </footer>
+
+      {/* BOTTOM TAB BAR FOR MOBILE SCREENS */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-[#0a0c14]/90 backdrop-blur-lg border-t border-white/10 px-1 py-2 z-50 flex items-center justify-around select-none shadow-2xl" id="mobile_bottom_tab_bar">
+        
+        <button
+          id="tab_trigger_calendar_mobile"
+          onClick={() => setActiveTab("calendar")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+            activeTab === "calendar"
+              ? "text-indigo-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <CalendarIcon className="w-5 h-5" />
+          <span className="text-[10px] tracking-wide font-medium">Schedule</span>
+        </button>
+
+        <button
+          id="tab_trigger_goals_mobile"
+          onClick={() => setActiveTab("goals")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+            activeTab === "goals"
+              ? "text-indigo-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Layers className="w-5 h-5" />
+          <span className="text-[10px] tracking-wide font-medium">Goals</span>
+        </button>
+
+        <button
+          id="tab_trigger_dashboard_mobile"
+          onClick={() => setActiveTab("dashboard")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+            activeTab === "dashboard"
+              ? "text-indigo-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Sparkles className="w-5 h-5" />
+          <span className="text-[10px] tracking-wide font-medium">Metrics</span>
+        </button>
+
+        <button
+          id="tab_trigger_coach_mobile"
+          onClick={() => setActiveTab("coach")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+            activeTab === "coach"
+              ? "text-indigo-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Bot className="w-5 h-5" />
+          <span className="text-[10px] tracking-wide font-medium">AI Coach</span>
+        </button>
+
+        <button
+          id="tab_trigger_notifications_mobile"
+          onClick={() => setActiveTab("notifications")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer relative ${
+            activeTab === "notifications"
+              ? "text-indigo-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Bell className="w-5 h-5" />
+          <span className="text-[10px] tracking-wide font-medium">Alerts</span>
+          {notifications.filter(n => !n.read).length > 0 && (
+            <span className="absolute top-1 right-2.5 w-4.5 h-4.5 bg-pink-500 text-white rounded-full text-[9px] font-bold leading-4.5 text-center shadow-sm animate-pulse">
+              {notifications.filter(n => !n.read).length}
+            </span>
+          )}
+        </button>
+
+      </div>
 
     </div>
   );

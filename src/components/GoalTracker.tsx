@@ -402,7 +402,7 @@ export default function GoalTracker({
             // Found a conflict-free slot! Book it.
             newScheduledEvents.push({
               id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-              title: `${goal.name} (Auto-Scheduled)`,
+              title: goal.name,
               type: goal.type === GoalType.WORKOUT ? "workout" :
                     goal.type === GoalType.STUDY ? "study" :
                     goal.type === GoalType.JOB_SEARCH ? "job_search" :

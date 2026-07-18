@@ -31,7 +31,11 @@ import {
   Trophy,
   Sliders,
   CheckCircle,
-  HelpCircle
+  HelpCircle,
+  Briefcase,
+  Laptop,
+  RotateCw,
+  Smile
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference } from "../types";
 
@@ -142,6 +146,35 @@ export default function CalendarView({
       dotColor: current.dot,
       isCustom: false
     };
+  };
+
+  const getEventIcon = (evt: CalendarEvent) => {
+    const goal = goals.find(g => g.id === evt.goalId);
+    const type = goal ? goal.type : evt.type;
+    const colors = getEventColorStyles(evt);
+    
+    switch (type) {
+      case "workout":
+      case GoalType.WORKOUT:
+        return <Activity className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+      case "study":
+      case GoalType.STUDY:
+        return <BookOpen className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+      case "job_search":
+      case GoalType.JOB_SEARCH:
+        return <Briefcase className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+      case "side_project":
+      case GoalType.SIDE_PROJECT:
+        return <Laptop className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+      case "routine":
+      case GoalType.ROUTINE:
+        return <RotateCw className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+      case "personal":
+      case GoalType.PERSONAL:
+        return <Smile className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+      default:
+        return <Activity className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
+    }
   };
 
   // Custom modal dialog to replace blocking system alerts/confirms that get blocked in sandbox iframes
@@ -1183,7 +1216,7 @@ export default function CalendarView({
                 const hourHeight = 64; // pixels per hour
                 const minOffsetHour = 8; // we start at 08:00
                 const topPixel = (startHour - minOffsetHour) * hourHeight;
-                const heightPixel = Math.max((endHour - startHour) * hourHeight, 35); // minimum height
+                const heightPixel = Math.max((endHour - startHour) * hourHeight, 82); // minimum height to ensure Mark Done fits beautifully
 
                 const colors = getEventColorStyles(evt);
 
@@ -1199,18 +1232,20 @@ export default function CalendarView({
                       left: `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 2px)`,
                       width: `calc(((100% - 80px) / 7) - 4px)`,
                       top: `${topPixel}px`,
-                      height: `${heightPixel}px`,
-                      zIndex: 5,
+                      height: hoveredEventId === evt.id ? `${Math.max(heightPixel, 98)}px` : `${heightPixel}px`,
+                      zIndex: hoveredEventId === evt.id ? 50 : 5,
                       borderLeftColor: colors.borderLeftColor,
                       backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
-                      color: colors.color
+                      color: colors.color,
+                      overflow: hoveredEventId === evt.id ? "visible" : "hidden"
                     }}
                   >
                     <div className="flex flex-col h-full justify-between">
                       <div>
                         <div className="flex items-start justify-between gap-1">
-                          <h4 className={`text-[11px] font-bold leading-tight ${evt.completed ? "line-through text-slate-400 opacity-60" : ""}`}>
-                            {evt.title}
+                          <h4 className={`text-[11px] font-bold leading-tight flex items-center gap-1.5 ${evt.completed ? "line-through text-slate-400 opacity-60" : ""}`}>
+                            {getEventIcon(evt)}
+                            <span className="truncate">{evt.title}</span>
                           </h4>
                         </div>
                         <p className="text-[9px] opacity-80 flex items-center gap-0.5 font-mono mt-0.5 select-none">
@@ -1337,8 +1372,11 @@ export default function CalendarView({
                                 color: colors.color
                               }}
                             >
-                              <div className="flex justify-between items-start mb-1.5">
-                                <h4 className={`text-xs font-bold ${evt.completed ? "line-through opacity-50" : ""}`}>{evt.title}</h4>
+                              <div className="flex justify-between items-start mb-1.5 gap-2">
+                                <h4 className={`text-xs font-bold flex items-center gap-1.5 ${evt.completed ? "line-through opacity-50" : ""}`}>
+                                  {getEventIcon(evt)}
+                                  <span>{evt.title}</span>
+                                </h4>
                                 <span className="text-[9px] font-mono opacity-80">
                                   {new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                 </span>
@@ -1447,7 +1485,10 @@ export default function CalendarView({
                             style={{ backgroundColor: getEventColorStyles(evt).dotColor }}
                           />
                           <div>
-                            <h4 className={`text-xs font-bold text-white ${evt.completed ? "line-through opacity-75" : ""}`}>{evt.title}</h4>
+                            <h4 className={`text-xs font-bold text-white flex items-center gap-1.5 ${evt.completed ? "line-through opacity-75" : ""}`}>
+                              {getEventIcon(evt)}
+                              <span>{evt.title}</span>
+                            </h4>
                             <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
                               <span className="font-semibold text-slate-300">{s.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
                               <span>•</span>
