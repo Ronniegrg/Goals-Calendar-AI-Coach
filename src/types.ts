@@ -14,6 +14,12 @@ export enum TimePreference {
   EVENING = "evening" // 17:00 - 21:00
 }
 
+export interface SubTask {
+  id: string;
+  title: string;
+  completed: boolean;
+}
+
 export interface Goal {
   id: string;
   name: string;
@@ -25,6 +31,7 @@ export interface Goal {
   completedCount: number;
   color: string;
   createdAt: string;
+  subtasks?: SubTask[];
 }
 
 export interface CalendarEvent {
@@ -69,4 +76,5 @@ export interface SyncData {
   coachMessages: CoachMessage[];
   userEmail: string;
   lastSyncedAt?: string;
+  coachPersona?: "mentor" | "drill" | "data";
 }

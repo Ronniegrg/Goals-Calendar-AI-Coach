@@ -14,9 +14,10 @@ import {
   Briefcase,
   Laptop,
   RotateCw,
-  Smile
+  Smile,
+  X
 } from "lucide-react";
-import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent } from "../types";
+import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask } from "../types";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -783,6 +784,82 @@ export default function GoalTracker({
                         <Clock className="w-3.5 h-3.5 text-slate-400" />
                         {g.durationMinutes} mins each ({g.timePreference} preference)
                       </p>
+                    </div>
+
+                    {/* Subtasks Section */}
+                    <div className="pt-3 border-t border-white/5 mt-3 space-y-1.5" id={`goal_subtasks_sec_${g.id}`}>
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Subtasks / Milestones</span>
+                      
+                      {g.subtasks && g.subtasks.length > 0 ? (
+                        <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                          {g.subtasks.map((sub) => (
+                            <div key={sub.id} className="flex items-center justify-between gap-1 group bg-black/15 px-2 py-1 rounded border border-white/5">
+                              <label className="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer flex-1 min-w-0 select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={sub.completed}
+                                  onChange={() => {
+                                    const updatedSubtasks = g.subtasks?.map(s => 
+                                      s.id === sub.id ? { ...s, completed: !s.completed } : s
+                                    ) || [];
+                                    onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                  }}
+                                  className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer"
+                                />
+                                <span className={`truncate ${sub.completed ? "line-through text-slate-500 font-medium" : "font-semibold"}`}>
+                                  {sub.title}
+                                </span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const updatedSubtasks = g.subtasks?.filter(s => s.id !== sub.id) || [];
+                                  onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                }}
+                                className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer"
+                                title="Delete Subtask"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[9px] text-slate-500 italic">No milestones defined yet.</p>
+                      )}
+
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const form = e.currentTarget;
+                          const input = form.elements.namedItem("subtaskTitle") as HTMLInputElement;
+                          const title = input.value.trim();
+                          if (!title) return;
+                          
+                          const newSub: SubTask = {
+                            id: `sub_${Date.now()}`,
+                            title,
+                            completed: false
+                          };
+                          const updatedSubtasks = [...(g.subtasks || []), newSub];
+                          onEditGoal(g.id, { subtasks: updatedSubtasks });
+                          input.value = "";
+                        }}
+                        className="flex items-center gap-1"
+                      >
+                        <input
+                          type="text"
+                          name="subtaskTitle"
+                          placeholder="Add milestone..."
+                          className="flex-1 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
+                        />
+                        <button
+                          type="submit"
+                          className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white p-1 rounded transition text-[10px] font-bold shrink-0 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </form>
                     </div>
                   </div>
 

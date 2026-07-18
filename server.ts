@@ -215,19 +215,42 @@ app.post("/api/sync", (req, res) => {
 
 // 3. AI COACH ENDPOINT
 app.post("/api/coach/optimize", async (req, res) => {
-  const { prompt, goals, events, availability } = req.body;
+  const { prompt, goals, events, availability, coachPersona = "mentor" } = req.body;
   const keyAvailable = !!process.env.GEMINI_API_KEY;
 
   if (!keyAvailable) {
-    // Elegant fallback simulation if API Key is not set
-    const mockResponses = [
-      "Based on your current availability, I recommend scheduling your **React & TypeScript Masterclass** immediately after lunch (between 13:00 and 15:00) on Mondays and Wednesdays. This aligns with your highest peak of focus!",
-      "I noticed your **Morning Cardio & Stretch** is currently set for 3 times/week, but you have only completed 2. Scheduling workouts early on Monday, Wednesday, and Friday sets a highly consistent tone for the remainder of your week.",
-      "Consider scheduling study blocks in 90-minute blocks with short 5-minute hydration reminders. This minimizes mental fatigue and keeps you highly productive!",
-      "To improve your routine, avoid stacking your study and fitness sessions back-to-back. Give yourself an hour of transition time to rest and clear your mind."
-    ];
+    // Elegant fallback simulation customized by persona if API Key is not set
+    let mockResponses: string[] = [];
+    let badge = "";
+
+    if (coachPersona === "drill") {
+      badge = "🏋️‍♂️ [DIFFICULTY: HIGH] SERGEANT HARDCORE DISCIPLINE CHATBOT";
+      mockResponses = [
+        "ATTENTION RECRUIT! Your calendar is looking soft! I checked your **Morning Cardio** completions and you are lagging behind! SCHEDULE THOSE BLOCKS AT 08:00 SHARP! No snooze button, no crying! DISCIPLINE IS THE FUEL OF PROGRESS! GET UP AND DOMINATE!",
+        "LISTENING TO EXCUSES IS NOT IN MY CODE! You've got Study targets to hit but you're letting prime focus windows waste away. Block out 90 minutes of absolute silent execution today. LOCK YOUR PHONE, UNPLUG THE TV, AND GET TO WORK!",
+        "SQUAT DOWN AND DIG DEEP! Maintaining consistency isn't about feeling motivated, it's about following the schedule layout like an absolute machine. Lock in your routines now. DISCIPLINE REAPS REWARDS!",
+        "IF YOU WEAR OUT, YOU WIN! IF YOU GIVE UP, YOU LOSE! Get those study and side project hours allocated. I want to see conflict-free blocks of pure performance scheduled immediately!"
+      ];
+    } else if (coachPersona === "data") {
+      badge = "📊 [ANALYST MODE] DATA-DRIVEN STOCHASTIC ROUTINE SYSTEMS";
+      mockResponses = [
+        "**[Metrics Report] Consistency Index: 0.64 (Moderate)**\n\n- **Quantitative Observation**: Shift of **React Learning** blocks by +90 minutes correlates with a 24.3% increase in session completion probabilities.\n- **Optimized Window**: Tuesday & Thursday afternoons display the lowest probability of scheduling conflicts.",
+        "**[Routine Performance Analysis]**\n\n- **Bottleneck Identified**: Stacked side-project and workout sessions show a high correlation with fatigue-induced skips (coefficient: 0.72).\n- **Prescription**: Interject a 45-minute active recovery or hydration buffer to reset your metabolic and mental focus levels.",
+        "**[Time-Block Correlation Model]**\n\n- Active study sessions placed between 09:00 and 11:30 achieve maximum cognitive retention. Avoid late night allocations where cognitive capacity drops by up to 40% based on user telemetry benchmarks.",
+        "**[Optimized Distribution Strategy]**\n\n- Distribute your 4x weekly workouts in a 1-day-on, 1-day-off pattern rather than loading weekends. This optimizes muscular recovery timelines and keeps cardiovascular fatigue minimal."
+      ];
+    } else {
+      badge = "🌸 [MENTOR COACH] EMPOWERMENT & MINDFUL COGNITION";
+      mockResponses = [
+        "Hello! You're doing a truly wonderful job taking steps toward your goals. 🌱\n\n- Let's look at your **Morning Cardio** - if mornings are feeling a bit rushed, how about we set them for a comfortable 30-minute block? Be gentle with yourself; slow, steady progress is what builds lifelong habits. You've got this!",
+        "I'm super proud of you for keeping your study goals in focus! 📚 To make things easier, try breaking your sessions into a 45-minute deep-focus period, followed by a warm cup of tea and some deep breathing. Your mental wellness is just as important as your progress.",
+        "It's completely okay if some days don't go exactly as planned. Life happens! The important thing is we simply look forward to tomorrow. Try placing your **Side Project** block on a relaxing Thursday evening, and enjoy the process of creating.",
+        "Finding your personal rhythm takes a little time, and you are doing beautifully. Let's make sure we schedule a gentle self-care routine window during the weekend to recharge your creative batteries."
+      ];
+    }
+
     const item = mockResponses[Math.floor(Math.random() * mockResponses.length)];
-    const simulatedCoachMessage = `[AI Coach Optimization Suggestion]\n\n${item}\n\n*(Note: Running in optimized local guidance mode. In full cloud environment, we harness real-time intelligence constraints.)*`;
+    const simulatedCoachMessage = `**${badge}**\n\n${item}\n\n*(Note: Running in optimized local guidance mode. When a live GEMINI_API_KEY is configured, this AI assistant activates the real-time Gemini model using this custom persona!)*`;
     
     // Brief delay to simulate actual dynamic call processing
     await new Promise((resolve) => setTimeout(resolve, 800));
@@ -236,8 +259,19 @@ app.post("/api/coach/optimize", async (req, res) => {
 
   try {
     const ai = getAi();
-    const systemPrompt = `You are a world-class Productivity & Fitness Routine Optimizer Coach. You analyze calendar events, user availability, and workout/study goals to suggest smart scheduling optimizations, time management, motivational challenges, and productivity tips.
-Use clear, actionable bullet points, keep your responses positive, conversational, energetic, and professional. Keep markdown styling very clean and readable. Include references to their specific goals structure if appropriate.
+    
+    let personaInstruction = "";
+    if (coachPersona === "drill") {
+      personaInstruction = `Adopt the persona of a tough-love, high-energy, loud, direct military Drill Sergeant coach. Use phrases like "LISTEN UP RECRUIT!", "NO EXCUSES!", "STAY DISCIPLINED!", and emphasize your points with passionate capitalizations. Hold them strictly accountable with aggressive motivational challenges!`;
+    } else if (coachPersona === "data") {
+      personaInstruction = `Adopt the persona of an extremely analytical, quantitative data-science Productivity Systems Optimizer. Use terms like "consistency index", "probability distribution of success", "stochastic alignment", "performance metrics", and output trends and statistical models. Use tables and bullet lists to present data-driven scheduling prescriptions.`;
+    } else {
+      personaInstruction = `Adopt the persona of an encouraging, warm, gentle, and highly empathetic life coach and mentor. Validate their challenges, build confidence, use kind words and positive mindfulness suggestions, and guide them gently. Use warm emojis.`;
+    }
+
+    const systemPrompt = `You are a world-class Productivity & Routine Optimizer Coach. ${personaInstruction}
+You analyze calendar events, user availability, and workout/study goals to suggest smart scheduling optimizations, time management, motivational challenges, and productivity tips.
+Use clear, actionable bullet points, keep markdown styling very clean and readable. Include references to their specific goals structure if appropriate.
 
 Available Goals:
 ${JSON.stringify(goals, null, 2)}

@@ -18,6 +18,8 @@ interface AICoachProps {
   coachMessages: CoachMessage[];
   onAddMessage: (msg: CoachMessage) => void;
   onClearMessages: () => void;
+  coachPersona?: "mentor" | "drill" | "data";
+  onUpdatePersona?: (persona: "mentor" | "drill" | "data") => void;
 }
 
 export default function AICoach({
@@ -26,7 +28,9 @@ export default function AICoach({
   availability,
   coachMessages,
   onAddMessage,
-  onClearMessages
+  onClearMessages,
+  coachPersona = "mentor",
+  onUpdatePersona
 }: AICoachProps) {
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -65,7 +69,8 @@ export default function AICoach({
           prompt,
           goals,
           events,
-          availability
+          availability,
+          coachPersona
         })
       });
 
@@ -164,6 +169,45 @@ export default function AICoach({
                 <span className="text-[9px] text-slate-400">Pomodoro & memory techniques</span>
               </div>
             </button>
+          </div>
+
+          <div className="space-y-2 border-t border-white/5 pt-4">
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">Coach Persona</h4>
+            <div className="grid grid-cols-3 gap-1 bg-black/25 p-1 rounded-xl border border-white/5">
+              <button
+                type="button"
+                onClick={() => onUpdatePersona?.("mentor")}
+                className={`text-[10px] py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  coachPersona === "mentor"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/10"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Mentor
+              </button>
+              <button
+                type="button"
+                onClick={() => onUpdatePersona?.("drill")}
+                className={`text-[10px] py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  coachPersona === "drill"
+                    ? "bg-rose-600 text-white shadow-md shadow-rose-600/10"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Sergeant
+              </button>
+              <button
+                type="button"
+                onClick={() => onUpdatePersona?.("data")}
+                className={`text-[10px] py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  coachPersona === "data"
+                    ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/10"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Analyst
+              </button>
+            </div>
           </div>
         </div>
 

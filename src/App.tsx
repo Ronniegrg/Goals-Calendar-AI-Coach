@@ -75,6 +75,9 @@ export default function App() {
     const val = localStorage.getItem("auto_schedule_enabled");
     return val !== "false";
   });
+  const [coachPersona, setCoachPersona] = useState<"mentor" | "drill" | "data">(() => {
+    return (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor";
+  });
 
   // 1. Initial Data load from cloud sync server with localStorage self-healing fallback
   useEffect(() => {
@@ -95,6 +98,11 @@ export default function App() {
           // Detect if the cloud is blank/default but local storage contains customized user records
           const cloudIsDefaultOrReset = !data.goals || data.goals.length === 0 || 
             (data.goals.length === 3 && data.goals.some(g => g.id === "g1" && g.name === "Morning Cardio & Stretch"));
+
+          if (data.coachPersona) {
+            setCoachPersona(data.coachPersona);
+            localStorage.setItem("coach_persona", data.coachPersona);
+          }
 
           if (hasLocalData && (localLastUpdated > cloudLastSynced || cloudIsDefaultOrReset)) {
             console.log("Local cache is newer/more complete than cloud. Restoring user custom goals to server...");
@@ -120,7 +128,8 @@ export default function App() {
               localEvents,
               localAvailability.length > 0 ? localAvailability : data.availability || [],
               localNotifications,
-              localCoachMessages
+              localCoachMessages,
+              (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor"
             );
           } else {
             // Cloud is newer, load cloud data and update local cache
@@ -129,6 +138,10 @@ export default function App() {
             setAvailability(data.availability || []);
             setNotifications(data.notifications || []);
             setCoachMessages(data.coachMessages || []);
+            if (data.coachPersona) {
+              setCoachPersona(data.coachPersona);
+              localStorage.setItem("coach_persona", data.coachPersona);
+            }
 
             localStorage.setItem("cached_goals", JSON.stringify(data.goals || []));
             localStorage.setItem("cached_events", JSON.stringify(data.events || []));
@@ -156,7 +169,8 @@ export default function App() {
     prevEvents: CalendarEvent[],
     prevAvailability: AvailabilityWindow[],
     prevNotifications: AppNotification[],
-    prevCoachMessages: CoachMessage[]
+    prevCoachMessages: CoachMessage[],
+    forcedPersona?: "mentor" | "drill" | "data"
   ) => {
     // Save to local cache first
     const nowStr = Date.now().toString();
@@ -167,6 +181,8 @@ export default function App() {
     localStorage.setItem("cached_coachMessages", JSON.stringify(prevCoachMessages));
     localStorage.setItem("local_last_updated", nowStr);
 
+    const activePersona = forcedPersona || coachPersona;
+
     setSyncStatus("syncing");
     try {
       const payload: SyncData = {
@@ -175,7 +191,8 @@ export default function App() {
         availability: prevAvailability,
         notifications: prevNotifications,
         coachMessages: prevCoachMessages,
-        userEmail
+        userEmail,
+        coachPersona: activePersona
       };
 
       const res = await fetch("/api/sync", {
@@ -992,6 +1009,12 @@ export default function App() {
             coachMessages={coachMessages}
             onAddMessage={handleAddCoachMessage}
             onClearMessages={handleClearCoachHistory}
+            coachPersona={coachPersona}
+            onUpdatePersona={(p) => {
+              setCoachPersona(p);
+              localStorage.setItem("coach_persona", p);
+              syncToCloud(goals, events, availability, notifications, coachMessages, p);
+            }}
           />
         )}
 

@@ -20,7 +20,10 @@ import {
   BookOpen, 
   Compass, 
   CheckCircle, 
-  Clock 
+  Clock,
+  Award,
+  Sparkles,
+  Zap
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 
@@ -213,6 +216,121 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
           </div>
         </div>
 
+      </div>
+
+      {/* SECTION B: WEEKLY ACHIEVEMENTS & MILESTONES BENTO */}
+      <div id="weekly_achievements_bento" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
+        <div>
+          <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-1.5 select-none">
+            <Award className="w-4 h-4 text-amber-400" />
+            Personal Achievements & Unlocked Milestones
+          </h3>
+          <p className="text-[11px] text-slate-350 mt-0.5 font-medium leading-none">Your physical and cognitive milestone footprint computed from active schedules and goals.</p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+          {/* Badge 1: Consistency */}
+          <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Consistency Lock</span>
+              {consistencyScore >= 75 ? (
+                <span className="bg-emerald-500/10 text-emerald-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
+              ) : (
+                <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
+              )}
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
+                {consistencyScore >= 75 ? "Routine Mastery Star" : "Consistency Seeker"}
+              </h4>
+              <p className="text-[10px] text-slate-300 font-medium">
+                {consistencyScore >= 75 
+                  ? "Outstanding! You are completing more than 75% of your scheduled sessions."
+                  : `Reach 75% completion to unlock routine star. Current rate: ${consistencyScore}%.`}
+              </p>
+            </div>
+          </div>
+
+          {/* Badge 2: Volume */}
+          <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Weekly Volume</span>
+              {totalCompletedMinutes >= 300 ? (
+                <span className="bg-rose-500/10 text-rose-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
+              ) : (
+                <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
+              )}
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Flame className="w-3.5 h-3.5 text-rose-400" />
+                {totalCompletedMinutes >= 300 ? "Volume Heavyweight" : "Momentum Builder"}
+              </h4>
+              <p className="text-[10px] text-slate-300 font-medium">
+                {totalCompletedMinutes >= 300
+                  ? "Incredible energy! You have logged more than 5 hours of total active focus."
+                  : `Log 5 hours of completed sessions to unlock. Currently: ${(Math.round((totalCompletedMinutes / 60) * 10) / 10)}h / 5h.`}
+              </p>
+            </div>
+          </div>
+
+          {/* Badge 3: Balance */}
+          <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Life Balance</span>
+              {totalCognitiveMinutes > 0 && totalActiveMinutes > 0 ? (
+                <span className="bg-cyan-500/10 text-cyan-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
+              ) : (
+                <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
+              )}
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Compass className="w-3.5 h-3.5 text-cyan-400" />
+                {totalCognitiveMinutes > 0 && totalActiveMinutes > 0 ? "Perfect Harmony" : "Single Focus Focus"}
+              </h4>
+              <p className="text-[10px] text-slate-300 font-medium">
+                {totalCognitiveMinutes > 0 && totalActiveMinutes > 0
+                  ? "Perfect synthesis! You successfully balanced mental growth goals and physical workouts."
+                  : "Complete at least 1 cognitive study and 1 physical workout block to unlock life balance."}
+              </p>
+            </div>
+          </div>
+
+          {/* Badge 4: Subtask completion ratio */}
+          {(() => {
+            const allSub = goals.flatMap(g => g.subtasks || []);
+            const compSub = allSub.filter(s => s.completed);
+            const isFinished = allSub.length > 0 && compSub.length === allSub.length;
+            const displayRatio = `${compSub.length}/${allSub.length}`;
+            return (
+              <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Milestones Metric</span>
+                  {isFinished ? (
+                    <span className="bg-pink-500/10 text-pink-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
+                  ) : (
+                    <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-pink-400" />
+                    {isFinished ? "Milestone Master" : "Project Planner"}
+                  </h4>
+                  <p className="text-[10px] text-slate-300 font-medium">
+                    {allSub.length === 0 
+                      ? "Create milestones in your Goals panel to track detailed sub-task achievements."
+                      : isFinished
+                      ? `Sensational! All ${allSub.length} sub-task milestones are completed successfully!`
+                      : `Complete all current goal milestones to unlock. Currently: ${displayRatio} completed.`}
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
       </div>
 
       {/* NEW BENTO SECTION: 28-DAY ROUTINE STREAK MATRIX */}
