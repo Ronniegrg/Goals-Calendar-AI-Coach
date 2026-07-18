@@ -232,6 +232,37 @@ export default function AICoach({
           )}
         </div>
 
+        {/* Quick interactive coaching preset chips */}
+        <div className="px-4 py-2.5 flex items-center gap-1.5 overflow-x-auto border-t border-white/10" id="coach_preset_prompt_chips" style={{ scrollbarWidth: "none" }}>
+          <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-widest shrink-0 select-none">Quick:</span>
+          {[
+            { label: "📊 Analyze Streaks", prompt: "How has my completion streak and consistency score changed this week? Please analyze my metrics and give me a motivational status report." },
+            { label: "🏋️ Workout Advice", prompt: "How should I structure my active workout blocks? Can you design a simple but efficient high-intensity routine to maximize fat burn and muscle retention?" },
+            { label: "📚 Study Strategy", prompt: "Can you provide a cognitive learning strategy to get the most out of my scheduled study hours? Explain active recall and spaced repetition." },
+            { label: "⏱️ Overlap Solver", prompt: "What should I do if my study blocks overlap with family or work events? How do I best reschedule them while preserving my active habit streak?" }
+          ].map((chip, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => {
+                if (loading) return;
+                const userMsg: CoachMessage = {
+                  id: `u_${Date.now()}_chip_${idx}`,
+                  sender: "user",
+                  text: `💡 [Trigger Quick Action: ${chip.label}]`,
+                  timestamp: new Date().toISOString()
+                };
+                onAddMessage(userMsg);
+                handleSendQuestion(chip.prompt);
+              }}
+              disabled={loading}
+              className="text-[10px] bg-white/5 hover:bg-indigo-500/15 text-indigo-300 hover:text-white border border-white/10 hover:border-indigo-400/35 px-2.5 py-1 rounded-xl transition font-bold whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer"
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+
         {/* Input panel footer */}
         <div className="p-4 border-t border-white/10 bg-white/5">
           <form 

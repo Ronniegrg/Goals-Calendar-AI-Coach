@@ -1,6 +1,10 @@
 export enum GoalType {
   WORKOUT = "workout",
-  STUDY = "study"
+  STUDY = "study",
+  JOB_SEARCH = "job_search",
+  SIDE_PROJECT = "side_project",
+  ROUTINE = "routine",
+  PERSONAL = "personal"
 }
 
 export enum TimePreference {
@@ -26,7 +30,7 @@ export interface Goal {
 export interface CalendarEvent {
   id: string;
   title: string;
-  type: "workout" | "study" | "external" | "personal";
+  type: "workout" | "study" | "job_search" | "side_project" | "routine" | "personal" | "external";
   start: string; // ISO string
   end: string; // ISO string
   goalId?: string; // if tied to a goal

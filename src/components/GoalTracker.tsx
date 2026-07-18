@@ -10,7 +10,11 @@ import {
   Calendar,
   Layers,
   Settings,
-  Pencil
+  Pencil,
+  Briefcase,
+  Laptop,
+  RotateCw,
+  Smile
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent } from "../types";
 
@@ -37,34 +41,54 @@ const PRESET_TEMPLATES = [
     description: "Deep-dive intensive learning sessions."
   },
   {
-    name: "Full Body Strength",
-    type: GoalType.WORKOUT,
-    category: "Strength",
-    weeklyTarget: 3,
+    name: "Job Applications & Networking",
+    type: GoalType.JOB_SEARCH,
+    category: "Job Applications",
+    weeklyTarget: 5,
     durationMinutes: 60,
-    timePreference: TimePreference.EVENING,
-    color: "#8b5cf6",
-    description: "Hypertrophy training for full-body strength."
+    timePreference: TimePreference.MORNING,
+    color: "#3b82f6",
+    description: "Submit applications, tailor resumes, and connect with recruiters."
   },
   {
-    name: "LeetCode & Algorithms",
-    type: GoalType.STUDY,
-    category: "Algorithms",
-    weeklyTarget: 5,
+    name: "Interview Prep & Mocking",
+    type: GoalType.JOB_SEARCH,
+    category: "Career Prep",
+    weeklyTarget: 3,
+    durationMinutes: 90,
+    timePreference: TimePreference.AFTERNOON,
+    color: "#8b5cf6",
+    description: "Practice technical challenges and mock behavioral sessions."
+  },
+  {
+    name: "SaaS Side Project Dev",
+    type: GoalType.SIDE_PROJECT,
+    category: "Side Project",
+    weeklyTarget: 4,
+    durationMinutes: 120,
+    timePreference: TimePreference.EVENING,
+    color: "#ec4899",
+    description: "Design modules, write clean code, and ship features."
+  },
+  {
+    name: "Weekly Household Care",
+    type: GoalType.ROUTINE,
+    category: "Routine Care",
+    weeklyTarget: 2,
     durationMinutes: 45,
+    timePreference: TimePreference.AFTERNOON,
+    color: "#10b981",
+    description: "Deep clean spaces, digital decluttering, and organizing."
+  },
+  {
+    name: "Read Non-Fiction Books",
+    type: GoalType.PERSONAL,
+    category: "Intellectual",
+    weeklyTarget: 7,
+    durationMinutes: 30,
     timePreference: TimePreference.EVENING,
     color: "#f59e0b",
-    description: "Challenging computer science micro-sessions."
-  },
-  {
-    name: "Zen Mindfulness Breathing",
-    type: GoalType.WORKOUT,
-    category: "Mindfulness",
-    weeklyTarget: 7,
-    durationMinutes: 15,
-    timePreference: TimePreference.ANY,
-    color: "#10b981",
-    description: "Centering sequence to foster daily mental clarity."
+    description: "Immersive reading to broaden professional and life acumen."
   }
 ];
 
@@ -78,6 +102,8 @@ interface GoalTrackerProps {
   onUpdateAvailability: (avail: AvailabilityWindow[]) => void;
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
+  autoScheduleEnabled?: boolean;
+  onToggleAutoSchedule?: (val: boolean) => void;
 }
 
 export default function GoalTracker({
@@ -89,7 +115,9 @@ export default function GoalTracker({
   onEditGoal,
   onUpdateAvailability,
   onBulkAddEvents,
-  onAddNotification
+  onAddNotification,
+  autoScheduleEnabled = true,
+  onToggleAutoSchedule
 }: GoalTrackerProps) {
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
@@ -144,7 +172,14 @@ export default function GoalTracker({
       onEditGoal(editingGoalId, {
         name,
         type,
-        category: category.trim() || (type === GoalType.WORKOUT ? "Fitness" : "Learning"),
+        category: category.trim() || (
+          type === GoalType.WORKOUT ? "Fitness" : 
+          type === GoalType.STUDY ? "Learning" : 
+          type === GoalType.JOB_SEARCH ? "Career Applications" : 
+          type === GoalType.SIDE_PROJECT ? "Side Project" : 
+          type === GoalType.ROUTINE ? "Routine Habits" : 
+          "Self Care"
+        ),
         weeklyTarget,
         durationMinutes,
         timePreference,
@@ -160,7 +195,14 @@ export default function GoalTracker({
       onAddGoal({
         name,
         type,
-        category: category.trim() || (type === GoalType.WORKOUT ? "Fitness" : "Learning"),
+        category: category.trim() || (
+          type === GoalType.WORKOUT ? "Fitness" : 
+          type === GoalType.STUDY ? "Learning" : 
+          type === GoalType.JOB_SEARCH ? "Career Applications" : 
+          type === GoalType.SIDE_PROJECT ? "Side Project" : 
+          type === GoalType.ROUTINE ? "Routine Habits" : 
+          "Self Care"
+        ),
         weeklyTarget,
         durationMinutes,
         timePreference,
@@ -331,6 +373,16 @@ export default function GoalTracker({
         for (let hrs = availStartHour; hrs <= availEndHour - blockDurationHours; hrs += 1.5) { // search every 1.5 hour interval
           if (successBooked >= neededCount) break;
 
+          // Prevent scheduling multiple times per day during slot searching
+          const dayCount = [...events, ...newScheduledEvents].filter(evt => {
+            if (evt.goalId !== goal.id) return false;
+            return new Date(evt.start).toDateString() === targetDayString;
+          }).length;
+
+          if (dayCount >= maxSessionsPerDay) {
+            break; // Reached daily limit, proceed to the next day
+          }
+          
           const slotStart = new Date(targetDay);
           slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
 
@@ -350,7 +402,12 @@ export default function GoalTracker({
             newScheduledEvents.push({
               id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
               title: `${goal.name} (Auto-Scheduled)`,
-              type: goal.type === GoalType.WORKOUT ? "workout" : "study",
+              type: goal.type === GoalType.WORKOUT ? "workout" :
+                    goal.type === GoalType.STUDY ? "study" :
+                    goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                    goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                    goal.type === GoalType.ROUTINE ? "routine" :
+                    "personal",
               start: slotStart.toISOString(),
               end: slotEnd.toISOString(),
               goalId: goal.id,
@@ -385,29 +442,50 @@ export default function GoalTracker({
       
       {/* SECTION 1: AUTO SCHEDULER TRIGGER */}
       <div id="planner_solver_widget" className="bg-gradient-to-r from-indigo-600/30 to-indigo-800/35 border border-white/10 p-6 rounded-2xl text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 backdrop-blur-md">
-        <div className="space-y-1 text-center md:text-left">
-          <h3 className="font-sans font-bold text-lg tracking-tight flex items-center justify-center md:justify-start gap-2">
-            <Sparkles className="w-5 h-5 text-yellow-300 animate-pulse" />
-            AI Smart Goal Scheduler
-          </h3>
+        <div className="space-y-1 text-center md:text-left flex-1">
+          <div className="flex items-center justify-center md:justify-start gap-2 flex-wrap">
+            <h3 className="font-sans font-bold text-lg tracking-tight flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-yellow-300 animate-pulse" />
+              AI Smart Goal Scheduler
+            </h3>
+            {autoScheduleEnabled && (
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider animate-pulse">
+                ● Background Auto-Run Active
+              </span>
+            )}
+          </div>
           <p className="text-indigo-100 text-xs">
             Scan your week's goals and map them dynamically against free slots within your availability. 100% collision-free.
+            {autoScheduleEnabled && <span className="block mt-1 text-[11px] text-emerald-300 font-medium">⚡ Running silently in the background: New goals/presets will be scheduled instantly without interference!</span>}
           </p>
         </div>
-        <button
-          id="trigger_auto_schedule_solver"
-          onClick={handleAutoSchedule}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white border border-white/20 px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg shadow-indigo-600/25 transition-all shrink-0 uppercase tracking-wider cursor-pointer"
-        >
-          Run Smart Auto-Scheduler
-        </button>
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto shrink-0 justify-end">
+          {onToggleAutoSchedule && (
+            <label className="flex items-center gap-2 bg-[#0d0f19]/80 border border-white/10 hover:border-white/20 px-4 py-2.5 rounded-xl cursor-pointer select-none transition text-xs font-bold text-indigo-200">
+              <input
+                type="checkbox"
+                checked={autoScheduleEnabled}
+                onChange={(e) => onToggleAutoSchedule(e.target.checked)}
+                className="rounded border-white/20 bg-slate-900 text-indigo-500 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+              />
+              <span>Autonomous Scheduling</span>
+            </label>
+          )}
+          <button
+            id="trigger_auto_schedule_solver"
+            onClick={handleAutoSchedule}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white border border-white/20 px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg shadow-indigo-600/25 transition-all shrink-0 uppercase tracking-wider cursor-pointer w-full sm:w-auto text-center"
+          >
+            Optimize Now
+          </button>
+        </div>
       </div>
 
       {/* SECTION 2: GOALS CATALOG */}
       <div id="goals_catalog_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl">
         <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
           <div>
-            <h3 className="font-sans font-semibold text-white text-base">Workout & Study Goals</h3>
+            <h3 className="font-sans font-semibold text-white text-base">Active Routine & Focus Goals</h3>
             <p className="text-xs text-slate-300 font-medium">Define target frequencies, duration windows, and options.</p>
           </div>
           <button
@@ -424,10 +502,27 @@ export default function GoalTracker({
           <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-2.5 flex items-center gap-1">
             <Sparkles className="w-3.5 h-3.5 text-yellow-400 animate-pulse" /> Click to Quick-Add Goal Presets
           </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3" id="goal_presets_slider_grid">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3" id="goal_presets_slider_grid">
             {PRESET_TEMPLATES.map((tmpl, idx) => {
-              const DotBg = tmpl.type === GoalType.WORKOUT ? "bg-rose-500 animate-pulse" : "bg-cyan-500 animate-pulse";
-              const BorderCol = tmpl.type === GoalType.WORKOUT ? "border-rose-500/20 hover:border-rose-500/40" : "border-cyan-500/20 hover:border-cyan-500/40";
+              const getBadgeStyles = (type: GoalType) => {
+                switch (type) {
+                  case GoalType.WORKOUT:
+                    return { dot: "bg-rose-500", border: "border-rose-500/20 hover:border-rose-500/40" };
+                  case GoalType.STUDY:
+                    return { dot: "bg-cyan-500", border: "border-cyan-500/20 hover:border-cyan-500/40" };
+                  case GoalType.JOB_SEARCH:
+                    return { dot: "bg-blue-500", border: "border-blue-500/20 hover:border-blue-500/40" };
+                  case GoalType.SIDE_PROJECT:
+                    return { dot: "bg-pink-500", border: "border-pink-500/20 hover:border-pink-500/40" };
+                  case GoalType.ROUTINE:
+                    return { dot: "bg-emerald-500", border: "border-emerald-500/20 hover:border-emerald-500/40" };
+                  case GoalType.PERSONAL:
+                    return { dot: "bg-amber-500", border: "border-amber-500/20 hover:border-amber-500/40" };
+                  default:
+                    return { dot: "bg-purple-500", border: "border-purple-500/20 hover:border-purple-500/40" };
+                }
+              };
+              const { dot: DotBg, border: BorderCol } = getBadgeStyles(tmpl.type);
               return (
                 <button
                   type="button"
@@ -481,10 +576,14 @@ export default function GoalTracker({
                     id="goal_type_select"
                     value={type}
                     onChange={(e) => setType(e.target.value as GoalType)}
-                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white"
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white font-semibold"
                   >
                     <option value={GoalType.WORKOUT} className="bg-[#0f111a]">Workout Focus</option>
                     <option value={GoalType.STUDY} className="bg-[#0f111a]">Study Focus</option>
+                    <option value={GoalType.JOB_SEARCH} className="bg-[#0f111a]">Job Search Focus</option>
+                    <option value={GoalType.SIDE_PROJECT} className="bg-[#0f111a]">Side Project Focus</option>
+                    <option value={GoalType.ROUTINE} className="bg-[#0f111a]">Routine / Chores Focus</option>
+                    <option value={GoalType.PERSONAL} className="bg-[#0f111a]">Personal Focus</option>
                   </select>
                 </div>
                 <div>
@@ -672,7 +771,12 @@ export default function GoalTracker({
                     {/* Goal Description Parameters list details */}
                     <div className="text-[10px] text-slate-300 space-y-0.5 font-medium select-none pt-1">
                       <p className="flex items-center gap-1">
-                        {g.type === GoalType.WORKOUT ? <Activity className="w-3.5 h-3.5 text-rose-400" /> : <BookOpen className="w-3.5 h-3.5 text-cyan-400" />}
+                        {g.type === GoalType.WORKOUT ? <Activity className="w-3.5 h-3.5 text-rose-400" /> :
+                         g.type === GoalType.STUDY ? <BookOpen className="w-3.5 h-3.5 text-cyan-400" /> :
+                         g.type === GoalType.JOB_SEARCH ? <Briefcase className="w-3.5 h-3.5 text-blue-400" /> :
+                         g.type === GoalType.SIDE_PROJECT ? <Laptop className="w-3.5 h-3.5 text-pink-400" /> :
+                         g.type === GoalType.ROUTINE ? <RotateCw className="w-3.5 h-3.5 text-emerald-400" /> :
+                         <Smile className="w-3.5 h-3.5 text-amber-400" />}
                         {g.weeklyTarget} sessions per week
                       </p>
                       <p className="flex items-center gap-1">

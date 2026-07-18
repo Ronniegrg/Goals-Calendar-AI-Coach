@@ -36,6 +36,10 @@ export default function App() {
   const [availability, setAvailability] = useState<AvailabilityWindow[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([]);
+  const [autoScheduleEnabled, setAutoScheduleEnabled] = useState<boolean>(() => {
+    const val = localStorage.getItem("auto_schedule_enabled");
+    return val !== "false";
+  });
 
   // 1. Initial Data load from cloud sync server
   useEffect(() => {
@@ -130,6 +134,137 @@ export default function App() {
     const timer = setTimeout(runStartupOverdueScanner, 1200);
     return () => clearTimeout(timer);
   }, [goals]);
+
+  // 3b. Automated Background Scheduling Trigger Engine
+  const triggerAutoScheduler = (
+    currentGoals: Goal[],
+    currentEvents: CalendarEvent[],
+    currentAvailability: AvailabilityWindow[]
+  ) => {
+    if (currentGoals.length === 0 || currentAvailability.length === 0) return;
+
+    const newScheduledEvents: CalendarEvent[] = [];
+    let scheduledCount = 0;
+    const today = new Date();
+
+    currentGoals.forEach(goal => {
+      const currentScheduled = currentEvents.filter(e => e.goalId === goal.id).length;
+      const neededCount = Math.max(goal.weeklyTarget - currentScheduled, 0);
+
+      if (neededCount === 0) return;
+
+      let successBooked = 0;
+
+      for (let dayOffset = 1; dayOffset <= 8; dayOffset++) {
+        if (successBooked >= neededCount) break;
+
+        const targetDay = new Date(today);
+        targetDay.setDate(today.getDate() + dayOffset);
+        const dayOfWeek = targetDay.getDay();
+
+        const availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek);
+        if (!availDay || !availDay.active) continue;
+
+        const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
+        const targetDayString = targetDay.toDateString();
+        const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
+          if (evt.goalId !== goal.id) return false;
+          return new Date(evt.start).toDateString() === targetDayString;
+        }).length;
+
+        if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
+
+        let [availStartHour, availStartMin] = availDay.startTime.split(":").map(Number);
+        let [availEndHour, availEndMin] = availDay.endTime.split(":").map(Number);
+
+        if (goal.timePreference === TimePreference.MORNING) {
+          availStartHour = Math.max(availStartHour, 8);
+          availEndHour = Math.min(availEndHour, 12);
+        } else if (goal.timePreference === TimePreference.AFTERNOON) {
+          availStartHour = Math.max(availStartHour, 12);
+          availEndHour = Math.min(availEndHour, 17);
+        } else if (goal.timePreference === TimePreference.EVENING) {
+          availStartHour = Math.max(availStartHour, 17);
+          availEndHour = Math.min(availEndHour, 21);
+        }
+
+        const blockDurationHours = goal.durationMinutes / 60;
+
+        for (let hrs = availStartHour; hrs <= availEndHour - blockDurationHours; hrs += 1.5) {
+          if (successBooked >= neededCount) break;
+
+          const dayCount = [...currentEvents, ...newScheduledEvents].filter(evt => {
+            if (evt.goalId !== goal.id) return false;
+            return new Date(evt.start).toDateString() === targetDayString;
+          }).length;
+
+          if (dayCount >= maxSessionsPerDay) {
+            break;
+          }
+
+          const slotStart = new Date(targetDay);
+          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+          const slotEnd = new Date(slotStart);
+          slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+
+          const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
+            const evtStart = new Date(evt.start);
+            const evtEnd = new Date(evt.end);
+            return (slotStart < evtEnd && slotEnd > evtStart);
+          });
+
+          if (!overlap) {
+            newScheduledEvents.push({
+              id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
+              title: `${goal.name} (Auto-Scheduled)`,
+              type: goal.type === GoalType.WORKOUT ? "workout" :
+                    goal.type === GoalType.STUDY ? "study" :
+                    goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                    goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                    goal.type === GoalType.ROUTINE ? "routine" :
+                    "personal",
+              start: slotStart.toISOString(),
+              end: slotEnd.toISOString(),
+              goalId: goal.id,
+              completed: false,
+              notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+            });
+            successBooked++;
+            scheduledCount++;
+          }
+        }
+      }
+    });
+
+    if (newScheduledEvents.length > 0) {
+      const nextEvents = [...newScheduledEvents, ...currentEvents];
+      setEvents(nextEvents);
+      syncToCloud(currentGoals, nextEvents, currentAvailability, notifications, coachMessages);
+      triggerSystemNotification(
+        "Auto-Scheduler Sync",
+        `⚡ Automated Auto-Scheduler successfully mapped ${scheduledCount} new session blocks completely without interference!`,
+        "success"
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (!autoScheduleEnabled || goals.length === 0 || availability.length === 0) return;
+
+    // Check if there are any unallocated goals
+    const hasUnallocated = goals.some(goal => {
+      const currentScheduled = events.filter(e => e.goalId === goal.id).length;
+      return goal.weeklyTarget > currentScheduled;
+    });
+
+    if (hasUnallocated) {
+      const timer = setTimeout(() => {
+        triggerAutoScheduler(goals, events, availability);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [goals, events, availability, autoScheduleEnabled]);
 
   // 4. Handle incoming action parameters (from Google Calendar description quick links)
   useEffect(() => {
@@ -386,7 +521,12 @@ export default function App() {
             ...evt,
             title: newTitle,
             type: updatedFields.type !== undefined
-              ? (updatedFields.type === GoalType.WORKOUT ? "workout" : "study")
+              ? (updatedFields.type === GoalType.WORKOUT ? "workout" :
+                 updatedFields.type === GoalType.STUDY ? "study" :
+                 updatedFields.type === GoalType.JOB_SEARCH ? "job_search" :
+                 updatedFields.type === GoalType.SIDE_PROJECT ? "side_project" :
+                 updatedFields.type === GoalType.ROUTINE ? "routine" :
+                 "personal")
               : evt.type
           } as CalendarEvent;
         }
@@ -738,6 +878,11 @@ export default function App() {
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}
+            autoScheduleEnabled={autoScheduleEnabled}
+            onToggleAutoSchedule={(val) => {
+              setAutoScheduleEnabled(val);
+              localStorage.setItem("auto_schedule_enabled", val ? "true" : "false");
+            }}
           />
         )}
 

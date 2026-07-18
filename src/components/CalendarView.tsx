@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Calendar as CalendarIcon, 
   ChevronLeft, 
@@ -100,6 +100,48 @@ export default function CalendarView({
   const [importingGcal, setImportingGcal] = useState(false);
   const [exportingAll, setExportingAll] = useState(false);
   const [exportStatus, setExportStatus] = useState<{ [id: string]: "idle" | "syncing" | "success" | "error" }>({});
+  const [autoGcalExport, setAutoGcalExport] = useState(() => localStorage.getItem("auto_gcal_export") === "true");
+
+  const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+
+  // Resolve custom goal color if event is associated with a goal
+  const getEventColorStyles = (evt: CalendarEvent) => {
+    const goal = goals.find(g => g.id === evt.goalId);
+    const baseColor = goal?.color;
+
+    if (baseColor) {
+      return {
+        borderLeftColor: baseColor,
+        backgroundColor: `${baseColor}20`, // 12% opacity
+        color: "#f8fafc",
+        hoverBg: `${baseColor}40`, // 25% opacity
+        dotColor: baseColor,
+        isCustom: true
+      };
+    }
+
+    // Default Fallbacks based on category/type
+    const fallbackColors: Record<string, { border: string; bg: string; text: string; hoverBg: string; dot: string }> = {
+      workout: { border: "#f43f5e", bg: "rgba(244, 63, 94, 0.15)", text: "#fecdd3", hoverBg: "rgba(244, 63, 94, 0.3)", dot: "#f43f5e" },
+      study: { border: "#06b6d4", bg: "rgba(6, 182, 212, 0.15)", text: "#cffafe", hoverBg: "rgba(6, 182, 212, 0.3)", dot: "#06b6d4" },
+      job_search: { border: "#3b82f6", bg: "rgba(59, 130, 246, 0.15)", text: "#bfdbfe", hoverBg: "rgba(59, 130, 246, 0.3)", dot: "#3b82f6" },
+      side_project: { border: "#ec4899", bg: "rgba(236, 72, 153, 0.15)", text: "#fbcfe8", hoverBg: "rgba(236, 72, 153, 0.3)", dot: "#ec4899" },
+      routine: { border: "#10b981", bg: "rgba(16, 185, 129, 0.15)", text: "#a7f3d0", hoverBg: "rgba(16, 185, 129, 0.3)", dot: "#10b981" },
+      personal: { border: "#f59e0b", bg: "rgba(245, 158, 11, 0.15)", text: "#fde68a", hoverBg: "rgba(245, 158, 11, 0.3)", dot: "#f59e0b" },
+      external: { border: "#64748b", bg: "rgba(100, 116, 139, 0.15)", text: "#cbd5e1", hoverBg: "rgba(100, 116, 139, 0.3)", dot: "#64748b" }
+    };
+
+    const current = fallbackColors[evt.type] || { border: "#6366f1", bg: "rgba(99, 102, 241, 0.15)", text: "#e0e7ff", hoverBg: "rgba(99, 102, 241, 0.3)", dot: "#6366f1" };
+
+    return {
+      borderLeftColor: current.border,
+      backgroundColor: current.bg,
+      color: current.text,
+      hoverBg: current.hoverBg,
+      dotColor: current.dot,
+      isCustom: false
+    };
+  };
 
   // Custom modal dialog to replace blocking system alerts/confirms that get blocked in sandbox iframes
   const [customDialog, setCustomDialog] = useState<{
@@ -525,12 +567,28 @@ export default function CalendarView({
     }
   };
 
-  // Helper: Get start of current week (Sunday)
+  const prevEventIdsRef = useRef<Set<string>>(new Set(events.map(e => e.id)));
+
+  useEffect(() => {
+    if (!googleAccessToken || !autoGcalExport) {
+      prevEventIdsRef.current = new Set(events.map(e => e.id));
+      return;
+    }
+
+    const currentIds = new Set(events.map(e => e.id));
+    const newEvents = events.filter(e => e.type !== "external" && !prevEventIdsRef.current.has(e.id) && exportStatus[e.id] !== "success" && exportStatus[e.id] !== "syncing");
+
+    if (newEvents.length > 0) {
+      console.log("Auto-exporting new calendar events background: ", newEvents);
+      triggerBulkExportExecution(newEvents);
+    }
+
+    prevEventIdsRef.current = currentIds;
+  }, [events, googleAccessToken, autoGcalExport]);
+
+  // Helper: Get start of current week (starts from current/selected date to show 7 days rolling)
   const getStartOfWeek = (date: Date) => {
-    const d = new Date(date);
-    const day = d.getDay();
-    const diff = d.getDate() - day;
-    return new Date(d.setDate(diff));
+    return new Date(date);
   };
 
   const startOfWeek = getStartOfWeek(currentDate);
@@ -972,6 +1030,28 @@ export default function CalendarView({
                       </button>
                     </div>
 
+                    <div className="flex items-center justify-between bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-left select-none">
+                      <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300 font-bold">
+                        <input
+                          type="checkbox"
+                          checked={autoGcalExport}
+                          onChange={(e) => {
+                            const next = e.target.checked;
+                            setAutoGcalExport(next);
+                            localStorage.setItem("auto_gcal_export", next ? "true" : "false");
+                            if (next) {
+                              setGcalStatus("Real-time auto-sync activated! New schedules will auto-sync.");
+                            } else {
+                              setGcalStatus("Real-time auto-sync deactivated.");
+                            }
+                          }}
+                          className="rounded border-white/20 bg-slate-900 text-indigo-500 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
+                        />
+                        <span>⚡ Real-time Google Calendar Sync</span>
+                      </label>
+                      <span className="text-[9px] bg-indigo-500/10 text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">AUTO</span>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-2 text-center">
                       <button
                         type="button"
@@ -1101,26 +1181,25 @@ export default function CalendarView({
                 const topPixel = (startHour - minOffsetHour) * hourHeight;
                 const heightPixel = Math.max((endHour - startHour) * hourHeight, 35); // minimum height
 
-                // Color themes
-                const getEventColors = (type: string) => {
-                  if (type === "workout") return "border-rose-500 bg-rose-950/40 text-rose-200 hover:bg-rose-950/60";
-                  if (type === "study") return "border-cyan-500 bg-cyan-950/40 text-cyan-200 hover:bg-cyan-950/60";
-                  if (type === "external") return "border-slate-500 bg-slate-800/40 text-slate-350 hover:bg-slate-800/60";
-                  return "border-emerald-500 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-950/60";
-                };
+                const colors = getEventColorStyles(evt);
 
                 return (
                   <div
                     key={evt.id}
                     id={`event_card_week_${evt.id}`}
                     onClick={() => handleTriggerEditEvent(evt)}
-                    className={`absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all overflow-hidden cursor-pointer ${getEventColors(evt.type)}`}
+                    onMouseEnter={() => setHoveredEventId(evt.id)}
+                    onMouseLeave={() => setHoveredEventId(null)}
+                    className="absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all overflow-hidden cursor-pointer"
                     style={{
                       left: `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 2px)`,
                       width: `calc(((100% - 80px) / 7) - 4px)`,
                       top: `${topPixel}px`,
                       height: `${heightPixel}px`,
-                      zIndex: 5
+                      zIndex: 5,
+                      borderLeftColor: colors.borderLeftColor,
+                      backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
+                      color: colors.color
                     }}
                   >
                     <div className="flex flex-col h-full justify-between">
@@ -1239,17 +1318,20 @@ export default function CalendarView({
                         </button>
                       ) : (
                         hourEvents.map(evt => {
-                          const getStyle = (type: string) => {
-                            if (type === "workout") return "border-rose-500 bg-rose-950/40 text-rose-200 border-l-4";
-                            if (type === "study") return "border-cyan-500 bg-cyan-950/40 text-cyan-200 border-l-4";
-                            return "border-indigo-500 bg-indigo-950/40 text-indigo-200 border-l-4";
-                          };
+                          const colors = getEventColorStyles(evt);
                           return (
                             <div 
                               key={evt.id} 
                               id={`event_card_day_${evt.id}`}
                               onClick={() => handleTriggerEditEvent(evt)}
-                              className={`p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-pointer transition hover:scale-[1.01] ${getStyle(evt.type)}`}
+                              onMouseEnter={() => setHoveredEventId(evt.id)}
+                              onMouseLeave={() => setHoveredEventId(null)}
+                              className="p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-pointer transition hover:scale-[1.01] border-l-4"
+                              style={{
+                                borderLeftColor: colors.borderLeftColor,
+                                backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
+                                color: colors.color
+                              }}
                             >
                               <div className="flex justify-between items-start mb-1.5">
                                 <h4 className={`text-xs font-bold ${evt.completed ? "line-through opacity-50" : ""}`}>{evt.title}</h4>
@@ -1356,9 +1438,10 @@ export default function CalendarView({
                         }`}
                       >
                         <div className="flex items-center gap-3">
-                          <span className={`w-3 h-3 rounded-full shrink-0 ${
-                            evt.type === "workout" ? "bg-rose-500" : evt.type === "study" ? "bg-cyan-500" : "bg-emerald-500"
-                          }`} />
+                          <span 
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: getEventColorStyles(evt).dotColor }}
+                          />
                           <div>
                             <h4 className={`text-xs font-bold text-white ${evt.completed ? "line-through opacity-75" : ""}`}>{evt.title}</h4>
                             <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
@@ -1470,6 +1553,9 @@ export default function CalendarView({
                   >
                     <option value="workout" className="bg-[#0f111a]">Workout Session</option>
                     <option value="study" className="bg-[#0f111a]">Study Block</option>
+                    <option value="job_search" className="bg-[#0f111a]">Job Search Session</option>
+                    <option value="side_project" className="bg-[#0f111a]">Side Project Session</option>
+                    <option value="routine" className="bg-[#0f111a]">Routine / Chores</option>
                     <option value="personal" className="bg-[#0f111a]">Personal / Leisure</option>
                     <option value="external" className="bg-[#0f111a]">Busy Block (External)</option>
                   </select>
