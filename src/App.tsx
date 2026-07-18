@@ -30,30 +30,113 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<"synced" | "syncing" | "offline">("synced");
   const [lastSynced, setLastSynced] = useState<string>("");
 
-  // Core application data (Loaded from server / cloud)
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [availability, setAvailability] = useState<AvailabilityWindow[]>([]);
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([]);
+  // Core application data (Loaded from server / cloud with localStorage fallback)
+  const [goals, setGoals] = useState<Goal[]>(() => {
+    try {
+      const val = localStorage.getItem("cached_goals");
+      return val ? JSON.parse(val) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [events, setEvents] = useState<CalendarEvent[]>(() => {
+    try {
+      const val = localStorage.getItem("cached_events");
+      return val ? JSON.parse(val) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [availability, setAvailability] = useState<AvailabilityWindow[]>(() => {
+    try {
+      const val = localStorage.getItem("cached_availability");
+      return val ? JSON.parse(val) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    try {
+      const val = localStorage.getItem("cached_notifications");
+      return val ? JSON.parse(val) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [coachMessages, setCoachMessages] = useState<CoachMessage[]>(() => {
+    try {
+      const val = localStorage.getItem("cached_coachMessages");
+      return val ? JSON.parse(val) : [];
+    } catch {
+      return [];
+    }
+  });
   const [autoScheduleEnabled, setAutoScheduleEnabled] = useState<boolean>(() => {
     const val = localStorage.getItem("auto_schedule_enabled");
     return val !== "false";
   });
 
-  // 1. Initial Data load from cloud sync server
+  // 1. Initial Data load from cloud sync server with localStorage self-healing fallback
   useEffect(() => {
     const fetchData = async () => {
       setSyncStatus("syncing");
       try {
         const res = await fetch(`/api/sync?email=${encodeURIComponent(userEmail)}`);
         if (res.ok) {
-          const data: SyncData = await res.json();
-          setGoals(data.goals || []);
-          setEvents(data.events || []);
-          setAvailability(data.availability || []);
-          setNotifications(data.notifications || []);
-          setCoachMessages(data.coachMessages || []);
+          const data: SyncData & { lastSyncedAt?: string } = await res.json();
+          
+          const localLastUpdated = Number(localStorage.getItem("local_last_updated") || "0");
+          const cloudLastSynced = data.lastSyncedAt ? new Date(data.lastSyncedAt).getTime() : 0;
+          
+          const cachedGoalsRaw = localStorage.getItem("cached_goals");
+          const localGoalsList = cachedGoalsRaw ? JSON.parse(cachedGoalsRaw) : [];
+          const hasLocalData = Array.isArray(localGoalsList) && localGoalsList.length > 0;
+          
+          // Detect if the cloud is blank/default but local storage contains customized user records
+          const cloudIsDefaultOrReset = !data.goals || data.goals.length === 0 || 
+            (data.goals.length === 3 && data.goals.some(g => g.id === "g1" && g.name === "Morning Cardio & Stretch"));
+
+          if (hasLocalData && (localLastUpdated > cloudLastSynced || cloudIsDefaultOrReset)) {
+            console.log("Local cache is newer/more complete than cloud. Restoring user custom goals to server...");
+            
+            const localEvents = JSON.parse(localStorage.getItem("cached_events") || "[]");
+            const localAvailability = JSON.parse(localStorage.getItem("cached_availability") || "[]");
+            const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
+            const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
+
+            setGoals(localGoalsList);
+            setEvents(localEvents);
+            if (localAvailability.length > 0) {
+              setAvailability(localAvailability);
+            } else {
+              setAvailability(data.availability || []);
+            }
+            setNotifications(localNotifications);
+            setCoachMessages(localCoachMessages);
+
+            // Sync up local data to cloud database
+            await syncToCloud(
+              localGoalsList,
+              localEvents,
+              localAvailability.length > 0 ? localAvailability : data.availability || [],
+              localNotifications,
+              localCoachMessages
+            );
+          } else {
+            // Cloud is newer, load cloud data and update local cache
+            setGoals(data.goals || []);
+            setEvents(data.events || []);
+            setAvailability(data.availability || []);
+            setNotifications(data.notifications || []);
+            setCoachMessages(data.coachMessages || []);
+
+            localStorage.setItem("cached_goals", JSON.stringify(data.goals || []));
+            localStorage.setItem("cached_events", JSON.stringify(data.events || []));
+            localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
+            localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));
+            localStorage.setItem("cached_coachMessages", JSON.stringify(data.coachMessages || []));
+            localStorage.setItem("local_last_updated", Date.now().toString());
+          }
           setLastSynced(new Date().toLocaleTimeString());
           setSyncStatus("synced");
         } else {
@@ -67,7 +150,7 @@ export default function App() {
     fetchData();
   }, [userEmail]);
 
-  // 2. Auto-sync helper (Syncs client modifications directly to server db)
+  // 2. Auto-sync helper (Syncs client modifications directly to server db and saves in localStorage)
   const syncToCloud = async (
     prevGoals: Goal[],
     prevEvents: CalendarEvent[],
@@ -75,6 +158,15 @@ export default function App() {
     prevNotifications: AppNotification[],
     prevCoachMessages: CoachMessage[]
   ) => {
+    // Save to local cache first
+    const nowStr = Date.now().toString();
+    localStorage.setItem("cached_goals", JSON.stringify(prevGoals));
+    localStorage.setItem("cached_events", JSON.stringify(prevEvents));
+    localStorage.setItem("cached_availability", JSON.stringify(prevAvailability));
+    localStorage.setItem("cached_notifications", JSON.stringify(prevNotifications));
+    localStorage.setItem("cached_coachMessages", JSON.stringify(prevCoachMessages));
+    localStorage.setItem("local_last_updated", nowStr);
+
     setSyncStatus("syncing");
     try {
       const payload: SyncData = {
@@ -93,7 +185,6 @@ export default function App() {
       });
 
       if (res.ok) {
-        const syncedResult = await res.json();
         setLastSynced(new Date().toLocaleTimeString());
         setSyncStatus("synced");
       } else {

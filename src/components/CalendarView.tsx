@@ -83,6 +83,7 @@ export default function CalendarView({
   const [newEndTime, setNewEndTime] = useState("10:00");
   const [newNotes, setNewNotes] = useState("");
   const [newGoalId, setNewGoalId] = useState("");
+  const [newCompleted, setNewCompleted] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
 
   // External Calendar Sync State
@@ -646,6 +647,7 @@ export default function CalendarView({
           type: newType,
           start: new Date(startISO).toISOString(),
           end: new Date(endISO).toISOString(),
+          completed: newCompleted,
           notes: newNotes,
           goalId: newGoalId || undefined
         });
@@ -656,7 +658,7 @@ export default function CalendarView({
         type: newType,
         start: new Date(startISO).toISOString(),
         end: new Date(endISO).toISOString(),
-        completed: false,
+        completed: newCompleted,
         notes: newNotes,
         goalId: newGoalId || undefined
       });
@@ -666,6 +668,7 @@ export default function CalendarView({
     setNewTitle("");
     setNewNotes("");
     setNewGoalId("");
+    setNewCompleted(false);
     setEditingEventId(null);
     setShowAddModal(false);
   };
@@ -692,6 +695,7 @@ export default function CalendarView({
     setNewEndTime(formattedEnd);
     setNewNotes(evt.notes || "");
     setNewGoalId(evt.goalId || "");
+    setNewCompleted(evt.completed || false);
     setShowAddModal(true);
   };
 
@@ -1627,6 +1631,19 @@ export default function CalendarView({
                 />
               </div>
 
+              <div className="flex items-center gap-2 py-1 select-none">
+                <input
+                  type="checkbox"
+                  id="event_completed_checkbox"
+                  checked={newCompleted}
+                  onChange={(e) => setNewCompleted(e.target.checked)}
+                  className="w-4 h-4 rounded border-white/10 bg-white/5 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 transition cursor-pointer"
+                />
+                <label htmlFor="event_completed_checkbox" className="text-xs text-slate-300 font-medium cursor-pointer">
+                  Mark this slot as completed
+                </label>
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-4 border-t border-white/10">
                 <button
                   type="button"
@@ -1637,6 +1654,7 @@ export default function CalendarView({
                     setNewTitle("");
                     setNewNotes("");
                     setNewGoalId("");
+                    setNewCompleted(false);
                   }}
                   className="text-xs font-semibold px-4 py-2.5 border border-white/10 bg-white/5 hover:bg-white/10 text-white rounded-xl transition cursor-pointer"
                 >
