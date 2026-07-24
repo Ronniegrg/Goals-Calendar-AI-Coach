@@ -31,12 +31,34 @@ export default function App() {
   const [lastSynced, setLastSynced] = useState<string>("");
 
   // Core application data (Loaded from server / cloud with localStorage fallback)
+  const defaultPythonGoal: Goal = {
+    id: "g_python",
+    name: "Python & AI Engineering Masterclass",
+    type: GoalType.STUDY,
+    category: "Python Dev",
+    weeklyTarget: 4,
+    durationMinutes: 60,
+    timePreference: TimePreference.EVENING,
+    completedCount: 2,
+    color: "#3b82f6",
+    createdAt: new Date().toISOString()
+  };
+
+  const ensurePythonGoal = (goalsList: Goal[]): Goal[] => {
+    if (!Array.isArray(goalsList)) return [defaultPythonGoal];
+    if (!goalsList.some(g => g.name && g.name.toLowerCase().includes("python"))) {
+      return [...goalsList, defaultPythonGoal];
+    }
+    return goalsList;
+  };
+
   const [goals, setGoals] = useState<Goal[]>(() => {
     try {
       const val = localStorage.getItem("cached_goals");
-      return val ? JSON.parse(val) : [];
+      const list = val ? JSON.parse(val) : [];
+      return ensurePythonGoal(list);
     } catch {
-      return [];
+      return [defaultPythonGoal];
     }
   });
   const [events, setEvents] = useState<CalendarEvent[]>(() => {
@@ -112,7 +134,8 @@ export default function App() {
             const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
             const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
 
-            setGoals(localGoalsList);
+            const finalGoals = ensurePythonGoal(localGoalsList);
+            setGoals(finalGoals);
             setEvents(localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
             if (localAvailability.length > 0) {
               setAvailability(localAvailability);
@@ -124,7 +147,7 @@ export default function App() {
 
             // Sync up local data to cloud database
             await syncToCloud(
-              localGoalsList,
+              finalGoals,
               localEvents,
               localAvailability.length > 0 ? localAvailability : data.availability || [],
               localNotifications,
@@ -133,7 +156,8 @@ export default function App() {
             );
           } else {
             // Cloud is newer, load cloud data and update local cache
-            setGoals(data.goals || []);
+            const cloudGoals = ensurePythonGoal(data.goals || []);
+            setGoals(cloudGoals);
             setEvents((data.events || []).map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
             setAvailability(data.availability || []);
             setNotifications(data.notifications || []);
@@ -143,7 +167,7 @@ export default function App() {
               localStorage.setItem("coach_persona", data.coachPersona);
             }
 
-            localStorage.setItem("cached_goals", JSON.stringify(data.goals || []));
+            localStorage.setItem("cached_goals", JSON.stringify(cloudGoals));
             localStorage.setItem("cached_events", JSON.stringify(data.events || []));
             localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
             localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));

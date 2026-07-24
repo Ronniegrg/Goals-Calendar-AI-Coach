@@ -93,7 +93,7 @@ export default function CalendarView({
   // External Calendar Sync State
   const [externalSource, setExternalSource] = useState("");
   const [externalName, setExternalName] = useState("");
-  const [showSyncPanel, setShowSyncPanel] = useState(true);
+  const [showSyncPanel, setShowSyncPanel] = useState(false);
   const [icsInput, setIcsInput] = useState("");
 
   // Google Calendar Integration State
@@ -108,6 +108,50 @@ export default function CalendarView({
   const [autoGcalExport, setAutoGcalExport] = useState(() => localStorage.getItem("auto_gcal_export") === "true");
 
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+
+  // Live Current Time state for Google Calendar-style current time indicator line
+  const [now, setNow] = useState<Date>(new Date());
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNow(new Date());
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Auto-scroll the Schedule Grid directly to where the current time horizontal line is located
+  useEffect(() => {
+    if (!gridScrollRef.current) return;
+
+    const scrollContainer = gridScrollRef.current;
+    const currentHourDecimal = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+
+    const timer = setTimeout(() => {
+      if (!scrollContainer) return;
+      const containerHeight = scrollContainer.clientHeight || 500;
+
+      if (viewMode === "week") {
+        // 64px per hour (8 AM start)
+        const targetTopPixel = (currentHourDecimal - 8) * 64;
+        const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 3);
+        scrollContainer.scrollTo({ top: scrollToPixel, behavior: "smooth" });
+      } else if (viewMode === "day") {
+        // 96px per hour (8 AM start)
+        const targetTopPixel = (currentHourDecimal - 8) * 96;
+        const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 3);
+        scrollContainer.scrollTo({ top: scrollToPixel, behavior: "smooth" });
+      } else if (viewMode === "list") {
+        const marker = scrollContainer.querySelector("#current_time_list_marker") as HTMLElement;
+        if (marker) {
+          const scrollToPixel = Math.max(0, marker.offsetTop - containerHeight / 3);
+          scrollContainer.scrollTo({ top: scrollToPixel, behavior: "smooth" });
+        }
+      }
+    }, 120);
+
+    return () => clearTimeout(timer);
+  }, [viewMode, currentDate, now]);
 
   // Resolve custom goal color if event is associated with a goal
   const getEventColorStyles = (evt: CalendarEvent) => {
@@ -835,10 +879,7 @@ export default function CalendarView({
     setShowSyncPanel(false);
   };
 
-  // Hours array for Grid: 08:00 to 22:00
-  const hours = Array.from({ length: 15 }, (_, i) => i + 8);
-
-  // Filter events for the rendered dates
+  // Helper to check if two dates are the same day
   const isSameDay = (d1: Date, d2: Date) => {
     return (
       d1.getFullYear() === d2.getFullYear() &&
@@ -846,6 +887,14 @@ export default function CalendarView({
       d1.getDate() === d2.getDate()
     );
   };
+
+  // Hours array for Grid: 08:00 to 22:00
+  const hours = Array.from({ length: 15 }, (_, i) => i + 8);
+
+  const currentHourDecimal = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+  const currentTopPixelWeek = (currentHourDecimal - 8) * 64;
+  const currentTopPixelDay = (currentHourDecimal - 8) * 96;
+  const todayIdx = weekDates.findIndex(d => isSameDay(d, now));
 
   // Format month and year label
   const getHeaderLabel = () => {
@@ -945,191 +994,223 @@ export default function CalendarView({
         </div>
       </div>
 
-      {/* Sync/External Calendar configuration Drawer overlay */}
+      {/* Sync/External Calendar configuration Modal Overlay */}
       {showSyncPanel && (
-        <div id="sync_calendar_drawer" className="bg-white/5 border-b border-white/10 p-4 transition-all">
-          <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-white/5 border border-white/10 p-4 rounded-xl">
-              <h3 className="font-sans font-semibold text-white text-sm mb-1.5 flex items-center gap-1.5">
-                <Upload className="w-4 h-4 text-emerald-400" />
-                Sync Existing Calendar (.ICS or Web URL)
-              </h3>
-              <form onSubmit={handleImportSubmit} className="space-y-3">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Calendar Source Name</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. My Google Work Calendar"
-                    value={externalName}
-                    onChange={(e) => setExternalName(e.target.value)}
-                    className="w-full text-xs p-2 bg-white/5 text-white border border-white/10 rounded-lg focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition"
-                  />
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md transition-all animate-fade-in"
+          onClick={() => setShowSyncPanel(false)}
+        >
+          <div 
+            id="sync_calendar_modal"
+            className="bg-[#121320] border border-white/15 rounded-2xl p-5 md:p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl space-y-4 relative text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-500/20 text-indigo-400 rounded-xl">
+                  <Link2 className="w-5 h-5" />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">ICS Feed URL / Raw Text Data</label>
-                  <textarea
-                    rows={2}
-                    placeholder="Paste calendar public URL, or raw .ics template blocks..."
-                    value={icsInput}
-                    onChange={(e) => setIcsInput(e.target.value)}
-                    className="w-full text-xs p-2 bg-white/5 text-white border border-white/10 rounded-lg focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition"
-                  />
+                  <h3 className="text-base font-bold text-white">Calendar Sync & Integrations</h3>
+                  <p className="text-xs text-slate-400">Connect Google Calendar or import external .ICS schedules</p>
                 </div>
-                <button
-                  type="submit"
-                  className="bg-white/10 hover:bg-white/15 text-white border border-white/10 text-[11px] font-bold px-3 py-2 rounded-lg transition cursor-pointer"
-                >
-                  Import and Sync Availability
-                </button>
-              </form>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSyncPanel(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+                title="Close Sync Panel"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            <div className="bg-white/5 border border-white/10 p-4 rounded-xl flex flex-col justify-between">
-              <div>
-                <h3 className="font-sans font-semibold text-white text-sm mb-1.5 flex items-center gap-1.5">
-                  <Globe className="w-4 h-4 text-indigo-400" />
-                  Google Calendar Live Sync
-                </h3>
-
-                {gcalStatus && (
-                  <p className="text-[11px] text-pink-400 bg-pink-500/10 border border-pink-500/20 px-2.5 py-1.5 rounded-lg mb-3">
-                    {gcalStatus}
-                  </p>
-                )}
-
-                {!googleAccessToken ? (
-                  <div className="space-y-3.5 pt-1">
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      Connect your Google Calendar live to import conflicts (so the smart auto-scheduler avoids overlaps) and export scheduled routines!
-                    </p>
-                    
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-white/5 border border-white/10 p-4 rounded-xl flex flex-col justify-between">
+                <div>
+                  <h3 className="font-sans font-semibold text-white text-sm mb-2 flex items-center gap-1.5">
+                    <Upload className="w-4 h-4 text-emerald-400" />
+                    Sync Existing Calendar (.ICS or Web URL)
+                  </h3>
+                  <form onSubmit={handleImportSubmit} className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Calendar Source Name</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. My Google Work Calendar"
+                        value={externalName}
+                        onChange={(e) => setExternalName(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-white/5 text-white border border-white/10 rounded-lg focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">ICS Feed URL / Raw Text Data</label>
+                      <textarea
+                        rows={3}
+                        placeholder="Paste calendar public URL, or raw .ics template blocks..."
+                        value={icsInput}
+                        onChange={(e) => setIcsInput(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-white/5 text-white border border-white/10 rounded-lg focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition"
+                      />
+                    </div>
                     <button
-                      type="button"
-                      id="gcal_connect_oauth_btn"
-                      onClick={handleLaunchGoogleOAuth}
-                      className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg border border-white/5 shadow-indigo-600/15 flex items-center justify-center gap-2 transition cursor-pointer"
+                      type="submit"
+                      className="w-full bg-white/10 hover:bg-white/15 text-white border border-white/10 text-[11px] font-bold py-2.5 rounded-lg transition cursor-pointer"
                     >
-                      <Globe className="w-4 h-4" /> Connect Automatically
+                      Import and Sync Availability
                     </button>
+                  </form>
+                </div>
+              </div>
 
-                    <div className="text-center">
-                      <button
-                        type="button"
-                        id="toggle_manual_token_form_btn"
-                        onClick={() => setShowTokenInput(!showTokenInput)}
-                        className="text-[10.5px] text-slate-400 hover:text-white font-medium underline transition"
-                      >
-                        {showTokenInput ? "Hide Developer Auth" : "Advanced: Developer Token Connection"}
-                      </button>
-                    </div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-xl flex flex-col justify-between">
+                <div>
+                  <h3 className="font-sans font-semibold text-white text-sm mb-2 flex items-center gap-1.5">
+                    <Globe className="w-4 h-4 text-indigo-400" />
+                    Google Calendar Live Sync
+                  </h3>
 
-                    {showTokenInput && (
-                      <form onSubmit={handleManualTokenSubmit} className="bg-slate-900/40 p-3 rounded-lg border border-white/5 mt-2 space-y-2">
-                        <p className="text-[10px] text-slate-400 leading-normal">
-                          For instant, reliable iframe connection, you can copy an ACCESS TOKEN from the <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-indigo-400 underline hover:text-indigo-300">Google OAuth Playground</a> (Calendar API v3), then paste it here:
-                        </p>
-                        <div className="flex gap-1.5">
-                          <input
-                            type="text"
-                            required
-                            placeholder="ya29.a0Acv..."
-                            value={manualTokenVal}
-                            onChange={(e) => setManualTokenVal(e.target.value)}
-                            className="bg-white/5 text-[11px] p-2 rounded border border-white/10 text-white flex-1 focus:outline-none focus:border-indigo-400"
-                          />
-                          <button
-                            type="submit"
-                            className="bg-indigo-600 text-white text-[11.5px] px-3 py-1.5 rounded font-bold hover:bg-indigo-500 cursor-pointer"
-                          >
-                            Set Token
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-3.5">
-                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl flex items-center justify-between">
-                      <div>
-                        <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Connected Account</p>
-                        <p className="text-xs font-mono text-slate-200 mt-0.5 max-w-[200px] truncate" title={googleEmail}>
-                          {googleEmail || "Active OAuth User"}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleDisconnectGoogle}
-                        className="text-[10px] bg-white/5 hover:bg-red-500/10 text-slate-300 hover:text-red-400 border border-white/10 p-1.5 rounded-lg transition flex items-center gap-1 cursor-pointer"
-                        title="Disconnect"
-                      >
-                        <LogOut className="w-3.5 h-3.5" /> Disconnect
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-left select-none">
-                      <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300 font-bold">
-                        <input
-                          type="checkbox"
-                          checked={autoGcalExport}
-                          onChange={(e) => {
-                            const next = e.target.checked;
-                            setAutoGcalExport(next);
-                            localStorage.setItem("auto_gcal_export", next ? "true" : "false");
-                            if (next) {
-                              setGcalStatus("Real-time auto-sync activated! New schedules will auto-sync.");
-                            } else {
-                              setGcalStatus("Real-time auto-sync deactivated.");
-                            }
-                          }}
-                          className="rounded border-white/20 bg-slate-900 text-indigo-500 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
-                        />
-                        <span>⚡ Real-time Google Calendar Sync</span>
-                      </label>
-                      <span className="text-[9px] bg-indigo-500/10 text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">AUTO</span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-center">
-                      <button
-                        type="button"
-                        id="gcal_import_btn"
-                        disabled={importingGcal}
-                        onClick={handleImportGoogleCalendar}
-                        className="bg-white/5 hover:bg-white/10 text-slate-100 text-xs font-bold py-2.5 px-3 border border-white/10 rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
-                      >
-                        {importingGcal ? (
-                          <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
-                        ) : (
-                          <Download className="w-4 h-4 text-indigo-400" />
-                        )}
-                        <span>{importingGcal ? "Importing..." : "📥 Import Busy Blocks"}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        id="gcal_bulk_export_btn"
-                        disabled={exportingAll}
-                        onClick={handleBulkExportUnexported}
-                        className={`text-xs font-bold py-2.5 px-3 border rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                          unexportedCount > 0
-                            ? "bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500 shadow-md shadow-indigo-600/20 hover:shadow-indigo-600/30 font-extrabold"
-                            : "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10"
-                        }`}
-                      >
-                        {exportingAll ? (
-                          <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
-                        ) : (
-                          <Send className={`w-4 h-4 ${unexportedCount > 0 ? "text-emerald-300 animate-pulse" : "text-pink-400"}`} />
-                        )}
-                        <span>{exportingAll ? "Exporting..." : `📤 Export Routines (${unexportedCount})`}</span>
-                      </button>
-                    </div>
-
-                    <p className="text-[10px] text-slate-400 leading-normal italic text-center">
-                      * Imported Google events act as busy exclusions in auto-scheduling. Exporting pushes workouts & study blocks to your Google app.
+                  {gcalStatus && (
+                    <p className="text-[11px] text-pink-400 bg-pink-500/10 border border-pink-500/20 px-2.5 py-1.5 rounded-lg mb-3">
+                      {gcalStatus}
                     </p>
-                  </div>
-                )}
+                  )}
+
+                  {!googleAccessToken ? (
+                    <div className="space-y-3.5 pt-1">
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        Connect your Google Calendar live to import conflicts (so the smart auto-scheduler avoids overlaps) and export scheduled routines!
+                      </p>
+                      
+                      <button
+                        type="button"
+                        id="gcal_connect_oauth_btn"
+                        onClick={handleLaunchGoogleOAuth}
+                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg border border-white/5 shadow-indigo-600/15 flex items-center justify-center gap-2 transition cursor-pointer"
+                      >
+                        <Globe className="w-4 h-4" /> Connect Automatically
+                      </button>
+
+                      <div className="text-center">
+                        <button
+                          type="button"
+                          id="toggle_manual_token_form_btn"
+                          onClick={() => setShowTokenInput(!showTokenInput)}
+                          className="text-[10.5px] text-slate-400 hover:text-white font-medium underline transition"
+                        >
+                          {showTokenInput ? "Hide Developer Auth" : "Advanced: Developer Token Connection"}
+                        </button>
+                      </div>
+
+                      {showTokenInput && (
+                        <form onSubmit={handleManualTokenSubmit} className="bg-slate-900/40 p-3 rounded-lg border border-white/5 mt-2 space-y-2">
+                          <p className="text-[10px] text-slate-400 leading-normal">
+                            For instant, reliable iframe connection, you can copy an ACCESS TOKEN from the <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-indigo-400 underline hover:text-indigo-300">Google OAuth Playground</a> (Calendar API v3), then paste it here:
+                          </p>
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              required
+                              placeholder="ya29.a0Acv..."
+                              value={manualTokenVal}
+                              onChange={(e) => setManualTokenVal(e.target.value)}
+                              className="bg-white/5 text-[11px] p-2 rounded border border-white/10 text-white flex-1 focus:outline-none focus:border-indigo-400"
+                            />
+                            <button
+                              type="submit"
+                              className="bg-indigo-600 text-white text-[11.5px] px-3 py-1.5 rounded font-bold hover:bg-indigo-500 cursor-pointer"
+                            >
+                              Set Token
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-3.5">
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl flex items-center justify-between">
+                        <div>
+                          <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Connected Account</p>
+                          <p className="text-xs font-mono text-slate-200 mt-0.5 max-w-[200px] truncate" title={googleEmail}>
+                            {googleEmail || "Active OAuth User"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleDisconnectGoogle}
+                          className="text-[10px] bg-white/5 hover:bg-red-500/10 text-slate-300 hover:text-red-400 border border-white/10 p-1.5 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                          title="Disconnect"
+                        >
+                          <LogOut className="w-3.5 h-3.5" /> Disconnect
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-left select-none">
+                        <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300 font-bold">
+                          <input
+                            type="checkbox"
+                            checked={autoGcalExport}
+                            onChange={(e) => {
+                              const next = e.target.checked;
+                              setAutoGcalExport(next);
+                              localStorage.setItem("auto_gcal_export", next ? "true" : "false");
+                              if (next) {
+                                setGcalStatus("Real-time auto-sync activated! New schedules will auto-sync.");
+                              } else {
+                                setGcalStatus("Real-time auto-sync deactivated.");
+                              }
+                            }}
+                            className="rounded border-white/20 bg-slate-900 text-indigo-500 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
+                          />
+                          <span>⚡ Real-time Google Calendar Sync</span>
+                        </label>
+                        <span className="text-[9px] bg-indigo-500/10 text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">AUTO</span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-center">
+                        <button
+                          type="button"
+                          id="gcal_import_btn"
+                          disabled={importingGcal}
+                          onClick={handleImportGoogleCalendar}
+                          className="bg-white/5 hover:bg-white/10 text-slate-100 text-xs font-bold py-2.5 px-3 border border-white/10 rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                        >
+                          {importingGcal ? (
+                            <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                          ) : (
+                            <Download className="w-4 h-4 text-indigo-400" />
+                          )}
+                          <span>{importingGcal ? "Importing..." : "📥 Import Busy Blocks"}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          id="gcal_bulk_export_btn"
+                          disabled={exportingAll}
+                          onClick={handleBulkExportUnexported}
+                          className={`text-xs font-bold py-2.5 px-3 border rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                            unexportedCount > 0
+                              ? "bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500 shadow-md shadow-indigo-600/20 hover:shadow-indigo-600/30 font-extrabold"
+                              : "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10"
+                          }`}
+                        >
+                          {exportingAll ? (
+                            <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                          ) : (
+                            <Send className={`w-4 h-4 ${unexportedCount > 0 ? "text-emerald-300 animate-pulse" : "text-pink-400"}`} />
+                          )}
+                          <span>{exportingAll ? "Exporting..." : `📤 Export Routines (${unexportedCount})`}</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 leading-normal italic text-center">
+                        * Imported Google events act as busy exclusions in auto-scheduling. Exporting pushes workouts & study blocks to your Google app.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1137,7 +1218,7 @@ export default function CalendarView({
       )}
 
       {/* Main Calendar Render Stage */}
-      <div className="flex-1 overflow-y-auto" id="calendar_grid_wrapper">
+      <div className="flex-1 overflow-y-auto" id="calendar_grid_wrapper" ref={gridScrollRef}>
         
         {/* VIEW 1: WEEKLY VIEW GRID */}
         {viewMode === "week" && (
@@ -1199,6 +1280,25 @@ export default function CalendarView({
                   ))}
                 </div>
               ))}
+
+              {/* Google Calendar Current Time Horizontal Line */}
+              {todayIdx !== -1 && currentTopPixelWeek >= 0 && currentTopPixelWeek <= hours.length * 64 && (
+                <div
+                  className="absolute z-30 pointer-events-none flex items-center left-[80px] right-0"
+                  style={{ top: `${currentTopPixelWeek}px` }}
+                  title={`Current Time: ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                >
+                  {/* Red Circle Indicator centered on today's column vertical grid border */}
+                  <div
+                    className="absolute w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/70 z-40 -translate-x-1/2 flex items-center justify-center transition-all duration-300"
+                    style={{ left: `calc(${todayIdx} * (100% / 7))` }}
+                  >
+                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                  </div>
+                  {/* Red horizontal line across grid */}
+                  <div className="h-[2px] bg-red-500 w-full shadow-sm shadow-red-500/50"></div>
+                </div>
+              )}
 
               {/* Absolute Positioned Events on parameters */}
               {events.map((evt) => {
@@ -1330,6 +1430,22 @@ export default function CalendarView({
             </div>
             
             <div className="relative flex-1 bg-transparent">
+              {/* Google Calendar Current Time Horizontal Line (Day View) */}
+              {isSameDay(currentDate, now) && currentTopPixelDay >= 0 && currentTopPixelDay <= hours.length * 96 && (
+                <div
+                  className="absolute z-30 pointer-events-none flex items-center left-[100px] right-0"
+                  style={{ top: `${currentTopPixelDay}px` }}
+                  title={`Current Time: ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                >
+                  {/* Red Circle Indicator on 100px vertical time line border */}
+                  <div className="absolute left-0 w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/70 z-40 -translate-x-1/2 flex items-center justify-center">
+                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                  </div>
+                  {/* Red horizontal line across day view schedule */}
+                  <div className="h-[2px] bg-red-500 w-full shadow-sm shadow-red-500/50"></div>
+                </div>
+              )}
+
               {hours.map((hour) => {
                 const hourEvents = events.filter(evt => {
                   const s = new Date(evt.start);
@@ -1464,102 +1580,142 @@ export default function CalendarView({
                 <CalendarIcon className="w-8 h-8 text-slate-500 mx-auto mb-2" />
                 <p className="text-xs text-slate-400">No events scheduled. Use automatic smart schedule solver!</p>
               </div>
-            ) : (
-              <div className="space-y-2.5">
-                {[...events]
-                  .sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-                  .map(evt => {
+            ) : (() => {
+              const sorted = [...events].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+              const nowTime = now.getTime();
+              const firstFutureIdx = sorted.findIndex(evt => new Date(evt.start).getTime() > nowTime);
+
+              const timeMarker = (
+                <div 
+                  key="current_time_list_marker"
+                  id="current_time_list_marker" 
+                  className="py-2.5 my-2 flex items-center gap-3 bg-red-500/10 border-y border-red-500/30 px-3.5 rounded-xl z-20 shadow-md"
+                >
+                  <div className="w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/80 shrink-0 flex items-center justify-center animate-pulse">
+                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                  </div>
+                  <div className="h-[2px] bg-red-500 flex-1 shadow-sm shadow-red-500/50"></div>
+                  <span className="text-[11px] font-mono font-bold text-red-400 bg-red-500/20 border border-red-500/40 px-3 py-1 rounded-full shrink-0 flex items-center gap-1.5 shadow-xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping"></span>
+                    CURRENT TIME • {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+              );
+
+              return (
+                <div className="space-y-2.5">
+                  {sorted.map((evt, idx) => {
                     const s = new Date(evt.start);
+                    const e = new Date(evt.end);
+                    const isCurrent = nowTime >= s.getTime() && nowTime <= e.getTime();
+                    const showMarkerBefore = firstFutureIdx !== -1 ? idx === firstFutureIdx : false;
+
                     return (
-                      <div 
-                        key={evt.id} 
-                        id={`event_card_list_${evt.id}`}
-                        onClick={() => handleTriggerEditEvent(evt)}
-                        className={`p-3 border border-white/10 rounded-xl flex items-center justify-between gap-3 bg-white/5 hover:bg-white/10 transition cursor-pointer ${
-                          evt.completed ? "bg-white/[0.02] opacity-60" : ""
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span 
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: getEventColorStyles(evt).dotColor }}
-                          />
-                          <div>
-                            <h4 className={`text-xs font-bold text-white flex items-center gap-1.5 ${evt.completed ? "line-through opacity-75" : ""}`}>
-                              {getEventIcon(evt)}
-                              <span>{evt.title}</span>
-                            </h4>
-                            <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
-                              <span className="font-semibold text-slate-300">{s.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
-                              <span>•</span>
-                              <span>{s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                              {evt.notes && <span className="italic">("{evt.notes}")</span>}
-                            </p>
+                      <React.Fragment key={evt.id}>
+                        {showMarkerBefore && timeMarker}
+                        <div 
+                          id={`event_card_list_${evt.id}`}
+                          onClick={() => handleTriggerEditEvent(evt)}
+                          className={`p-3 border rounded-xl flex items-center justify-between gap-3 transition cursor-pointer ${
+                            isCurrent
+                              ? "bg-indigo-500/15 border-red-500/50 shadow-lg shadow-red-500/10 ring-1 ring-red-500/30"
+                              : evt.completed
+                              ? "bg-white/[0.02] border-white/5 opacity-60"
+                              : "bg-white/5 border-white/10 hover:bg-white/10"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span 
+                              className="w-3 h-3 rounded-full shrink-0"
+                              style={{ backgroundColor: getEventColorStyles(evt).dotColor }}
+                            />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className={`text-xs font-bold text-white flex items-center gap-1.5 ${evt.completed ? "line-through opacity-75" : ""}`}>
+                                  {getEventIcon(evt)}
+                                  <span>{evt.title}</span>
+                                </h4>
+                                {isCurrent && (
+                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-red-500 text-white animate-pulse flex items-center gap-1">
+                                    <span className="w-1 h-1 rounded-full bg-white"></span>
+                                    HAPPENING NOW
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
+                                <span className="font-semibold text-slate-300">{s.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
+                                <span>•</span>
+                                <span>{s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                                {evt.notes && <span className="italic">("{evt.notes}")</span>}
+                              </p>
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            id={`complete_event_btn_list_${evt.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleCompleteEvent(evt.id);
-                            }}
-                            className={`text-[10px] p-2 px-3 leading-none rounded-lg font-bold cursor-pointer transition ${
-                              evt.completed 
-                                ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" 
-                                : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/20"
-                            }`}
-                          >
-                            {evt.completed ? "Completed!" : "Complete"}
-                          </button>
-
-                          {googleAccessToken && evt.type !== "external" && (
+                          <div className="flex items-center gap-2">
                             <button
+                              id={`complete_event_btn_list_${evt.id}`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleExportToGoogleCalendar(evt);
+                                onToggleCompleteEvent(evt.id);
                               }}
-                              disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
-                              className={`p-2 border rounded-lg transition border-white/10 cursor-pointer ${
-                                exportStatus[evt.id] === "success"
-                                  ? "bg-emerald-500/10 text-emerald-400"
-                                  : exportStatus[evt.id] === "error"
-                                  ? "bg-red-500/10 text-red-400"
-                                  : exportStatus[evt.id] === "syncing"
-                                  ? "bg-indigo-600/10 text-indigo-400 animate-spin"
-                                  : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 focus:text-indigo-400"
+                              className={`text-[10px] p-2 px-3 leading-none rounded-lg font-bold cursor-pointer transition ${
+                                evt.completed 
+                                  ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" 
+                                  : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/20"
                               }`}
-                              title={
-                                exportStatus[evt.id] === "success"
-                                  ? "Synced to Google!"
-                                  : "Export to Google Calendar"
-                              }
                             >
-                              {exportStatus[evt.id] === "success" ? (
-                                <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
-                              ) : (
-                                <CalendarCheck className="w-3.5 h-3.5" />
-                              )}
+                              {evt.completed ? "Completed!" : "Complete"}
                             </button>
-                          )}
 
-                          <button
-                            id={`delete_event_btn_list_${evt.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onDeleteEvent(evt.id);
-                            }}
-                            className="bg-white/5 hover:bg-rose-500/20 text-slate-455 hover:text-rose-455 p-2 rounded-lg transition border border-white/5 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                            {googleAccessToken && evt.type !== "external" && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleExportToGoogleCalendar(evt);
+                                }}
+                                disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                                className={`p-2 border rounded-lg transition border-white/10 cursor-pointer ${
+                                  exportStatus[evt.id] === "success"
+                                    ? "bg-emerald-500/10 text-emerald-400"
+                                    : exportStatus[evt.id] === "error"
+                                    ? "bg-red-500/10 text-red-400"
+                                    : exportStatus[evt.id] === "syncing"
+                                    ? "bg-indigo-600/10 text-indigo-400 animate-spin"
+                                    : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 focus:text-indigo-400"
+                                }`}
+                                title={
+                                  exportStatus[evt.id] === "success"
+                                    ? "Synced to Google!"
+                                    : "Export to Google Calendar"
+                                }
+                              >
+                                {exportStatus[evt.id] === "success" ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
+                                ) : (
+                                  <CalendarCheck className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+
+                            <button
+                              id={`delete_event_btn_list_${evt.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteEvent(evt.id);
+                              }}
+                              className="bg-white/5 hover:bg-rose-500/20 text-slate-455 hover:text-rose-455 p-2 rounded-lg transition border border-white/5 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                      </div>
+                      </React.Fragment>
                     );
                   })}
-              </div>
-            )}
+                  {firstFutureIdx === -1 && timeMarker}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>

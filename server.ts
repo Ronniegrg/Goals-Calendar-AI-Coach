@@ -74,6 +74,18 @@ function getInitialData(userEmail: string) {
         completedCount: 0,
         color: "#8b5cf6", // Purple
         createdAt: new Date().toISOString()
+      },
+      {
+        id: "g4",
+        name: "Python & AI Engineering Masterclass",
+        type: "study",
+        category: "Python Dev",
+        weeklyTarget: 4,
+        durationMinutes: 60,
+        timePreference: "evening",
+        completedCount: 2,
+        color: "#3b82f6", // Blue
+        createdAt: new Date().toISOString()
       }
     ],
     events: [
@@ -107,6 +119,16 @@ function getInitialData(userEmail: string) {
         goalId: "g1",
         completed: false,
         notes: "Will do dynamic stretches and brief run."
+      },
+      {
+        id: "e4",
+        title: "Python & AI Engineering Masterclass (Auto-Scheduled)",
+        type: "study",
+        start: new Date(Date.now() + 18 * 60 * 60 * 1000).toISOString(),
+        end: new Date(Date.now() + 19 * 60 * 60 * 1000).toISOString(),
+        goalId: "g4",
+        completed: false,
+        notes: "Learn Python data structures, async syntax, and AI APIs."
       }
     ],
     availability: [

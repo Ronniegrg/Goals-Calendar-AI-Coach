@@ -22,6 +22,16 @@ import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubT
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
   {
+    name: "Python & AI Engineering Masterclass",
+    type: GoalType.STUDY,
+    category: "Python Dev",
+    weeklyTarget: 4,
+    durationMinutes: 60,
+    timePreference: TimePreference.EVENING,
+    color: "#3b82f6",
+    description: "Master Python syntax, data structures, async workflows, and AI model integrations."
+  },
+  {
     name: "Couch to 5K Workout",
     type: GoalType.WORKOUT,
     category: "Cardio",
