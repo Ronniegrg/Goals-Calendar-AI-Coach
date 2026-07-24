@@ -100,6 +100,14 @@ export default function App() {
   const [coachPersona, setCoachPersona] = useState<"mentor" | "drill" | "data">(() => {
     return (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor";
   });
+  const [alertLeadMinutes, setAlertLeadMinutes] = useState<number>(() => {
+    const val = localStorage.getItem("alert_lead_minutes");
+    return val ? Number(val) : 15;
+  });
+  const [alertPushEnabled, setAlertPushEnabled] = useState<boolean>(() => {
+    const val = localStorage.getItem("alert_push_enabled");
+    return val !== "false";
+  });
 
   // 1. Initial Data load from cloud sync server with localStorage self-healing fallback
   useEffect(() => {
@@ -277,21 +285,29 @@ export default function App() {
 
     const newScheduledEvents: CalendarEvent[] = [];
     let scheduledCount = 0;
-    const today = new Date();
+    const now = new Date();
 
     currentGoals.forEach(goal => {
-      const currentScheduled = currentEvents.filter(e => e.goalId === goal.id).length;
-      const neededCount = Math.max(goal.weeklyTarget - currentScheduled, 0);
+      const goalNameLower = goal.name.toLowerCase();
+      
+      // Match existing events by goalId OR by title matching goal name
+      const currentScheduledEvents = [...currentEvents, ...newScheduledEvents].filter(e => {
+        if (e.goalId === goal.id) return true;
+        if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
+        return false;
+      });
 
+      const neededCount = Math.max(goal.weeklyTarget - currentScheduledEvents.length, 0);
       if (neededCount === 0) return;
 
       let successBooked = 0;
 
-      for (let dayOffset = 1; dayOffset <= 8; dayOffset++) {
+      // Search across up to 14 days starting from today (0) to 14
+      for (let dayOffset = 0; dayOffset <= 14; dayOffset++) {
         if (successBooked >= neededCount) break;
 
-        const targetDay = new Date(today);
-        targetDay.setDate(today.getDate() + dayOffset);
+        const targetDay = new Date(now);
+        targetDay.setDate(now.getDate() + dayOffset);
         const dayOfWeek = targetDay.getDay();
 
         const availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek);
@@ -299,71 +315,95 @@ export default function App() {
 
         const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
         const targetDayString = targetDay.toDateString();
+        
         const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
-          if (evt.goalId !== goal.id) return false;
-          return new Date(evt.start).toDateString() === targetDayString;
+          const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+          return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
         }).length;
 
         if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
 
-        let [availStartHour, availStartMin] = availDay.startTime.split(":").map(Number);
-        let [availEndHour, availEndMin] = availDay.endTime.split(":").map(Number);
+        let [availStartHour] = availDay.startTime.split(":").map(Number);
+        let [availEndHour] = availDay.endTime.split(":").map(Number);
+
+        // Determine preferred time bounds
+        let prefStart = availStartHour;
+        let prefEnd = availEndHour;
 
         if (goal.timePreference === TimePreference.MORNING) {
-          availStartHour = Math.max(availStartHour, 8);
-          availEndHour = Math.min(availEndHour, 12);
+          prefStart = Math.max(availStartHour, 8);
+          prefEnd = Math.min(availEndHour, 12);
         } else if (goal.timePreference === TimePreference.AFTERNOON) {
-          availStartHour = Math.max(availStartHour, 12);
-          availEndHour = Math.min(availEndHour, 17);
+          prefStart = Math.max(availStartHour, 12);
+          prefEnd = Math.min(availEndHour, 17);
         } else if (goal.timePreference === TimePreference.EVENING) {
-          availStartHour = Math.max(availStartHour, 17);
-          availEndHour = Math.min(availEndHour, 21);
+          prefStart = Math.max(availStartHour, 17);
+          prefEnd = Math.min(availEndHour, 22);
         }
 
         const blockDurationHours = goal.durationMinutes / 60;
 
-        for (let hrs = availStartHour; hrs <= availEndHour - blockDurationHours; hrs += 1.5) {
-          if (successBooked >= neededCount) break;
+        // Pass 1: Try preferred window with 30-min steps
+        // Pass 2: Fall back to entire daily availability window with 30-min steps
+        const windowsToTry = [
+          { start: prefStart, end: prefEnd },
+          { start: availStartHour, end: availEndHour }
+        ];
 
-          const dayCount = [...currentEvents, ...newScheduledEvents].filter(evt => {
-            if (evt.goalId !== goal.id) return false;
-            return new Date(evt.start).toDateString() === targetDayString;
-          }).length;
+        let slotBookedOnDay = false;
 
-          if (dayCount >= maxSessionsPerDay) {
-            break;
-          }
+        for (const win of windowsToTry) {
+          if (slotBookedOnDay) break;
 
-          const slotStart = new Date(targetDay);
-          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+          for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
+            if (successBooked >= neededCount) break;
 
-          const slotEnd = new Date(slotStart);
-          slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+            // Re-verify max per day
+            const currentDayCount = [...currentEvents, ...newScheduledEvents].filter(evt => {
+              const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+              return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+            }).length;
 
-          const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
-            const evtStart = new Date(evt.start);
-            const evtEnd = new Date(evt.end);
-            return (slotStart < evtEnd && slotEnd > evtStart);
-          });
+            if (currentDayCount >= maxSessionsPerDay) break;
 
-          if (!overlap) {
-            newScheduledEvents.push({
-              id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-              title: goal.name,
-              type: goal.type === GoalType.WORKOUT ? "workout" :
-                    goal.type === GoalType.STUDY ? "study" :
-                    goal.type === GoalType.JOB_SEARCH ? "job_search" :
-                    goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-                    goal.type === GoalType.ROUTINE ? "routine" :
-                    "personal",
-              start: slotStart.toISOString(),
-              end: slotEnd.toISOString(),
-              goalId: goal.id,
-              completed: false,
-              notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+            const slotStart = new Date(targetDay);
+            slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+            // Skip past slots if scheduling for today
+            if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
+              continue;
+            }
+
+            const slotEnd = new Date(slotStart);
+            slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+
+            const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
+              const evtStart = new Date(evt.start);
+              const evtEnd = new Date(evt.end);
+              return slotStart < evtEnd && slotEnd > evtStart;
             });
-            successBooked++;
-            scheduledCount++;
+
+            if (!overlap) {
+              newScheduledEvents.push({
+                id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
+                title: goal.name,
+                type: goal.type === GoalType.WORKOUT ? "workout" :
+                      goal.type === GoalType.STUDY ? "study" :
+                      goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                      goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                      goal.type === GoalType.ROUTINE ? "routine" :
+                      "personal",
+                start: slotStart.toISOString(),
+                end: slotEnd.toISOString(),
+                goalId: goal.id,
+                completed: false,
+                notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              });
+              successBooked++;
+              scheduledCount++;
+              slotBookedOnDay = true;
+              break;
+            }
           }
         }
       }
@@ -386,14 +426,15 @@ export default function App() {
 
     // Check if there are any unallocated goals
     const hasUnallocated = goals.some(goal => {
-      const currentScheduled = events.filter(e => e.goalId === goal.id).length;
+      const goalNameLower = goal.name.toLowerCase();
+      const currentScheduled = events.filter(e => e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower))).length;
       return goal.weeklyTarget > currentScheduled;
     });
 
     if (hasUnallocated) {
       const timer = setTimeout(() => {
         triggerAutoScheduler(goals, events, availability);
-      }, 1000);
+      }, 500);
       return () => clearTimeout(timer);
     }
   }, [goals, events, availability, autoScheduleEnabled]);
@@ -531,6 +572,64 @@ export default function App() {
       clearInterval(interval);
     };
   }, [events, goals]);
+
+  // Automated Pre-Session Background Alert Engine (Alerts 10–15 mins before scheduled session starts)
+  useEffect(() => {
+    if (events.length === 0) return;
+
+    const checkUpcomingSessionAlerts = () => {
+      const now = new Date();
+      let notifiedIds: string[] = [];
+      try {
+        const notifiedIdsStr = localStorage.getItem("notified_event_alert_ids");
+        if (notifiedIdsStr) notifiedIds = JSON.parse(notifiedIdsStr);
+      } catch {
+        notifiedIds = [];
+      }
+
+      events.forEach(evt => {
+        if (evt.completed || evt.type === "external") return;
+        if (notifiedIds.includes(evt.id)) return;
+
+        const evtStart = new Date(evt.start);
+        const diffMs = evtStart.getTime() - now.getTime();
+        const diffMins = diffMs / (1000 * 60);
+
+        if (diffMins > 0 && diffMins <= alertLeadMinutes) {
+          const roundedMins = Math.max(1, Math.round(diffMins));
+          const timeStr = evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+          triggerSystemNotification(
+            `⏰ Upcoming Session in ${roundedMins} mins!`,
+            `Your scheduled session "${evt.title}" starts at ${timeStr}. Time to prepare!`,
+            "upcoming"
+          );
+
+          if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted" && alertPushEnabled) {
+            try {
+              new Notification(`⏰ Session Starts in ${roundedMins} Mins!`, {
+                body: `"${evt.title}" at ${timeStr}. Time to prepare!`
+              });
+            } catch {
+              // safe fallback
+            }
+          }
+
+          notifiedIds.push(evt.id);
+        }
+      });
+
+      localStorage.setItem("notified_event_alert_ids", JSON.stringify(notifiedIds));
+    };
+
+    const delayTimer = setTimeout(checkUpcomingSessionAlerts, 1500);
+    const interval = setInterval(checkUpcomingSessionAlerts, 20000);
+
+    return () => {
+      clearTimeout(delayTimer);
+      clearInterval(interval);
+    };
+  }, [events, alertLeadMinutes, alertPushEnabled]);
 
   // Dynamic system notification pusher
   const triggerSystemNotification = (
@@ -1105,6 +1204,16 @@ export default function App() {
               localStorage.setItem("coach_persona", p);
               syncToCloud(goals, events, availability, notifications, coachMessages, p);
             }}
+            onApplyEnergySchedule={(newEvts) => {
+              const updatedEvents = [...events, ...newEvts];
+              setEvents(updatedEvents);
+              syncToCloud(goals, updatedEvents, availability, notifications, coachMessages);
+              triggerSystemNotification(
+                "Energy Schedule Applied!",
+                `Successfully mapped ${newEvts.length} energy-optimized sessions into your calendar grid!`,
+                "success"
+              );
+            }}
           />
         )}
 
@@ -1115,6 +1224,16 @@ export default function App() {
             onClearAll={handleClearAllNotifications}
             onAddNotification={triggerSystemNotification}
             onTriggerDailyDigest={() => generateAndTriggerDailyDigest()}
+            alertLeadMinutes={alertLeadMinutes}
+            onUpdateAlertLeadMinutes={(mins) => {
+              setAlertLeadMinutes(mins);
+              localStorage.setItem("alert_lead_minutes", mins.toString());
+            }}
+            alertPushEnabled={alertPushEnabled}
+            onToggleAlertPush={(enabled) => {
+              setAlertPushEnabled(enabled);
+              localStorage.setItem("alert_push_enabled", enabled.toString());
+            }}
           />
         )}
 

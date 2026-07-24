@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { 
   ResponsiveContainer, 
   AreaChart, 
@@ -23,7 +23,15 @@ import {
   Clock,
   Award,
   Sparkles,
-  Zap
+  Zap,
+  Code,
+  Dumbbell,
+  Target,
+  ShieldCheck,
+  Calendar,
+  Medal,
+  Star,
+  TrendingUp
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 
@@ -33,6 +41,8 @@ interface ProgressDashboardProps {
 }
 
 export default function ProgressDashboard({ goals, events }: ProgressDashboardProps) {
+  const [selectedHeatmapDay, setSelectedHeatmapDay] = useState<number | null>(null);
+
   // 1. Calculate general numbers
   const completedEvents = events.filter(e => e.completed);
   const studyEvents = completedEvents.filter(e => e.type === "study");
@@ -69,28 +79,111 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
     ? Math.round((completedEvents.length / totalScheduled) * 100) 
     : 0;
 
-  // Streak simulation based on consecutive completions
-  const completionStreak = events.filter(e => e.completed).length > 0 
-    ? Math.min(events.filter(e => e.completed).length + 2, 7) // dynamic simulation
-    : 0;
-
-  // Total completed hours
+  // Total completed minutes
   const totalCompletedMinutes = completedEvents.reduce((acc, curr) => {
     const goal = goals.find(g => g.id === curr.goalId);
     return acc + (goal ? goal.durationMinutes : 60);
   }, 0);
 
-  // 2. Prepare Data for Chart A: Workout vs Study completed sessions count per Goal
+  // 2. GitHub-style 30-Day Heatmap Data Calculation
+  const past30Days = Array.from({ length: 30 }, (_, idx) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (29 - idx));
+    d.setHours(0, 0, 0, 0);
+
+    const dayEvents = completedEvents.filter(e => {
+      const eDate = new Date(e.start);
+      eDate.setHours(0, 0, 0, 0);
+      return eDate.getTime() === d.getTime();
+    });
+
+    const goalTitles = dayEvents.map(e => e.title || "Scheduled Goal");
+
+    return {
+      index: idx,
+      date: d,
+      dateStr: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      dayOfWeek: d.toLocaleDateString("en-US", { weekday: "short" }),
+      count: dayEvents.length,
+      goalsCompleted: goalTitles,
+    };
+  });
+
+  // Calculate streaks across past 30 days
+  let currentStreak = 0;
+  let maxStreak = 0;
+  let tempStreak = 0;
+
+  for (let i = 29; i >= 0; i--) {
+    if (past30Days[i].count > 0) {
+      currentStreak++;
+    } else {
+      if (i === 29) {
+        // Today hasn't ended yet; don't break streak if yesterday had count
+        continue;
+      }
+      break;
+    }
+  }
+
+  for (let i = 0; i < 30; i++) {
+    if (past30Days[i].count > 0) {
+      tempStreak++;
+      if (tempStreak > maxStreak) maxStreak = tempStreak;
+    } else {
+      tempStreak = 0;
+    }
+  }
+
+  // 3. Goal-Specific Milestone & Streak Badges Computation
+  const pythonGoal = goals.find(g => 
+    g.name.toLowerCase().includes("python") || 
+    (g.category && g.category.toLowerCase().includes("python"))
+  );
+  
+  const pythonEvents = completedEvents.filter(e => {
+    if (pythonGoal && e.goalId === pythonGoal.id) return true;
+    return e.title && e.title.toLowerCase().includes("python");
+  });
+
+  const fitnessGoal = goals.find(g => 
+    g.type === "workout" || 
+    g.name.toLowerCase().includes("workout") || 
+    g.name.toLowerCase().includes("fitness") ||
+    g.name.toLowerCase().includes("gym")
+  );
+
+  const fitnessEvents = completedEvents.filter(e => {
+    if (fitnessGoal && e.goalId === fitnessGoal.id) return true;
+    return e.type === "workout" || (e.title && (e.title.toLowerCase().includes("workout") || e.title.toLowerCase().includes("fitness")));
+  });
+
+  const studyEventsAll = completedEvents.filter(e => e.type === "study");
+
+  // Badge tier helper
+  const getBadgeTier = (count: number, bronzeThreshold = 2, silverThreshold = 5, goldThreshold = 10) => {
+    if (count >= goldThreshold) return { label: "Gold Titan 🥇", color: "text-amber-300 bg-amber-500/10 border-amber-500/30", nextLevel: "MAX", target: goldThreshold, level: 3 };
+    if (count >= silverThreshold) return { label: "Silver Master 🥈", color: "text-slate-200 bg-slate-400/10 border-slate-400/30", nextLevel: `${goldThreshold - count} to Gold`, target: goldThreshold, level: 2 };
+    if (count >= bronzeThreshold) return { label: "Bronze Novice 🥉", color: "text-amber-500 bg-amber-700/10 border-amber-700/30", nextLevel: `${silverThreshold - count} to Silver`, target: silverThreshold, level: 1 };
+    return { label: "Apprentice 🔒", color: "text-slate-400 bg-white/5 border-white/10", nextLevel: `${bronzeThreshold - count} to Bronze`, target: bronzeThreshold, level: 0 };
+  };
+
+  const pythonBadge = getBadgeTier(pythonEvents.length, 2, 5, 8);
+  const fitnessBadge = getBadgeTier(fitnessEvents.length, 2, 5, 8);
+  const studyBadge = getBadgeTier(studyEventsAll.length, 2, 5, 10);
+  const streakBadge = getBadgeTier(maxStreak, 3, 5, 7);
+
+  // Chart A: Target vs Actual bar chart data
   const goalCompareData = goals.map(g => ({
-    name: g.name.substring(0, 15) + "...",
+    name: g.name.length > 18 ? g.name.substring(0, 15) + "..." : g.name,
     Target: g.weeklyTarget,
     Completed: g.completedCount,
   }));
 
-  // 3. Prepare Data for Chart B: Goal Focus type distribution
+  // Chart B: Distribution data
   const typeDetails: { [key: string]: { label: string; color: string } } = {
     workout: { label: "Workouts", color: "#f43f5e" },
-    study: { label: "Studies", color: "#06b6d4" },
+    study: { label: "Studies & Dev", color: "#06b6d4" },
     job_search: { label: "Job Search", color: "#3b82f6" },
     side_project: { label: "Side Project", color: "#ec4899" },
     routine: { label: "Routine & Chores", color: "#10b981" },
@@ -112,18 +205,16 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
     };
   }).filter(d => d.value > 0);
 
-  // Fallback for empty state distribution to avoid empty chart crashes
   const finalDistributionData = distributionData.length > 0 
     ? distributionData 
     : [{ name: "No Active Records", value: 1, color: "#cbd5e1" }];
 
-  // 4. Activity history graph (last 7 days of completed sessions)
+  // Past 7 days area chart
   const last7DaysOfCompletions = Array.from({ length: 7 }, (_, idx) => {
     const d = new Date();
     d.setDate(d.getDate() - (6 - idx));
     const dayStr = d.toLocaleDateString("en-US", { weekday: "short" });
     
-    // Count completions for this day
     const count = completedEvents.filter(e => {
       const eDate = new Date(e.start);
       return eDate.getFullYear() === d.getFullYear() && 
@@ -137,274 +228,359 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
     };
   });
 
-  // 5. Compute past 28 days consistency matrix data
-  const consistencyMatrix = Array.from({ length: 28 }, (_, idx) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (27 - idx)); // past 28 days ending today
-    
-    // Count completed events for this date
-    const dayCompletions = completedEvents.filter(e => {
-      const eDate = new Date(e.start);
-      return eDate.getFullYear() === d.getFullYear() &&
-             eDate.getMonth() === d.getMonth() &&
-             eDate.getDate() === d.getDate();
-    });
-    
-    return {
-      date: d,
-      count: dayCompletions.length,
-      dayName: d.toLocaleDateString("en-US", { weekday: "narrow" }),
-      dateLabel: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-    };
-  });
-
   return (
     <div className="space-y-6">
       
-      {/* SECTION A: SCORE CARDS */}
+      {/* SECTION 1: TOP METRICS HEADERS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" id="metrics_cards_row">
         
-        {/* SCORE CARD 1: CONSISTENCY INDEX */}
+        {/* CONSISTENCY INDEX */}
         <div id="metric_card_consistency" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
           <div className="p-3 bg-indigo-500/15 text-indigo-300 rounded-xl">
             <Trophy className="w-5 h-5" />
           </div>
           <div className="select-none">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Consistency</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Consistency Index</p>
             <h4 id="metrics_consistency_score" className="text-xl font-sans font-bold text-white leading-none">{consistencyScore}%</h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">Completion Rate</p>
+            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">Goal Completion Rate</p>
           </div>
         </div>
 
-        {/* SCORE CARD 2: STREAK */}
+        {/* ACTIVE STREAK */}
         <div id="metric_card_streak" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
           <div className="p-3 bg-rose-500/15 text-rose-300 rounded-xl">
-            <Flame className="w-5 h-5 animate-bounce" />
+            <Flame className="w-5 h-5 animate-bounce text-rose-400" />
           </div>
           <div className="select-none">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active Streak</p>
-            <h4 id="metrics_streak_count" className="text-xl font-sans font-bold text-white leading-none">{completionStreak} Days</h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">Consecutive Done</p>
+            <h4 id="metrics_streak_count" className="text-xl font-sans font-bold text-white leading-none">{currentStreak} Days</h4>
+            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">Best: {maxStreak} Days Streak</p>
           </div>
         </div>
 
-        {/* SCORE CARD 3: FITNESS REGISTERED */}
+        {/* ACTIVE & WELLNESS */}
         <div id="metric_card_workout" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
           <div className="p-3 bg-pink-500/15 text-pink-300 rounded-xl">
             <Activity className="w-5 h-5" />
           </div>
           <div className="select-none">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active & Wellness</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active & Fitness</p>
             <h4 id="metrics_workout_hours" className="text-xl font-sans font-bold text-white leading-none">
               {Math.round((totalActiveMinutes / 60) * 10) / 10}h
             </h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">{activeEvents.length} logs (Workout, Routine, Personal)</p>
+            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">{fitnessEvents.length} Fitness Sessions Done</p>
           </div>
         </div>
 
-        {/* SCORE CARD 4: STUDY REGISTERED */}
+        {/* PYTHON & CAREER */}
         <div id="metric_card_study" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
           <div className="p-3 bg-cyan-500/15 text-cyan-300 rounded-xl">
-            <BookOpen className="w-5 h-5" />
+            <Code className="w-5 h-5" />
           </div>
           <div className="select-none">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Career & Growth</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Python & Career</p>
             <h4 id="metrics_study_hours" className="text-xl font-sans font-bold text-white leading-none">
-              {Math.round((totalCognitiveMinutes / 60) * 10) / 10}h
+              {pythonEvents.length} Sessions
             </h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">{cognitiveEvents.length} logs (Study, Job Search, Project)</p>
+            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">
+              {pythonGoal ? `Target: ${pythonGoal.weeklyTarget}/wk` : "Python Masterclass"}
+            </p>
           </div>
         </div>
 
       </div>
 
-      {/* SECTION B: WEEKLY ACHIEVEMENTS & MILESTONES BENTO */}
-      <div id="weekly_achievements_bento" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
-        <div>
-          <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-1.5 select-none">
-            <Award className="w-4 h-4 text-amber-400" />
-            Personal Achievements & Unlocked Milestones
-          </h3>
-          <p className="text-[11px] text-slate-350 mt-0.5 font-medium leading-none">Your physical and cognitive milestone footprint computed from active schedules and goals.</p>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {/* Badge 1: Consistency */}
-          <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Consistency Lock</span>
-              {consistencyScore >= 75 ? (
-                <span className="bg-emerald-500/10 text-emerald-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
-              ) : (
-                <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
-              )}
-            </div>
-            <div className="space-y-1">
-              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
-                {consistencyScore >= 75 ? "Routine Mastery Star" : "Consistency Seeker"}
-              </h4>
-              <p className="text-[10px] text-slate-300 font-medium">
-                {consistencyScore >= 75 
-                  ? "Outstanding! You are completing more than 75% of your scheduled sessions."
-                  : `Reach 75% completion to unlock routine star. Current rate: ${consistencyScore}%.`}
-              </p>
-            </div>
-          </div>
-
-          {/* Badge 2: Volume */}
-          <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Weekly Volume</span>
-              {totalCompletedMinutes >= 300 ? (
-                <span className="bg-rose-500/10 text-rose-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
-              ) : (
-                <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
-              )}
-            </div>
-            <div className="space-y-1">
-              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Flame className="w-3.5 h-3.5 text-rose-400" />
-                {totalCompletedMinutes >= 300 ? "Volume Heavyweight" : "Momentum Builder"}
-              </h4>
-              <p className="text-[10px] text-slate-300 font-medium">
-                {totalCompletedMinutes >= 300
-                  ? "Incredible energy! You have logged more than 5 hours of total active focus."
-                  : `Log 5 hours of completed sessions to unlock. Currently: ${(Math.round((totalCompletedMinutes / 60) * 10) / 10)}h / 5h.`}
-              </p>
-            </div>
-          </div>
-
-          {/* Badge 3: Balance */}
-          <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Life Balance</span>
-              {totalCognitiveMinutes > 0 && totalActiveMinutes > 0 ? (
-                <span className="bg-cyan-500/10 text-cyan-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
-              ) : (
-                <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
-              )}
-            </div>
-            <div className="space-y-1">
-              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Compass className="w-3.5 h-3.5 text-cyan-400" />
-                {totalCognitiveMinutes > 0 && totalActiveMinutes > 0 ? "Perfect Harmony" : "Single Focus Focus"}
-              </h4>
-              <p className="text-[10px] text-slate-300 font-medium">
-                {totalCognitiveMinutes > 0 && totalActiveMinutes > 0
-                  ? "Perfect synthesis! You successfully balanced mental growth goals and physical workouts."
-                  : "Complete at least 1 cognitive study and 1 physical workout block to unlock life balance."}
-              </p>
-            </div>
-          </div>
-
-          {/* Badge 4: Subtask completion ratio */}
-          {(() => {
-            const allSub = goals.flatMap(g => g.subtasks || []);
-            const compSub = allSub.filter(s => s.completed);
-            const isFinished = allSub.length > 0 && compSub.length === allSub.length;
-            const displayRatio = `${compSub.length}/${allSub.length}`;
-            return (
-              <div className="p-3.5 bg-black/25 rounded-xl border border-white/5 flex flex-col justify-between space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Milestones Metric</span>
-                  {isFinished ? (
-                    <span className="bg-pink-500/10 text-pink-300 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Unlocked</span>
-                  ) : (
-                    <span className="bg-slate-500/15 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">In Progress</span>
-                  )}
-                </div>
-                <div className="space-y-1">
-                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Zap className="w-3.5 h-3.5 text-pink-400" />
-                    {isFinished ? "Milestone Master" : "Project Planner"}
-                  </h4>
-                  <p className="text-[10px] text-slate-300 font-medium">
-                    {allSub.length === 0 
-                      ? "Create milestones in your Goals panel to track detailed sub-task achievements."
-                      : isFinished
-                      ? `Sensational! All ${allSub.length} sub-task milestones are completed successfully!`
-                      : `Complete all current goal milestones to unlock. Currently: ${displayRatio} completed.`}
-                  </p>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      </div>
-
-      {/* NEW BENTO SECTION: 28-DAY ROUTINE STREAK MATRIX */}
-      <div id="routine_heatmap_matrix_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+      {/* SECTION 2: GITHUB-STYLE 30-DAY HABIT HEATMAP */}
+      <div id="github_habit_heatmap_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-2 border-b border-white/10">
           <div>
-            <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-1.5">
-              <CheckCircle className="w-4 h-4 text-emerald-400" />
-              28-Day Consistency Matrix
+            <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-emerald-400" />
+              GitHub-Style 30-Day Habit Heatmap
             </h3>
-            <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-none">Your habit footprint. Complete scheduled study blocks and cardio to saturate the grid!</p>
+            <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
+              A visual 30-day activity matrix tracking daily completed goal blocks & consistency streaks.
+            </p>
           </div>
-          
-          {/* Legend */}
-          <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 bg-white/5 border border-white/5 px-3 py-1.5 rounded-lg select-none">
-            <span>Less</span>
-            <span className="w-3 h-3 rounded-sm bg-white/[0.04] border border-white/5" title="0 Sessions" />
-            <span className="w-3 h-3 rounded-sm bg-indigo-900/45 border border-indigo-750/30" title="1 Session" />
-            <span className="w-3 h-3 rounded-sm bg-indigo-600/70 border border-indigo-500/40" title="2 Sessions" />
-            <span className="w-3 h-3 rounded-sm bg-emerald-500 border border-emerald-400/40" title="3+ Sessions" />
-            <span>More Focus</span>
+
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300">
+            <div className="bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-xl flex items-center gap-1.5 font-medium">
+              <Flame className="w-3.5 h-3.5 text-rose-400" />
+              <span>Streak: <strong className="text-white">{currentStreak} days</strong></span>
+            </div>
+            <div className="bg-indigo-500/10 border border-indigo-500/20 px-3 py-1 rounded-xl flex items-center gap-1.5 font-medium">
+              <CheckCircle className="w-3.5 h-3.5 text-indigo-400" />
+              <span>30-Day Total: <strong className="text-white">{completedEvents.length} done</strong></span>
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-7 sm:grid-cols-14 lg:grid-cols-28 gap-2.5 pt-2" id="heatmap_grid_blocks">
-          {consistencyMatrix.map((item, index) => {
-            let bgClass = "bg-white/[0.04] border border-white/5 hover:border-white/20";
-            let tooltipLabel = `${item.dateLabel}: No sessions completed`;
-            
-            if (item.count === 1) {
-              bgClass = "bg-indigo-900/45 text-indigo-200 border border-indigo-700/30 hover:bg-indigo-900/75";
-              tooltipLabel = `${item.dateLabel}: 1 completed block`;
-            } else if (item.count === 2) {
-              bgClass = "bg-indigo-600/70 text-white border border-indigo-500/40 hover:bg-indigo-600/90";
-              tooltipLabel = `${item.dateLabel}: 2 completed blocks`;
-            } else if (item.count >= 3) {
-              bgClass = "bg-emerald-500 text-white border border-emerald-400/40 hover:bg-emerald-450";
-              tooltipLabel = `${item.dateLabel}: ${item.count} completed blocks! 🔥`;
-            }
+        {/* Heatmap Grid & Legend */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+            <span>Past 30 Days Activity Log</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px]">Less</span>
+              <span className="w-3.5 h-3.5 rounded bg-slate-900/80 border border-white/5" title="0 Sessions" />
+              <span className="w-3.5 h-3.5 rounded bg-emerald-950 border border-emerald-800/40" title="1 Session" />
+              <span className="w-3.5 h-3.5 rounded bg-emerald-700/80 border border-emerald-600/50" title="2 Sessions" />
+              <span className="w-3.5 h-3.5 rounded bg-emerald-500 border border-emerald-400 shadow-sm shadow-emerald-500/30" title="3+ Sessions" />
+              <span className="text-[10px]">More Focus</span>
+            </div>
+          </div>
 
-            return (
-              <div
-                key={index}
-                className="flex flex-col items-center group relative cursor-help"
-                id={`heatmap_day_${index}`}
-              >
-                <div className={`w-full aspect-square rounded-lg flex items-center justify-center transition-all ${bgClass}`}>
-                  <span className="text-[9px] font-mono font-bold opacity-30 group-hover:opacity-100 transition-opacity">
-                    {item.date.getDate()}
+          {/* 30-Day Heatmap Grid */}
+          <div className="grid grid-cols-6 sm:grid-cols-10 lg:grid-cols-15 gap-2.5 pt-1" id="heatmap_grid_blocks">
+            {past30Days.map((item) => {
+              let colorClass = "bg-slate-900/80 border-white/5 hover:border-white/20 text-slate-500";
+              if (item.count === 1) {
+                colorClass = "bg-emerald-950 border-emerald-800/50 text-emerald-300 hover:bg-emerald-900";
+              } else if (item.count === 2) {
+                colorClass = "bg-emerald-700/80 border-emerald-600/60 text-white hover:bg-emerald-600";
+              } else if (item.count >= 3) {
+                colorClass = "bg-emerald-500 border-emerald-400 text-white shadow-md shadow-emerald-500/30 hover:bg-emerald-400";
+              }
+
+              const isSelected = selectedHeatmapDay === item.index;
+
+              return (
+                <div
+                  key={item.index}
+                  onClick={() => setSelectedHeatmapDay(isSelected ? null : item.index)}
+                  className={`relative group flex flex-col items-center p-2 rounded-xl border transition-all cursor-pointer ${colorClass} ${
+                    isSelected ? "ring-2 ring-emerald-400 scale-105 z-20" : ""
+                  }`}
+                  id={`heatmap_tile_${item.index}`}
+                >
+                  <span className="text-[10px] font-mono font-bold leading-none">{item.date.getDate()}</span>
+                  <span className="text-[8px] font-sans font-medium opacity-75 mt-0.5">{item.dayOfWeek}</span>
+
+                  {item.count > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-emerald-400 text-black text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow">
+                      {item.count}
+                    </span>
+                  )}
+
+                  {/* Hover Tooltip showing completed goal breakdown */}
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col bg-[#0b0f19] border border-white/20 text-white p-2.5 rounded-xl shadow-2xl z-30 min-w-[150px] max-w-[220px] text-left pointer-events-none animate-fade-in">
+                    <p className="text-[10px] font-bold text-emerald-400 mb-1 border-b border-white/10 pb-1">
+                      {item.dateStr} ({item.dayOfWeek})
+                    </p>
+                    {item.count === 0 ? (
+                      <p className="text-[10px] text-slate-400 italic">No goal sessions logged</p>
+                    ) : (
+                      <div className="space-y-1 text-[10px]">
+                        <p className="font-semibold text-slate-300">Completed ({item.count}):</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-slate-200">
+                          {item.goalsCompleted.map((title, gIdx) => (
+                            <li key={gIdx} className="truncate">{title}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Selected day drilldown details */}
+          {selectedHeatmapDay !== null && (
+            <div className="mt-3 bg-white/5 border border-white/10 p-3 rounded-xl flex items-center justify-between text-xs text-slate-200 animate-fade-in">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+                <div>
+                  <span className="font-bold text-white">{past30Days[selectedHeatmapDay].dateStr}: </span>
+                  <span>
+                    {past30Days[selectedHeatmapDay].count === 0 
+                      ? "Rest Day (0 completed sessions)" 
+                      : `Log of completed sessions: ${past30Days[selectedHeatmapDay].goalsCompleted.join(", ")}`}
                   </span>
                 </div>
-                
-                {/* Narrow day label (only for the last week or every 7th day) */}
-                <span className="text-[8px] font-mono font-semibold text-slate-400 mt-1 select-none">
-                  {item.dayName}
-                </span>
-
-                {/* Premium Floating Tooltip */}
-                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#0a0c16] text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-white/15 shadow-2xl whitespace-nowrap z-30 pointer-events-none transition-all scale-95 origin-bottom animate-in fade-in zoom-in-95 duration-100">
-                  {tooltipLabel}
-                </div>
               </div>
-            );
-          })}
+              <button
+                onClick={() => setSelectedHeatmapDay(null)}
+                className="text-slate-400 hover:text-white text-xs font-bold px-2 py-1 rounded bg-white/5"
+              >
+                Close
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* SECTION B: VISUAL CHARTS GRID */}
+      {/* SECTION 3: MILESTONE & STREAK BADGES */}
+      <div id="milestone_streak_badges_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
+        <div>
+          <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
+            <Award className="w-4 h-4 text-amber-400" />
+            Milestone & Streak Badges
+          </h3>
+          <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
+            Earn tiered rewards for maintaining weekly streaks in key routines like Python Dev or Fitness!
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          
+          {/* BADGE 1: PYTHON DEV MASTER */}
+          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-blue-500/20 text-blue-400 rounded-lg">
+                  <Code className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white">Python Dev Master</h4>
+                  <p className="text-[10px] text-slate-400">Coding & AI Engineering</p>
+                </div>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${pythonBadge.color}`}>
+                {pythonBadge.label}
+              </span>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
+                <span>Completed Sessions: <strong>{pythonEvents.length}</strong></span>
+                <span>Next: {pythonBadge.nextLevel}</span>
+              </div>
+              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                <div 
+                  className="bg-blue-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((pythonEvents.length / pythonBadge.target) * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <p className="text-[10px] text-slate-400 italic">
+              {pythonEvents.length >= 8 
+                ? "🏆 Elite Python Developer! Masterclass status achieved."
+                : `Complete ${pythonBadge.target - pythonEvents.length} more sessions to reach the next Python badge level.`}
+            </p>
+          </div>
+
+          {/* BADGE 2: FITNESS CHAMPION */}
+          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-rose-500/20 text-rose-400 rounded-lg">
+                  <Dumbbell className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white">Fitness Champion</h4>
+                  <p className="text-[10px] text-slate-400">Workouts & Health</p>
+                </div>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${fitnessBadge.color}`}>
+                {fitnessBadge.label}
+              </span>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
+                <span>Completed Workouts: <strong>{fitnessEvents.length}</strong></span>
+                <span>Next: {fitnessBadge.nextLevel}</span>
+              </div>
+              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                <div 
+                  className="bg-rose-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((fitnessEvents.length / fitnessBadge.target) * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <p className="text-[10px] text-slate-400 italic">
+              {fitnessEvents.length >= 8 
+                ? "🏋️ Fitness Titan! Unstoppable physical momentum."
+                : `Log ${fitnessBadge.target - fitnessEvents.length} more workout blocks to elevate your fitness badge.`}
+            </p>
+          </div>
+
+          {/* BADGE 3: DEEP STUDY SCHOLAR */}
+          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-cyan-500/20 text-cyan-400 rounded-lg">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white">Deep Study Scholar</h4>
+                  <p className="text-[10px] text-slate-400">Cognitive & Learning</p>
+                </div>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${studyBadge.color}`}>
+                {studyBadge.label}
+              </span>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
+                <span>Study Sessions: <strong>{studyEventsAll.length}</strong></span>
+                <span>Next: {studyBadge.nextLevel}</span>
+              </div>
+              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                <div 
+                  className="bg-cyan-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((studyEventsAll.length / studyBadge.target) * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <p className="text-[10px] text-slate-400 italic">
+              {studyEventsAll.length >= 10 
+                ? "🧠 Knowledge Titan! Mastered consistent deep focus."
+                : `Complete ${studyBadge.target - studyEventsAll.length} more study blocks to upgrade badge.`}
+            </p>
+          </div>
+
+          {/* BADGE 4: UNSTOPPABLE STREAK LEGEND */}
+          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-amber-500/20 text-amber-400 rounded-lg">
+                  <Flame className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white">Consistency Streak</h4>
+                  <p className="text-[10px] text-slate-400">Daily Goal Completion</p>
+                </div>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${streakBadge.color}`}>
+                {streakBadge.label}
+              </span>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
+                <span>Max Streak: <strong>{maxStreak} Days</strong></span>
+                <span>Target: {streakBadge.target} Days</span>
+              </div>
+              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                <div 
+                  className="bg-amber-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((maxStreak / streakBadge.target) * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <p className="text-[10px] text-slate-400 italic">
+              {maxStreak >= 7 
+                ? "🔥 Unstoppable Streak Legend! Completed goals 7+ days in a row."
+                : `Maintain a ${streakBadge.target}-day consecutive goal streak to earn the next reward tier.`}
+            </p>
+          </div>
+
+        </div>
+      </div>
+
+      {/* SECTION 4: VISUAL CHARTS GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-        {/* CHART 1: WEEKLY COMPONENT ACTIVITY HEAT */}
+        {/* CHART 1: WEEKLY COMPONENT ACTIVITY AREA CHART */}
         <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-xl lg:col-span-2">
-          <h3 className="font-sans font-semibold text-white text-sm mb-3">Daily Activity Completion Track</h3>
-          <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Timeline chart of the total goal sessions completed in the past 7 days.</p>
+          <h3 className="font-sans font-semibold text-white text-sm mb-1">Daily Completion Pace</h3>
+          <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Sessions completed per day over the past 7 days.</p>
           
           <div className="h-64" id="activity_history_container">
             <ResponsiveContainer width="100%" height="100%">
@@ -424,10 +600,10 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
           </div>
         </div>
 
-        {/* CHART 2: HOUR focus SPLIT */}
+        {/* CHART 2: TIME SPLIT PIE */}
         <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-xl">
-          <h3 className="font-sans font-semibold text-white text-sm mb-3">Time Split Ratio</h3>
-          <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Distribution of your logged hours across different goal focuses and routines.</p>
+          <h3 className="font-sans font-semibold text-white text-sm mb-1">Category Split</h3>
+          <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Distribution of logged focus hours by goal category.</p>
 
           <div className="h-48 relative flex items-center justify-center" id="ratio_pie_container">
             <ResponsiveContainer width="100%" height="100%">
@@ -471,15 +647,15 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
 
       </div>
 
-      {/* CHART 3: CORE TARGET FREQUENCY COMPARISON */}
+      {/* CHART 3: TARGET vs ACTUAL BAR CHART */}
       <div className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl" id="comparison_bar_card">
-        <h3 className="font-sans font-semibold text-white text-sm mb-3">Weekly Target vs Actual Completion</h3>
-        <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Bar progression displaying targets outlined versus the total sessions checked off.</p>
+        <h3 className="font-sans font-semibold text-white text-sm mb-1">Weekly Target vs Actual Completion</h3>
+        <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Bar progression comparing target session count against actual completed sessions.</p>
 
         <div className="h-64" id="target_comparison_bar_container">
           {goals.length === 0 ? (
-            <div className="text-center py-12 text-slate-455 text-xs">
-              No targets listed in goal planner sheet yet.
+            <div className="text-center py-12 text-slate-400 text-xs">
+              No active goals configured yet.
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">

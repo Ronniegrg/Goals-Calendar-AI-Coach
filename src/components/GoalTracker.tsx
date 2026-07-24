@@ -322,111 +322,119 @@ export default function GoalTracker({
   const handleAutoSchedule = () => {
     const newScheduledEvents: CalendarEvent[] = [];
     let scheduledCount = 0;
+    const now = new Date();
 
-    // Start scheduling from tomorrow for next 7 days
-    const today = new Date();
-    
-    // For each goal, determine how many sessions we need to schedule this week
     goals.forEach(goal => {
-      // Find count of existing scheduled events for this goal id
-      const currentScheduled = events.filter(e => e.goalId === goal.id).length;
-      const neededCount = Math.max(goal.weeklyTarget - currentScheduled, 0);
+      const goalNameLower = goal.name.toLowerCase();
 
-      if (neededCount === 0) return; // already fully booked!
+      // Find existing scheduled events for this goal (by goalId or matching title)
+      const currentScheduledEvents = [...events, ...newScheduledEvents].filter(e => {
+        if (e.goalId === goal.id) return true;
+        if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
+        return false;
+      });
 
-      // Keep counter of successes for this goal
+      const neededCount = Math.max(goal.weeklyTarget - currentScheduledEvents.length, 0);
+      if (neededCount === 0) return;
+
       let successBooked = 0;
 
-      // Try for next 7 days
-      for (let dayOffset = 1; dayOffset <= 8; dayOffset++) {
+      for (let dayOffset = 0; dayOffset <= 14; dayOffset++) {
         if (successBooked >= neededCount) break;
 
-        const targetDay = new Date(today);
-        targetDay.setDate(today.getDate() + dayOffset);
+        const targetDay = new Date(now);
+        targetDay.setDate(now.getDate() + dayOffset);
         const dayOfWeek = targetDay.getDay();
 
-        // Check if day is active in availability
         const availDay = availability.find(a => a.dayOfWeek === dayOfWeek);
         if (!availDay || !availDay.active) continue;
 
-        // Prevent scheduling the same goal multiple times per day (unless frequency target is > 7)
         const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
         const targetDayString = targetDay.toDateString();
+
         const sessionsOnTargetDay = [...events, ...newScheduledEvents].filter(evt => {
-          if (evt.goalId !== goal.id) return false;
-          return new Date(evt.start).toDateString() === targetDayString;
+          const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+          return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
         }).length;
 
         if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
 
-        // Determine hour boundaries based on availability and goal preference
-        let [availStartHour, availStartMin] = availDay.startTime.split(":").map(Number);
-        let [availEndHour, availEndMin] = availDay.endTime.split(":").map(Number);
+        let [availStartHour] = availDay.startTime.split(":").map(Number);
+        let [availEndHour] = availDay.endTime.split(":").map(Number);
 
-        // Map Goal Time Preferences parameters:
-        // MORNING = 08:00 - 12:00
-        // AFTERNOON = 12:00 - 17:00
-        // EVENING = 17:00 - 21:00
+        let prefStart = availStartHour;
+        let prefEnd = availEndHour;
+
         if (goal.timePreference === TimePreference.MORNING) {
-          availStartHour = Math.max(availStartHour, 8);
-          availEndHour = Math.min(availEndHour, 12);
+          prefStart = Math.max(availStartHour, 8);
+          prefEnd = Math.min(availEndHour, 12);
         } else if (goal.timePreference === TimePreference.AFTERNOON) {
-          availStartHour = Math.max(availStartHour, 12);
-          availEndHour = Math.min(availEndHour, 17);
+          prefStart = Math.max(availStartHour, 12);
+          prefEnd = Math.min(availEndHour, 17);
         } else if (goal.timePreference === TimePreference.EVENING) {
-          availStartHour = Math.max(availStartHour, 17);
-          availEndHour = Math.min(availEndHour, 21);
+          prefStart = Math.max(availStartHour, 17);
+          prefEnd = Math.min(availEndHour, 22);
         }
 
-        // Search hour slots within bounds
         const blockDurationHours = goal.durationMinutes / 60;
-        
-        for (let hrs = availStartHour; hrs <= availEndHour - blockDurationHours; hrs += 1.5) { // search every 1.5 hour interval
-          if (successBooked >= neededCount) break;
 
-          // Prevent scheduling multiple times per day during slot searching
-          const dayCount = [...events, ...newScheduledEvents].filter(evt => {
-            if (evt.goalId !== goal.id) return false;
-            return new Date(evt.start).toDateString() === targetDayString;
-          }).length;
+        const windowsToTry = [
+          { start: prefStart, end: prefEnd },
+          { start: availStartHour, end: availEndHour }
+        ];
 
-          if (dayCount >= maxSessionsPerDay) {
-            break; // Reached daily limit, proceed to the next day
-          }
-          
-          const slotStart = new Date(targetDay);
-          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+        let slotBookedOnDay = false;
 
-          const slotEnd = new Date(slotStart);
-          slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+        for (const win of windowsToTry) {
+          if (slotBookedOnDay) break;
 
-          // Rule Check: Collision Detection
-          // Check overlaps against all existing and newly scheduled events
-          const overlap = [...events, ...newScheduledEvents].some(evt => {
-            const evtStart = new Date(evt.start);
-            const evtEnd = new Date(evt.end);
-            return (slotStart < evtEnd && slotEnd > evtStart);
-          });
+          for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
+            if (successBooked >= neededCount) break;
 
-          if (!overlap) {
-            // Found a conflict-free slot! Book it.
-            newScheduledEvents.push({
-              id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-              title: goal.name,
-              type: goal.type === GoalType.WORKOUT ? "workout" :
-                    goal.type === GoalType.STUDY ? "study" :
-                    goal.type === GoalType.JOB_SEARCH ? "job_search" :
-                    goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-                    goal.type === GoalType.ROUTINE ? "routine" :
-                    "personal",
-              start: slotStart.toISOString(),
-              end: slotEnd.toISOString(),
-              goalId: goal.id,
-              completed: false,
-              notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+            const currentDayCount = [...events, ...newScheduledEvents].filter(evt => {
+              const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+              return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+            }).length;
+
+            if (currentDayCount >= maxSessionsPerDay) break;
+
+            const slotStart = new Date(targetDay);
+            slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+            if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
+              continue;
+            }
+
+            const slotEnd = new Date(slotStart);
+            slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+
+            const overlap = [...events, ...newScheduledEvents].some(evt => {
+              const evtStart = new Date(evt.start);
+              const evtEnd = new Date(evt.end);
+              return slotStart < evtEnd && slotEnd > evtStart;
             });
-            successBooked++;
-            scheduledCount++;
+
+            if (!overlap) {
+              newScheduledEvents.push({
+                id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
+                title: goal.name,
+                type: goal.type === GoalType.WORKOUT ? "workout" :
+                      goal.type === GoalType.STUDY ? "study" :
+                      goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                      goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                      goal.type === GoalType.ROUTINE ? "routine" :
+                      "personal",
+                start: slotStart.toISOString(),
+                end: slotEnd.toISOString(),
+                goalId: goal.id,
+                completed: false,
+                notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              });
+              successBooked++;
+              scheduledCount++;
+              slotBookedOnDay = true;
+              break;
+            }
           }
         }
       }

@@ -107,10 +107,171 @@ export default function CalendarView({
   const [exportStatus, setExportStatus] = useState<{ [id: string]: "idle" | "syncing" | "success" | "error" }>({});
   const [autoGcalExport, setAutoGcalExport] = useState(() => localStorage.getItem("auto_gcal_export") === "true");
 
-  const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
-
   // Live Current Time state for Google Calendar-style current time indicator line
   const [now, setNow] = useState<Date>(new Date());
+
+  const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+
+  // Drag & Drop and Rescheduling States
+  const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
+  const [dragOverCell, setDragOverCell] = useState<{ dayIdx?: number; hour: number } | null>(null);
+  const [rebalanceStatus, setRebalanceStatus] = useState<string | null>(null);
+
+  const missedSessionsCount = events.filter(evt => !evt.completed && evt.type !== "external" && new Date(evt.end) < now).length;
+
+  const handleDragStart = (e: React.DragEvent, eventId: string) => {
+    e.stopPropagation();
+    setDraggedEventId(eventId);
+    e.dataTransfer.setData("text/plain", eventId);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent, hour: number, dayIdx?: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverCell?.hour !== hour || dragOverCell?.dayIdx !== dayIdx) {
+      setDragOverCell({ hour, dayIdx });
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOverCell(null);
+  };
+
+  const handleDropEvent = (e: React.DragEvent, targetHour: number, targetDayIdx?: number) => {
+    e.preventDefault();
+    setDragOverCell(null);
+    const eventId = draggedEventId || e.dataTransfer.getData("text/plain");
+    if (!eventId || !onEditEvent) return;
+
+    const targetEvt = events.find(evt => evt.id === eventId);
+    if (!targetEvt) return;
+
+    const startObj = new Date(targetEvt.start);
+    const endObj = new Date(targetEvt.end);
+    const durationMs = endObj.getTime() - startObj.getTime();
+
+    let newStart: Date;
+
+    if (targetDayIdx !== undefined && viewMode === "week") {
+      const targetDate = weekDates[targetDayIdx];
+      newStart = new Date(targetDate);
+      newStart.setHours(targetHour, startObj.getMinutes(), 0, 0);
+    } else if (viewMode === "day") {
+      newStart = new Date(currentDate);
+      newStart.setHours(targetHour, startObj.getMinutes(), 0, 0);
+    } else {
+      return;
+    }
+
+    const newEnd = new Date(newStart.getTime() + durationMs);
+
+    onEditEvent(eventId, {
+      start: newStart.toISOString(),
+      end: newEnd.toISOString()
+    });
+
+    setDraggedEventId(null);
+  };
+
+  const handleAdjustDuration = (e: React.MouseEvent, evt: CalendarEvent, deltaMinutes: number) => {
+    e.stopPropagation();
+    if (!onEditEvent) return;
+
+    const currentStart = new Date(evt.start);
+    const currentEnd = new Date(evt.end);
+    const newEndMs = Math.max(currentStart.getTime() + 15 * 60 * 1000, currentEnd.getTime() + deltaMinutes * 60 * 1000);
+    
+    onEditEvent(evt.id, {
+      end: new Date(newEndMs).toISOString()
+    });
+  };
+
+  const handleSmartRebalance = () => {
+    if (!onEditEvent) return;
+
+    const currentTime = new Date();
+    // Find uncompleted past sessions
+    const missedEvents = events.filter(evt => {
+      if (evt.completed || evt.type === "external") return false;
+      return new Date(evt.end) < currentTime;
+    });
+
+    if (missedEvents.length === 0) {
+      setRebalanceStatus("✨ All scheduled sessions are up to date! No missed blocks to re-balance.");
+      setTimeout(() => setRebalanceStatus(null), 4000);
+      return;
+    }
+
+    let updatedCount = 0;
+    const currentEventsList = [...events];
+
+    missedEvents.forEach(evt => {
+      const originalStart = new Date(evt.start);
+      const originalEnd = new Date(evt.end);
+      const durationMs = originalEnd.getTime() - originalStart.getTime();
+
+      let foundSlot = false;
+
+      // Search across next 7 days
+      for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+        if (foundSlot) break;
+
+        const searchDay = new Date(currentTime);
+        searchDay.setDate(currentTime.getDate() + dayOffset);
+
+        const startHour = dayOffset === 0 ? Math.max(8, currentTime.getHours() + 1) : 8;
+        const endHour = 22;
+
+        for (let hrs = startHour; hrs <= endHour - (durationMs / (3600 * 1000)); hrs += 0.5) {
+          const slotStart = new Date(searchDay);
+          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+          if (slotStart <= currentTime) continue;
+
+          const slotEnd = new Date(slotStart.getTime() + durationMs);
+
+          const hasOverlap = currentEventsList.some(other => {
+            if (other.id === evt.id) return false;
+            const oStart = new Date(other.start);
+            const oEnd = new Date(other.end);
+            return slotStart < oEnd && slotEnd > oStart;
+          });
+
+          if (!hasOverlap) {
+            onEditEvent(evt.id, {
+              start: slotStart.toISOString(),
+              end: slotEnd.toISOString(),
+              notes: `${evt.notes || ''} (Auto Re-balanced)`.trim()
+            });
+
+            const idx = currentEventsList.findIndex(e => e.id === evt.id);
+            if (idx !== -1) {
+              currentEventsList[idx] = {
+                ...currentEventsList[idx],
+                start: slotStart.toISOString(),
+                end: slotEnd.toISOString()
+              };
+            }
+
+            updatedCount++;
+            foundSlot = true;
+            break;
+          }
+        }
+      }
+    });
+
+    if (updatedCount > 0) {
+      setRebalanceStatus(`⚡ Successfully re-balanced ${updatedCount} missed session(s) into upcoming conflict-free slots!`);
+    } else {
+      setRebalanceStatus("⚠️ Could not find open slots for all missed sessions. Try adjusting availability or clearing busy times.");
+    }
+
+    setTimeout(() => setRebalanceStatus(null), 5000);
+  };
+
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -984,6 +1145,25 @@ export default function CalendarView({
           </button>
 
           <button
+            id="auto_rebalance_btn"
+            onClick={handleSmartRebalance}
+            className={`p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold px-3 ${
+              missedSessionsCount > 0
+                ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border-amber-500/30 shadow-md shadow-amber-500/10 animate-pulse"
+                : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-300 border-white/10"
+            }`}
+            title="Shift missed sessions to upcoming free time slots automatically"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${missedSessionsCount > 0 ? "text-amber-400" : "text-indigo-400"}`} />
+            <span>Auto Re-balance</span>
+            {missedSessionsCount > 0 && (
+              <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                {missedSessionsCount}
+              </span>
+            )}
+          </button>
+
+          <button
             id="open_add_event_modal_btn"
             onClick={() => setShowAddModal(true)}
             className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 md:px-4 md:py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-indigo-600/20 cursor-pointer transition-all"
@@ -993,6 +1173,21 @@ export default function CalendarView({
           </button>
         </div>
       </div>
+
+      {rebalanceStatus && (
+        <div className="bg-indigo-600/20 border-b border-indigo-500/30 px-4 py-2.5 flex items-center justify-between text-xs text-indigo-200 animate-fade-in font-medium">
+          <div className="flex items-center gap-2">
+            <RotateCw className="w-4 h-4 text-indigo-400 animate-spin" />
+            <span>{rebalanceStatus}</span>
+          </div>
+          <button 
+            onClick={() => setRebalanceStatus(null)}
+            className="text-slate-400 hover:text-white transition cursor-pointer p-0.5"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Sync/External Calendar configuration Modal Overlay */}
       {showSyncPanel && (
@@ -1258,26 +1453,34 @@ export default function CalendarView({
                   </div>
 
                   {/* Day Cells background */}
-                  {Array.from({ length: 7 }).map((_, dIdx) => (
-                    <div 
-                      key={dIdx} 
-                      className="border-r border-white/5 hover:bg-white/5 relative group"
-                    >
-                      {/* Empty cell hover creation help */}
-                      <button 
-                        onClick={() => {
-                          const dateObj = weekDates[dIdx];
-                          setNewDay(dateObj.toISOString().split("T")[0]);
-                          setNewStartTime(`${String(hour).padStart(2, "0")}:00`);
-                          setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
-                          setShowAddModal(true);
-                        }}
-                        className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer"
+                  {Array.from({ length: 7 }).map((_, dIdx) => {
+                    const isCellOver = dragOverCell?.hour === hour && dragOverCell?.dayIdx === dIdx;
+                    return (
+                      <div 
+                        key={dIdx} 
+                        onDragOver={(e) => handleDragOver(e, hour, dIdx)}
+                        onDragLeave={handleDragLeave}
+                        onDrop={(e) => handleDropEvent(e, hour, dIdx)}
+                        className={`border-r border-white/5 relative group transition-colors ${
+                          isCellOver ? "bg-indigo-500/25 border-2 border-indigo-400 shadow-inner" : "hover:bg-white/5"
+                        }`}
                       >
-                        <Plus className="w-4 h-4 text-indigo-400" />
-                      </button>
-                    </div>
-                  ))}
+                        {/* Empty cell hover creation help */}
+                        <button 
+                          onClick={() => {
+                            const dateObj = weekDates[dIdx];
+                            setNewDay(dateObj.toISOString().split("T")[0]);
+                            setNewStartTime(`${String(hour).padStart(2, "0")}:00`);
+                            setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
+                            setShowAddModal(true);
+                          }}
+                          className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4 text-indigo-400" />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               ))}
 
@@ -1324,15 +1527,19 @@ export default function CalendarView({
                   <div
                     key={evt.id}
                     id={`event_card_week_${evt.id}`}
+                    draggable={true}
+                    onDragStart={(e) => handleDragStart(e, evt.id)}
                     onClick={() => handleTriggerEditEvent(evt)}
                     onMouseEnter={() => setHoveredEventId(evt.id)}
                     onMouseLeave={() => setHoveredEventId(null)}
-                    className="absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all overflow-hidden cursor-pointer"
+                    className={`absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all cursor-grab active:cursor-grabbing ${
+                      draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
+                    }`}
                     style={{
                       left: `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 2px)`,
                       width: `calc(((100% - 80px) / 7) - 4px)`,
                       top: `${topPixel}px`,
-                      height: hoveredEventId === evt.id ? `${Math.max(heightPixel, 98)}px` : `${heightPixel}px`,
+                      height: hoveredEventId === evt.id ? `${Math.max(heightPixel, 110)}px` : `${heightPixel}px`,
                       zIndex: hoveredEventId === evt.id ? 50 : 5,
                       borderLeftColor: colors.borderLeftColor,
                       backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
@@ -1353,6 +1560,29 @@ export default function CalendarView({
                           {evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         </p>
                       </div>
+
+                      {/* Hover Quick Resize Controls */}
+                      {hoveredEventId === evt.id && (
+                        <div className="flex items-center gap-1 my-1 py-0.5 border-t border-b border-white/10 text-[9px] select-none" onClick={(e) => e.stopPropagation()}>
+                          <span className="text-slate-400 font-mono">Size:</span>
+                          <button
+                            type="button"
+                            onClick={(e) => handleAdjustDuration(e, evt, -15)}
+                            className="bg-white/10 hover:bg-white/20 text-white px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
+                            title="Shorten by 15 min"
+                          >
+                            -15m
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleAdjustDuration(e, evt, 30)}
+                            className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
+                            title="Extend by 30 min"
+                          >
+                            +30m
+                          </button>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-1 gap-1">
                         <button
@@ -1451,9 +1681,18 @@ export default function CalendarView({
                   const s = new Date(evt.start);
                   return isSameDay(s, currentDate) && s.getHours() === hour;
                 });
+                const isDayCellOver = dragOverCell?.hour === hour;
 
                 return (
-                  <div key={hour} className="grid grid-cols-[100px_1fr] border-b border-white/5 h-24 min-h-24">
+                  <div 
+                    key={hour} 
+                    onDragOver={(e) => handleDragOver(e, hour)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={(e) => handleDropEvent(e, hour)}
+                    className={`grid grid-cols-[100px_1fr] border-b border-white/5 h-24 min-h-24 transition-colors ${
+                      isDayCellOver ? "bg-indigo-500/20 border-2 border-indigo-400" : ""
+                    }`}
+                  >
                     <div className="p-3 text-right text-xs font-mono text-slate-400 border-r border-white/10 bg-transparent select-none">
                       {hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}
                     </div>
@@ -1478,10 +1717,14 @@ export default function CalendarView({
                             <div 
                               key={evt.id} 
                               id={`event_card_day_${evt.id}`}
+                              draggable={true}
+                              onDragStart={(e) => handleDragStart(e, evt.id)}
                               onClick={() => handleTriggerEditEvent(evt)}
                               onMouseEnter={() => setHoveredEventId(evt.id)}
                               onMouseLeave={() => setHoveredEventId(null)}
-                              className="p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-pointer transition hover:scale-[1.01] border-l-4"
+                              className={`p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-grab active:cursor-grabbing transition hover:scale-[1.01] border-l-4 relative ${
+                                draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
+                              }`}
                               style={{
                                 borderLeftColor: colors.borderLeftColor,
                                 backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
@@ -1498,6 +1741,27 @@ export default function CalendarView({
                                 </span>
                               </div>
                               {evt.notes && <p className="text-[10px] opacity-75 mb-2 italic">"{evt.notes}"</p>}
+
+                              {/* Quick Resize controls in Day view */}
+                              <div className="flex items-center gap-1.5 my-1.5 py-1 border-t border-b border-white/10 text-[10px]" onClick={(e) => e.stopPropagation()}>
+                                <span className="text-slate-400 font-mono">Size:</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleAdjustDuration(e, evt, -15)}
+                                  className="bg-white/10 hover:bg-white/20 text-white px-2 py-0.5 rounded font-bold transition cursor-pointer"
+                                  title="Shorten by 15 mins"
+                                >
+                                  -15m
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleAdjustDuration(e, evt, 30)}
+                                  className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 px-2 py-0.5 rounded font-bold transition cursor-pointer"
+                                  title="Extend by 30 mins"
+                                >
+                                  +30m
+                                </button>
+                              </div>
                               <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 gap-1">
                                 <button
                                   id={`complete_event_btn_day_${evt.id}`}

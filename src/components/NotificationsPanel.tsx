@@ -20,6 +20,10 @@ interface NotificationsPanelProps {
   onClearAll: () => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
   onTriggerDailyDigest?: () => void;
+  alertLeadMinutes?: number;
+  onUpdateAlertLeadMinutes?: (mins: number) => void;
+  alertPushEnabled?: boolean;
+  onToggleAlertPush?: (enabled: boolean) => void;
 }
 
 export default function NotificationsPanel({
@@ -27,7 +31,11 @@ export default function NotificationsPanel({
   onMarkRead,
   onClearAll,
   onAddNotification,
-  onTriggerDailyDigest
+  onTriggerDailyDigest,
+  alertLeadMinutes = 15,
+  onUpdateAlertLeadMinutes,
+  alertPushEnabled = true,
+  onToggleAlertPush
 }: NotificationsPanelProps) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
@@ -160,21 +168,61 @@ export default function NotificationsPanel({
             </button>
           </div>
 
-          {/* Browser notification credentials status */}
+          {/* Configurable Pre-Session Lead Time Selector */}
+          <div className="bg-white/5 p-3 rounded-xl border border-white/10 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-200">Session Pre-Alert Timing</span>
+              <span className="text-[10px] font-mono font-bold text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded">
+                {alertLeadMinutes}m before
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1 bg-black/30 p-1 rounded-lg border border-white/5">
+              {[10, 15, 30].map((mins) => (
+                <button
+                  key={mins}
+                  type="button"
+                  onClick={() => onUpdateAlertLeadMinutes?.(mins)}
+                  className={`text-[10px] font-bold py-1.5 rounded transition cursor-pointer ${
+                    alertLeadMinutes === mins
+                      ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  {mins} Mins
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Browser notification credentials status & Push Toggle */}
           <div className="bg-white/5 p-3 rounded-xl border border-white/10 space-y-2">
             <div className="flex justify-between items-center text-xs">
-              <span className="font-semibold text-slate-200">OS Desktop Notifications</span>
+              <span className="font-semibold text-slate-200">Browser Desktop Push</span>
               <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
                 notificationPermission === "granted" ? "bg-emerald-500/15 text-emerald-300" : "bg-indigo-500/15 text-indigo-300"
               }`}>
                 {notificationPermission}
               </span>
             </div>
+
+            <div className="flex items-center justify-between pt-1 border-t border-white/5">
+              <span className="text-[11px] text-slate-300 font-medium">Automatic Popups</span>
+              <button
+                type="button"
+                onClick={() => onToggleAlertPush?.(!alertPushEnabled)}
+                className={`text-[10px] px-2.5 py-1 rounded font-bold uppercase cursor-pointer ${
+                  alertPushEnabled ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" : "bg-white/5 text-slate-400"
+                }`}
+              >
+                {alertPushEnabled ? "Enabled" : "Disabled"}
+              </button>
+            </div>
             
             {notificationPermission !== "granted" && (
               <button
                 onClick={handleRequestPermission}
-                className="w-full text-center bg-indigo-600 hover:bg-indigo-550 text-white text-[11px] font-bold py-2 rounded-lg transition cursor-pointer"
+                className="w-full text-center bg-indigo-600 hover:bg-indigo-550 text-white text-[11px] font-bold py-2 rounded-lg transition cursor-pointer mt-1"
               >
                 Connect OS Push Notifications
               </button>
@@ -182,19 +230,30 @@ export default function NotificationsPanel({
           </div>
 
           {/* TEST triggers */}
-          <div className="space-y-1.5 pt-2">
-            <h4 className="text-[10px] font-bold text-slate-405 uppercase tracking-widest leading-none mb-1">Simulate Alarm Core Triggers</h4>
+          <div className="space-y-1.5 pt-1">
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">Simulate Alarm Core Triggers</h4>
             <div className="grid grid-cols-2 gap-2">
               <button
-                onClick={triggerUpcomingSim}
-                className="bg-white/5 hover:bg-white/10 border border-white/10 p-2.5 rounded-xl text-left transition flex items-center gap-1.5 text-[10px] font-bold text-slate-200 cursor-pointer"
+                onClick={() => {
+                  triggerUpcomingSim();
+                  if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                    try {
+                      new Notification(`⏰ Pre-Session Alert (${alertLeadMinutes}m before)`, {
+                        body: `Upcoming session: Morning Cardio & Stretch starts in ${alertLeadMinutes} minutes!`
+                      });
+                    } catch {
+                      // fallback
+                    }
+                  }
+                }}
+                className="bg-white/5 hover:bg-white/10 border border-white/10 p-2 rounded-xl text-left transition flex items-center gap-1.5 text-[10px] font-bold text-slate-200 cursor-pointer"
               >
                 <Play className="w-3 h-3 text-indigo-400 shrink-0" />
-                Upcoming alarm
+                Pre-session ({alertLeadMinutes}m)
               </button>
               <button
                 onClick={triggerOverdueGoalSim}
-                className="bg-white/5 hover:bg-white/10 border border-white/10 p-2.5 rounded-xl text-left transition flex items-center gap-1.5 text-[10px] font-bold text-slate-200 cursor-pointer"
+                className="bg-white/5 hover:bg-white/10 border border-white/10 p-2 rounded-xl text-left transition flex items-center gap-1.5 text-[10px] font-bold text-slate-200 cursor-pointer"
               >
                 <AlertCircle className="w-3 h-3 text-rose-450 shrink-0" />
                 Overdue alarm
@@ -202,7 +261,7 @@ export default function NotificationsPanel({
             </div>
             <button
               onClick={triggerMotivationSim}
-              className="w-full bg-indigo-600 hover:bg-indigo-550 border border-white/10 text-white font-bold p-2.5 rounded-xl text-center text-[10px] uppercase tracking-wider transition mt-1 cursor-pointer"
+              className="w-full bg-indigo-600 hover:bg-indigo-550 border border-white/10 text-white font-bold p-2 rounded-xl text-center text-[10px] uppercase tracking-wider transition cursor-pointer"
             >
               Request daily motivational tip
             </button>
@@ -213,7 +272,7 @@ export default function NotificationsPanel({
                   playBeepSound();
                 }
               }}
-              className="w-full bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 hover:border-emerald-500 text-emerald-300 hover:text-white font-bold p-2.5 rounded-xl text-center text-[10px] uppercase tracking-wider transition mt-2.5 cursor-pointer flex items-center justify-center gap-1.5"
+              className="w-full bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 hover:border-emerald-500 text-emerald-300 hover:text-white font-bold p-2 rounded-xl text-center text-[10px] uppercase tracking-wider transition cursor-pointer flex items-center justify-center gap-1.5"
             >
               <Sun className="w-3.5 h-3.5" />
               Simulate 8:00 AM Daily Digest
