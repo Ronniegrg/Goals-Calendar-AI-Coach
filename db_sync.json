@@ -1,0 +1,71 @@
+{
+  "rounigorgees@gmail.com": {
+    "goals": [],
+    "events": [],
+    "availability": [
+      {
+        "dayOfWeek": 0,
+        "startTime": "09:00",
+        "endTime": "21:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 1,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 2,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 3,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 4,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 5,
+        "startTime": "08:00",
+        "endTime": "18:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 6,
+        "startTime": "09:00",
+        "endTime": "19:00",
+        "active": true
+      }
+    ],
+    "notifications": [
+      {
+        "id": "n1",
+        "title": "Welcome to Calendar Goals!",
+        "message": "Your workouts and study sessions can be automatically scheduled based on your daily availability.",
+        "timestamp": "2026-07-26T23:34:27.320Z",
+        "read": false,
+        "type": "success"
+      }
+    ],
+    "coachMessages": [
+      {
+        "id": "m1",
+        "sender": "coach",
+        "text": "Hello! I am your AI Routine Coach. Create your own goals and ask me to optimize your workout schedule, suggest study intervals, or analyze your completion consistency!",
+        "timestamp": "2026-07-26T23:34:27.320Z"
+      }
+    ],
+    "userEmail": "rounigorgees@gmail.com",
+    "coachPersona": "mentor",
+    "lastSyncedAt": "2026-07-26T23:40:00.000Z"
+  }
+}

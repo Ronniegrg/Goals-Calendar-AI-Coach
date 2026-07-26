@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { 
   Calendar as CalendarIcon, 
   ChevronLeft, 
@@ -38,6 +38,7 @@ import {
   Smile
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference } from "../types";
+import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 
 interface CalendarViewProps {
   events: CalendarEvent[];
@@ -77,6 +78,7 @@ export default function CalendarView({
   const [goalDuration, setGoalDuration] = useState(60);
   const [goalTimePref, setGoalTimePref] = useState<TimePreference>(TimePreference.ANY);
   const [goalColor, setGoalColor] = useState("#f43f5e");
+  const [goalIcon, setGoalIcon] = useState("target");
   
   // Event Form State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -322,26 +324,26 @@ export default function CalendarView({
     if (baseColor) {
       return {
         borderLeftColor: baseColor,
-        backgroundColor: `${baseColor}20`, // 12% opacity
+        backgroundColor: "#161828", // 100% solid dark navy base
         color: "#f8fafc",
-        hoverBg: `${baseColor}40`, // 25% opacity
+        hoverBg: "#20253f", // 100% solid elevated dark navy base
         dotColor: baseColor,
         isCustom: true
       };
     }
 
-    // Default Fallbacks based on category/type
+    // Default Fallbacks based on category/type (All 100% solid opaque dark backgrounds)
     const fallbackColors: Record<string, { border: string; bg: string; text: string; hoverBg: string; dot: string }> = {
-      workout: { border: "#f43f5e", bg: "rgba(244, 63, 94, 0.15)", text: "#fecdd3", hoverBg: "rgba(244, 63, 94, 0.3)", dot: "#f43f5e" },
-      study: { border: "#06b6d4", bg: "rgba(6, 182, 212, 0.15)", text: "#cffafe", hoverBg: "rgba(6, 182, 212, 0.3)", dot: "#06b6d4" },
-      job_search: { border: "#3b82f6", bg: "rgba(59, 130, 246, 0.15)", text: "#bfdbfe", hoverBg: "rgba(59, 130, 246, 0.3)", dot: "#3b82f6" },
-      side_project: { border: "#ec4899", bg: "rgba(236, 72, 153, 0.15)", text: "#fbcfe8", hoverBg: "rgba(236, 72, 153, 0.3)", dot: "#ec4899" },
-      routine: { border: "#10b981", bg: "rgba(16, 185, 129, 0.15)", text: "#a7f3d0", hoverBg: "rgba(16, 185, 129, 0.3)", dot: "#10b981" },
-      personal: { border: "#f59e0b", bg: "rgba(245, 158, 11, 0.15)", text: "#fde68a", hoverBg: "rgba(245, 158, 11, 0.3)", dot: "#f59e0b" },
-      external: { border: "#64748b", bg: "rgba(100, 116, 139, 0.15)", text: "#cbd5e1", hoverBg: "rgba(100, 116, 139, 0.3)", dot: "#64748b" }
+      workout: { border: "#f43f5e", bg: "#1f141a", text: "#fecdd3", hoverBg: "#2d1825", dot: "#f43f5e" },
+      study: { border: "#06b6d4", bg: "#111d27", text: "#cffafe", hoverBg: "#172a39", dot: "#06b6d4" },
+      job_search: { border: "#3b82f6", bg: "#121b2d", text: "#bfdbfe", hoverBg: "#192745", dot: "#3b82f6" },
+      side_project: { border: "#ec4899", bg: "#211324", text: "#fbcfe8", hoverBg: "#311837", dot: "#ec4899" },
+      routine: { border: "#10b981", bg: "#11201d", text: "#a7f3d0", hoverBg: "#182e29", dot: "#10b981" },
+      personal: { border: "#f59e0b", bg: "#221c13", text: "#fde68a", hoverBg: "#332817", dot: "#f59e0b" },
+      external: { border: "#64748b", bg: "#161922", text: "#cbd5e1", hoverBg: "#202533", dot: "#64748b" }
     };
 
-    const current = fallbackColors[evt.type] || { border: "#6366f1", bg: "rgba(99, 102, 241, 0.15)", text: "#e0e7ff", hoverBg: "rgba(99, 102, 241, 0.3)", dot: "#6366f1" };
+    const current = fallbackColors[evt.type] || { border: "#6366f1", bg: "#16192c", text: "#e0e7ff", hoverBg: "#212643", dot: "#6366f1" };
 
     return {
       borderLeftColor: current.border,
@@ -355,31 +357,11 @@ export default function CalendarView({
 
   const getEventIcon = (evt: CalendarEvent) => {
     const goal = goals.find(g => g.id === evt.goalId);
+    const iconId = evt.icon || goal?.icon;
     const type = goal ? goal.type : evt.type;
     const colors = getEventColorStyles(evt);
     
-    switch (type) {
-      case "workout":
-      case GoalType.WORKOUT:
-        return <Activity className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-      case "study":
-      case GoalType.STUDY:
-        return <BookOpen className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-      case "job_search":
-      case GoalType.JOB_SEARCH:
-        return <Briefcase className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-      case "side_project":
-      case GoalType.SIDE_PROJECT:
-        return <Laptop className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-      case "routine":
-      case GoalType.ROUTINE:
-        return <RotateCw className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-      case "personal":
-      case GoalType.PERSONAL:
-        return <Smile className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-      default:
-        return <Activity className="w-3.5 h-3.5 shrink-0" style={{ color: colors.borderLeftColor }} />;
-    }
+    return renderGoalIcon(iconId, type, "w-3.5 h-3.5 shrink-0", { color: colors.borderLeftColor });
   };
 
   // Custom modal dialog to replace blocking system alerts/confirms that get blocked in sandbox iframes
@@ -947,6 +929,7 @@ export default function CalendarView({
     setGoalDuration(60);
     setGoalTimePref(TimePreference.ANY);
     setGoalColor("#f43f5e");
+    setGoalIcon("target");
     setShowGoalForm(true);
   };
 
@@ -960,6 +943,7 @@ export default function CalendarView({
     setGoalDuration(g.durationMinutes);
     setGoalTimePref(g.timePreference);
     setGoalColor(g.color);
+    setGoalIcon(g.icon || "target");
     setShowGoalForm(true);
   };
 
@@ -979,7 +963,8 @@ export default function CalendarView({
           weeklyTarget: Number(goalWeeklyTarget),
           durationMinutes: Number(goalDuration),
           timePreference: goalTimePref,
-          color: goalColor
+          color: goalColor,
+          icon: goalIcon
         });
       }
     } else {
@@ -991,7 +976,8 @@ export default function CalendarView({
           weeklyTarget: Number(goalWeeklyTarget),
           durationMinutes: Number(goalDuration),
           timePreference: goalTimePref,
-          color: goalColor
+          color: goalColor,
+          icon: goalIcon
         });
       }
     }
@@ -1056,6 +1042,82 @@ export default function CalendarView({
   const currentTopPixelWeek = (currentHourDecimal - 8) * 64;
   const currentTopPixelDay = (currentHourDecimal - 8) * 96;
   const todayIdx = weekDates.findIndex(d => isSameDay(d, now));
+
+  // Calculate overlapping layout columns for weekly view events
+  const weekLayoutMap = useMemo(() => {
+    const map = new Map<string, { colIndex: number; totalCols: number; dayDiff: number }>();
+
+    weekDates.forEach((dayDate, dIdx) => {
+      const dayEvts = events.filter((evt) => {
+        const s = new Date(evt.start);
+        return isSameDay(dayDate, s);
+      });
+
+      if (dayEvts.length === 0) return;
+
+      const sorted = [...dayEvts].sort((a, b) => {
+        const aStart = new Date(a.start).getTime();
+        const bStart = new Date(b.start).getTime();
+        if (aStart !== bStart) return aStart - bStart;
+        return new Date(b.end).getTime() - new Date(a.end).getTime();
+      });
+
+      const clusters: CalendarEvent[][] = [];
+      let currentCluster: CalendarEvent[] = [];
+      let clusterEnd = 0;
+
+      sorted.forEach((evt) => {
+        const start = new Date(evt.start).getTime();
+        const end = new Date(evt.end).getTime();
+
+        if (currentCluster.length === 0) {
+          currentCluster.push(evt);
+          clusterEnd = end;
+        } else if (start < clusterEnd) {
+          currentCluster.push(evt);
+          if (end > clusterEnd) clusterEnd = end;
+        } else {
+          clusters.push(currentCluster);
+          currentCluster = [evt];
+          clusterEnd = end;
+        }
+      });
+      if (currentCluster.length > 0) {
+        clusters.push(currentCluster);
+      }
+
+      clusters.forEach((cluster) => {
+        const columnsEndTimes: number[] = [];
+
+        cluster.forEach((evt) => {
+          const start = new Date(evt.start).getTime();
+          const end = new Date(evt.end).getTime();
+
+          let placed = false;
+          for (let i = 0; i < columnsEndTimes.length; i++) {
+            if (columnsEndTimes[i] <= start) {
+              columnsEndTimes[i] = end;
+              map.set(evt.id, { colIndex: i, totalCols: 1, dayDiff: dIdx });
+              placed = true;
+              break;
+            }
+          }
+          if (!placed) {
+            columnsEndTimes.push(end);
+            map.set(evt.id, { colIndex: columnsEndTimes.length - 1, totalCols: 1, dayDiff: dIdx });
+          }
+        });
+
+        const maxCols = columnsEndTimes.length;
+        cluster.forEach((evt) => {
+          const existing = map.get(evt.id)!;
+          map.set(evt.id, { ...existing, totalCols: maxCols });
+        });
+      });
+    });
+
+    return map;
+  }, [events, weekDates]);
 
   // Format month and year label
   const getHeaderLabel = () => {
@@ -1161,6 +1223,16 @@ export default function CalendarView({
                 {missedSessionsCount}
               </span>
             )}
+          </button>
+
+          <button
+            id="open_add_goal_modal_btn"
+            onClick={handleOpenAddGoal}
+            className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 p-2 md:px-3 md:py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
+            title="Create a new routine goal"
+          >
+            <Target className="w-4 h-4 text-emerald-400" />
+            <span className="hidden md:inline">Add Goal</span>
           </button>
 
           <button
@@ -1505,23 +1577,30 @@ export default function CalendarView({
 
               {/* Absolute Positioned Events on parameters */}
               {events.map((evt) => {
+                const layoutInfo = weekLayoutMap.get(evt.id);
+                if (!layoutInfo) return null; // not on this week grid
+
+                const { colIndex, totalCols, dayDiff } = layoutInfo;
                 const evtStart = new Date(evt.start);
                 const evtEnd = new Date(evt.end);
-                
-                // Find day of week relative to startOfWeek (0-6)
-                const dayDiff = weekDates.findIndex(d => isSameDay(d, evtStart));
-                if (dayDiff === -1) return null; // not this week
 
                 const startHour = evtStart.getHours() + evtStart.getMinutes() / 60;
                 const endHour = evtEnd.getHours() + evtEnd.getMinutes() / 60;
-                
-                // Scale values
+
                 const hourHeight = 64; // pixels per hour
                 const minOffsetHour = 8; // we start at 08:00
                 const topPixel = (startHour - minOffsetHour) * hourHeight;
-                const heightPixel = Math.max((endHour - startHour) * hourHeight, 82); // minimum height to ensure Mark Done fits beautifully
+                const durationHours = Math.max(endHour - startHour, 0.25);
+                const rawHeightPixel = durationHours * hourHeight;
+                const heightPixel = Math.max(rawHeightPixel, 28); // clean min height
 
                 const colors = getEventColorStyles(evt);
+                const isHovered = hoveredEventId === evt.id;
+                const isAnyHovered = hoveredEventId !== null;
+
+                // Sub-column left and width calculation
+                const subLeft = `calc(80px + (${dayDiff} * (100% - 80px) / 7) + (${colIndex} * ((100% - 80px) / 7) / ${totalCols}) + 1px)`;
+                const subWidth = `calc((((100% - 80px) / 7) / ${totalCols}) - 2px)`;
 
                 return (
                   <div
@@ -1532,39 +1611,47 @@ export default function CalendarView({
                     onClick={() => handleTriggerEditEvent(evt)}
                     onMouseEnter={() => setHoveredEventId(evt.id)}
                     onMouseLeave={() => setHoveredEventId(null)}
-                    className={`absolute p-2 border-l-4 rounded-lg shadow-md hover:shadow-lg text-left transition-all cursor-grab active:cursor-grabbing ${
+                    className={`absolute p-1.5 border-l-4 rounded-lg text-left transition-all cursor-grab active:cursor-grabbing select-none ${
                       draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
+                    } ${
+                      isHovered
+                        ? "shadow-2xl ring-2 ring-indigo-400 z-[100] opacity-100 scale-[1.02]"
+                        : isAnyHovered
+                        ? "opacity-35 z-10 shadow-sm"
+                        : "opacity-100 z-10 shadow-sm hover:z-20"
                     }`}
                     style={{
-                      left: `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 2px)`,
-                      width: `calc(((100% - 80px) / 7) - 4px)`,
+                      left: isHovered && totalCols > 1 ? `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 1px)` : subLeft,
+                      width: isHovered && totalCols > 1 ? `calc(((100% - 80px) / 7) - 2px)` : subWidth,
                       top: `${topPixel}px`,
-                      height: hoveredEventId === evt.id ? `${Math.max(heightPixel, 110)}px` : `${heightPixel}px`,
-                      zIndex: hoveredEventId === evt.id ? 50 : 5,
+                      height: isHovered ? `${Math.max(heightPixel, 115)}px` : `${heightPixel}px`,
                       borderLeftColor: colors.borderLeftColor,
-                      backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
+                      backgroundColor: isHovered ? colors.hoverBg : colors.backgroundColor,
                       color: colors.color,
-                      overflow: hoveredEventId === evt.id ? "visible" : "hidden"
+                      overflow: isHovered ? "visible" : "hidden"
                     }}
                   >
                     <div className="flex flex-col h-full justify-between">
                       <div>
-                        <div className="flex items-start justify-between gap-1">
-                          <h4 className={`text-[11px] font-bold leading-tight flex items-center gap-1.5 ${evt.completed ? "line-through text-slate-400 opacity-60" : ""}`}>
+                        <div className="flex items-center justify-between gap-1">
+                          <h4 className={`text-[10px] font-bold leading-tight flex items-center gap-1 min-w-0 ${evt.completed ? "line-through opacity-60" : ""}`}>
                             {getEventIcon(evt)}
                             <span className="truncate">{evt.title}</span>
                           </h4>
+                          {totalCols > 2 && !isHovered && (
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: colors.borderLeftColor }} />
+                          )}
                         </div>
-                        <p className="text-[9px] opacity-80 flex items-center gap-0.5 font-mono mt-0.5 select-none">
-                          <Clock className="w-2.5 h-2.5" />
-                          {evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        <p className="text-[8.5px] opacity-80 flex items-center gap-0.5 font-mono mt-0.5 truncate">
+                          <Clock className="w-2.5 h-2.5 shrink-0" />
+                          <span>{evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                         </p>
                       </div>
 
                       {/* Hover Quick Resize Controls */}
-                      {hoveredEventId === evt.id && (
-                        <div className="flex items-center gap-1 my-1 py-0.5 border-t border-b border-white/10 text-[9px] select-none" onClick={(e) => e.stopPropagation()}>
-                          <span className="text-slate-400 font-mono">Size:</span>
+                      {isHovered && (
+                        <div className="flex items-center gap-1 my-1 py-0.5 border-t border-b border-white/10 text-[8.5px]" onClick={(e) => e.stopPropagation()}>
+                          <span className="text-slate-400 font-mono">Length:</span>
                           <button
                             type="button"
                             onClick={(e) => handleAdjustDuration(e, evt, -15)}
@@ -1584,65 +1671,64 @@ export default function CalendarView({
                         </div>
                       )}
 
-                      <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-1 gap-1">
-                        <button
-                          id={`complete_event_btn_week_${evt.id}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onToggleCompleteEvent(evt.id);
-                          }}
-                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 transition cursor-pointer ${
-                            evt.completed 
-                              ? "bg-emerald-600 text-white" 
-                              : "bg-white/5 hover:bg-white/10 border border-white/10 text-white"
-                          }`}
-                        >
-                          <Check className="w-2.5 h-2.5 font-bold" />
-                          {evt.completed ? "Done" : "Mark Done"}
-                        </button>
-                        
-                        {googleAccessToken && evt.type !== "external" && (
+                      {/* Action buttons footer */}
+                      {(isHovered || heightPixel >= 52) && (
+                        <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-0.5 gap-1">
                           <button
+                            id={`complete_event_btn_week_${evt.id}`}
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleExportToGoogleCalendar(evt);
+                              onToggleCompleteEvent(evt.id);
                             }}
-                            disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
-                            className={`p-1 rounded transition cursor-pointer ${
-                              exportStatus[evt.id] === "success"
-                                ? "text-emerald-400"
-                                : exportStatus[evt.id] === "error"
-                                ? "text-red-400"
-                                : exportStatus[evt.id] === "syncing"
-                                ? "text-indigo-400 animate-spin"
-                                : "text-slate-400 hover:text-indigo-400"
+                            className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 transition cursor-pointer shrink-0 ${
+                              evt.completed 
+                                ? "bg-emerald-600 text-white" 
+                                : "bg-white/10 hover:bg-white/20 border border-white/10 text-white"
                             }`}
-                            title={
-                              exportStatus[evt.id] === "success"
-                                ? "Synced to Google!"
-                                : "Export to Google Calendar"
-                            }
                           >
-                            {exportStatus[evt.id] === "success" ? (
-                              <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
-                            ) : (
-                              <CalendarCheck className="w-3.5 h-3.5" />
-                            )}
+                            <Check className="w-2.5 h-2.5 font-bold" />
+                            <span>{evt.completed ? "Done" : "Mark"}</span>
                           </button>
-                        )}
+                          
+                          {googleAccessToken && evt.type !== "external" && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleExportToGoogleCalendar(evt);
+                              }}
+                              disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                              className={`p-0.5 rounded transition cursor-pointer ${
+                                exportStatus[evt.id] === "success"
+                                  ? "text-emerald-400"
+                                  : exportStatus[evt.id] === "error"
+                                  ? "text-red-400"
+                                  : exportStatus[evt.id] === "syncing"
+                                  ? "text-indigo-400 animate-spin"
+                                  : "text-slate-400 hover:text-indigo-400"
+                              }`}
+                              title="Export to Google"
+                            >
+                              {exportStatus[evt.id] === "success" ? (
+                                <CheckCircle2 className="w-3 h-3 animate-pulse" />
+                              ) : (
+                                <CalendarCheck className="w-3 h-3" />
+                              )}
+                            </button>
+                          )}
 
-                        <button
-                          id={`delete_event_btn_week_${evt.id}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteEvent(evt.id);
-                          }}
-                          className="opacity-50 hover:opacity-100 text-slate-300 hover:text-red-400 p-0.5 transition cursor-pointer"
-                          title="Delete Event"
-                        >
-                          <Trash2 className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
+                          <button
+                            id={`delete_event_btn_week_${evt.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteEvent(evt.id);
+                            }}
+                            className="opacity-60 hover:opacity-100 text-slate-300 hover:text-rose-400 p-0.5 transition cursor-pointer shrink-0"
+                            title="Delete Event"
+                          >
+                            <Trash2 className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1983,6 +2069,141 @@ export default function CalendarView({
           </div>
         )}
       </div>
+
+      {/* MODAL WINDOW: Create / Edit Goal */}
+      {showGoalForm && (
+        <div id="add_goal_modal_backdrop" className="fixed inset-0 bg-[#020205]/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div id="add_goal_modal_card" className="bg-[#0f111a] border border-white/12 rounded-2xl shadow-2xl w-full max-w-lg p-6 relative">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4">
+              <h3 className="font-sans font-bold text-white text-base flex items-center gap-2">
+                <Target className="w-5 h-5 text-indigo-400" />
+                {editingGoalId ? "Edit Routine Goal" : "Create New Goal"}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowGoalForm(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveGoal} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Goal Name *</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="e.g. Cybersecurity Study, Strength Workout"
+                  value={goalName}
+                  onChange={(e) => setGoalName(e.target.value)}
+                  className="w-full text-xs p-2.5 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition placeholder:text-slate-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Type Focus</label>
+                  <select
+                    value={goalType}
+                    onChange={(e) => setGoalType(e.target.value as GoalType)}
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  >
+                    <option value={GoalType.WORKOUT}>Workout Focus</option>
+                    <option value={GoalType.STUDY}>Study Focus</option>
+                    <option value={GoalType.JOB_SEARCH}>Job Search Focus</option>
+                    <option value={GoalType.SIDE_PROJECT}>Side Project</option>
+                    <option value={GoalType.ROUTINE}>Routine / Habit</option>
+                    <option value={GoalType.PERSONAL}>Personal / Leisure</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Subcategory</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Learning, Fitness"
+                    value={goalCategory}
+                    onChange={(e) => setGoalCategory(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Weekly Target</label>
+                  <select
+                    value={goalWeeklyTarget}
+                    onChange={(e) => setGoalWeeklyTarget(Number(e.target.value))}
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  >
+                    <option value={1}>1 time / week</option>
+                    <option value={2}>2 times / week</option>
+                    <option value={3}>3 times / week</option>
+                    <option value={4}>4 times / week</option>
+                    <option value={5}>5 times / week</option>
+                    <option value={6}>6 times / week</option>
+                    <option value={7}>7 times / week (Daily)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Duration (Minutes)</label>
+                  <select
+                    value={goalDuration}
+                    onChange={(e) => setGoalDuration(Number(e.target.value))}
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  >
+                    <option value={30}>30 minutes</option>
+                    <option value={45}>45 minutes</option>
+                    <option value={60}>60 minutes (1 hour)</option>
+                    <option value={90}>90 minutes (1.5 hrs)</option>
+                    <option value={120}>120 minutes (2 hrs)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Goal Icon Selector */}
+              <GoalIconPicker selectedIcon={goalIcon} onSelectIcon={setGoalIcon} accentColor={goalColor} />
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Color Tag</label>
+                <div className="flex items-center gap-2">
+                  {["#f43f5e", "#06b6d4", "#8b5cf6", "#10b981", "#f59e0b", "#3b82f6"].map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setGoalColor(c)}
+                      className={`w-6 h-6 rounded-full transition-transform cursor-pointer ${
+                        goalColor === c ? "ring-2 ring-white scale-110" : "opacity-70 hover:opacity-100"
+                      }`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-4 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setShowGoalForm(false)}
+                  className="text-xs font-semibold px-4 py-2.5 border border-white/10 bg-white/5 hover:bg-white/10 text-white rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="text-xs font-bold px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/25 cursor-pointer transition"
+                >
+                  {editingGoalId ? "Save Goal" : "Create Goal"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MODAL WINDOW: Create manual schedule events */}
       {showAddModal && (

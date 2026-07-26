@@ -35,102 +35,11 @@ function getAi(): GoogleGenAI {
 // Simple JSON File Database file path
 const DB_FILE = path.join(process.cwd(), "db_sync.json");
 
-// Helper to ensure initial database with clean default presets
+// Helper to ensure initial database with clean state for new users
 function getInitialData(userEmail: string) {
   return {
-    goals: [
-      {
-        id: "g1",
-        name: "Morning Cardio & Stretch",
-        type: "workout",
-        category: "Cardio",
-        weeklyTarget: 3,
-        durationMinutes: 45,
-        timePreference: "morning",
-        completedCount: 2,
-        color: "#f43f5e", // Rose
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "g2",
-        name: "React & TypeScript Masterclass",
-        type: "study",
-        category: "Programming",
-        weeklyTarget: 4,
-        durationMinutes: 90,
-        timePreference: "afternoon",
-        completedCount: 1,
-        color: "#06b6d4", // Cyan
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "g3",
-        name: "Strength Training",
-        type: "workout",
-        category: "Strength",
-        weeklyTarget: 2,
-        durationMinutes: 60,
-        timePreference: "evening",
-        completedCount: 0,
-        color: "#8b5cf6", // Purple
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: "g4",
-        name: "Python & AI Engineering Masterclass",
-        type: "study",
-        category: "Python Dev",
-        weeklyTarget: 4,
-        durationMinutes: 60,
-        timePreference: "evening",
-        completedCount: 2,
-        color: "#3b82f6", // Blue
-        createdAt: new Date().toISOString()
-      }
-    ],
-    events: [
-      // Some pre-populated events for this week
-      {
-        id: "e1",
-        title: "Morning Cardio & Stretch (Auto-Scheduled)",
-        type: "workout",
-        start: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 - 15 * 60 * 1000).toISOString(), // 2 days ago
-        end: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 + 45 * 60 * 1000).toISOString(),
-        goalId: "g1",
-        completed: true,
-        notes: "Completed perfectly before work!"
-      },
-      {
-        id: "e2",
-        title: "React & TypeScript Masterclass (Auto-Scheduled)",
-        type: "study",
-        start: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(), // 1 day ago
-        end: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 90 * 60 * 1000).toISOString(),
-        goalId: "g2",
-        completed: true,
-        notes: "Studied components and high-order functions."
-      },
-      {
-        id: "e3",
-        title: "Morning Cardio & Stretch (Upcoming)",
-        type: "workout",
-        start: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(), // in 4 hours
-        end: new Date(Date.now() + 4 * 60 * 60 * 1000 + 45 * 60 * 1000).toISOString(),
-        goalId: "g1",
-        completed: false,
-        notes: "Will do dynamic stretches and brief run."
-      },
-      {
-        id: "e4",
-        title: "Python & AI Engineering Masterclass (Auto-Scheduled)",
-        type: "study",
-        start: new Date(Date.now() + 18 * 60 * 60 * 1000).toISOString(),
-        end: new Date(Date.now() + 19 * 60 * 60 * 1000).toISOString(),
-        goalId: "g4",
-        completed: false,
-        notes: "Learn Python data structures, async syntax, and AI APIs."
-      }
-    ],
+    goals: [],
+    events: [],
     availability: [
       { dayOfWeek: 0, startTime: "09:00", endTime: "21:00", active: true }, // Sun
       { dayOfWeek: 1, startTime: "08:00", endTime: "22:00", active: true }, // Mon
@@ -148,21 +57,13 @@ function getInitialData(userEmail: string) {
         timestamp: new Date().toISOString(),
         read: false,
         type: "success"
-      },
-      {
-        id: "n2",
-        title: "Upcoming Activity in 4 hours",
-        message: "Get ready for Morning Cardio & Stretch! Make sure to stay hydrated.",
-        timestamp: new Date().toISOString(),
-        read: false,
-        type: "upcoming"
       }
     ],
     coachMessages: [
       {
         id: "m1",
         sender: "coach" as const,
-        text: "Hello! I am your AI Routine Coach. Ask me to optimize your workout schedule, suggest study intervals, or analyze your completion consistency!",
+        text: "Hello! I am your AI Routine Coach. Create your own goals and ask me to optimize your workout schedule, suggest study intervals, or analyze your completion consistency!",
         timestamp: new Date().toISOString()
       }
     ],

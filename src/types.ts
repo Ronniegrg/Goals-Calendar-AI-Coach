@@ -32,6 +32,7 @@ export interface Goal {
   color: string;
   createdAt: string;
   subtasks?: SubTask[];
+  icon?: string;
 }
 
 export interface CalendarEvent {
@@ -43,6 +44,7 @@ export interface CalendarEvent {
   goalId?: string; // if tied to a goal
   completed: boolean;
   notes?: string;
+  icon?: string;
 }
 
 export interface AvailabilityWindow {

@@ -18,6 +18,7 @@ import {
   X
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask } from "../types";
+import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -133,6 +134,7 @@ export default function GoalTracker({
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState<GoalType>(GoalType.WORKOUT);
   const [category, setCategory] = useState("");
@@ -142,8 +144,10 @@ export default function GoalTracker({
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [timePreference, setTimePreference] = useState<TimePreference>(TimePreference.ANY);
   const [color, setColor] = useState("#f43f5e");
+  const [icon, setIcon] = useState("target");
 
   const handleApplyPresetTemplate = (preset: typeof PRESET_TEMPLATES[number]) => {
+    setFormError(null);
     setName(preset.name);
     setType(preset.type);
     setCategory(preset.category);
@@ -152,12 +156,14 @@ export default function GoalTracker({
     setDurationMinutes(preset.durationMinutes);
     setTimePreference(preset.timePreference);
     setColor(preset.color);
+    setIcon(preset.type === GoalType.WORKOUT ? "dumbbell" : preset.type === GoalType.STUDY ? "book" : preset.type === GoalType.JOB_SEARCH ? "briefcase" : preset.type === GoalType.SIDE_PROJECT ? "laptop" : preset.type === GoalType.ROUTINE ? "coffee" : "smile");
     setEditingGoalId(null);
     setShowAddGoal(true);
     
     // Smooth scroll down to the form anchor
     setTimeout(() => {
       document.getElementById("add_goal_form_anchor")?.scrollIntoView({ behavior: "smooth" });
+      document.getElementById("goal_name_input")?.focus();
     }, 100);
   };
 
@@ -177,7 +183,12 @@ export default function GoalTracker({
 
   const handleSubmitGoalForm = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim()) {
+      setFormError("Goal name is required. Please type a name for your goal.");
+      document.getElementById("goal_name_input")?.focus();
+      return;
+    }
+    setFormError(null);
 
     if (editingGoalId) {
       onEditGoal(editingGoalId, {
@@ -194,7 +205,8 @@ export default function GoalTracker({
         weeklyTarget,
         durationMinutes,
         timePreference,
-        color
+        color,
+        icon
       });
 
       onAddNotification(
@@ -217,7 +229,8 @@ export default function GoalTracker({
         weeklyTarget,
         durationMinutes,
         timePreference,
-        color
+        color,
+        icon
       });
 
       onAddNotification(
@@ -235,11 +248,13 @@ export default function GoalTracker({
     setCustomTargetVal("10");
     setDurationMinutes(60);
     setTimePreference(TimePreference.ANY);
+    setIcon("target");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
 
   const handleAddNewGoalClick = () => {
+    setFormError(null);
     if (editingGoalId) {
       setEditingGoalId(null);
       setName("");
@@ -250,10 +265,15 @@ export default function GoalTracker({
       setDurationMinutes(60);
       setTimePreference(TimePreference.ANY);
       setColor("#f43f5e");
+      setIcon("target");
       setShowAddGoal(true);
     } else {
-      setShowAddGoal(!showAddGoal);
+      setShowAddGoal((prev) => !prev);
     }
+    setTimeout(() => {
+      document.getElementById("add_goal_form_anchor")?.scrollIntoView({ behavior: "smooth" });
+      document.getElementById("goal_name_input")?.focus();
+    }, 100);
   };
 
   const handleCancelClick = () => {
@@ -264,6 +284,7 @@ export default function GoalTracker({
     setCustomTargetVal("10");
     setDurationMinutes(60);
     setTimePreference(TimePreference.ANY);
+    setIcon("target");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -284,6 +305,7 @@ export default function GoalTracker({
     setDurationMinutes(g.durationMinutes);
     setTimePreference(g.timePreference);
     setColor(g.color);
+    setIcon(g.icon || "target");
     setShowAddGoal(true);
     
     // Smooth scroll to catalog header form
@@ -574,6 +596,12 @@ export default function GoalTracker({
             <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider mb-2">
               {editingGoalId ? `Editing Goal: ${name}` : 'Create New Goal'}
             </h4>
+
+            {formError && (
+              <div className="text-xs text-rose-300 bg-rose-500/15 border border-rose-500/30 px-3.5 py-2 rounded-xl font-medium">
+                ⚠️ {formError}
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[10px] font-bold text-slate-300 mb-1">Goal Name</label>
@@ -704,6 +732,9 @@ export default function GoalTracker({
               </div>
             </div>
 
+            {/* Goal Icon Selector */}
+            <GoalIconPicker selectedIcon={icon} onSelectIcon={setIcon} accentColor={color} />
+
             {/* Custom Palette options */}
             <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-white/5">
               <div className="flex gap-2 items-center">
@@ -760,7 +791,8 @@ export default function GoalTracker({
                 >
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${g.color}25`, color: g.color }}>
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full flex items-center gap-1.5" style={{ backgroundColor: `${g.color}25`, color: g.color }}>
+                        {renderGoalIcon(g.icon, g.type, "w-3 h-3 shrink-0", { color: g.color })}
                         {g.category}
                       </span>
                       <div className="flex items-center gap-1.5">
@@ -783,19 +815,17 @@ export default function GoalTracker({
                       </div>
                     </div>
 
-                    <h4 className="font-sans font-bold text-xs text-white tracking-tight leading-tight pt-1">
-                      {g.name}
+                    <h4 className="font-sans font-bold text-xs text-white tracking-tight leading-tight pt-1 flex items-center gap-2">
+                      <div className="p-1 rounded bg-white/5 shrink-0 border border-white/10">
+                        {renderGoalIcon(g.icon, g.type, "w-4 h-4", { color: g.color })}
+                      </div>
+                      <span className="flex-1 min-w-0 truncate">{g.name}</span>
                     </h4>
 
                     {/* Goal Description Parameters list details */}
                     <div className="text-[10px] text-slate-300 space-y-0.5 font-medium select-none pt-1">
                       <p className="flex items-center gap-1">
-                        {g.type === GoalType.WORKOUT ? <Activity className="w-3.5 h-3.5 text-rose-400" /> :
-                         g.type === GoalType.STUDY ? <BookOpen className="w-3.5 h-3.5 text-cyan-400" /> :
-                         g.type === GoalType.JOB_SEARCH ? <Briefcase className="w-3.5 h-3.5 text-blue-400" /> :
-                         g.type === GoalType.SIDE_PROJECT ? <Laptop className="w-3.5 h-3.5 text-pink-400" /> :
-                         g.type === GoalType.ROUTINE ? <RotateCw className="w-3.5 h-3.5 text-emerald-400" /> :
-                         <Smile className="w-3.5 h-3.5 text-amber-400" />}
+                        {renderGoalIcon(g.icon, g.type, "w-3.5 h-3.5 shrink-0", { color: g.color })}
                         {g.weeklyTarget} sessions per week
                       </p>
                       <p className="flex items-center gap-1">

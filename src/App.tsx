@@ -31,40 +31,25 @@ export default function App() {
   const [lastSynced, setLastSynced] = useState<string>("");
 
   // Core application data (Loaded from server / cloud with localStorage fallback)
-  const defaultPythonGoal: Goal = {
-    id: "g_python",
-    name: "Python & AI Engineering Masterclass",
-    type: GoalType.STUDY,
-    category: "Python Dev",
-    weeklyTarget: 4,
-    durationMinutes: 60,
-    timePreference: TimePreference.EVENING,
-    completedCount: 2,
-    color: "#3b82f6",
-    createdAt: new Date().toISOString()
-  };
-
-  const ensurePythonGoal = (goalsList: Goal[]): Goal[] => {
-    if (!Array.isArray(goalsList)) return [defaultPythonGoal];
-    if (!goalsList.some(g => g.name && g.name.toLowerCase().includes("python"))) {
-      return [...goalsList, defaultPythonGoal];
-    }
-    return goalsList;
-  };
-
   const [goals, setGoals] = useState<Goal[]>(() => {
     try {
       const val = localStorage.getItem("cached_goals");
-      const list = val ? JSON.parse(val) : [];
-      return ensurePythonGoal(list);
+      if (!val) return [];
+      const parsed = JSON.parse(val);
+      // Clean up legacy pre-initialized default goals if present
+      const filtered = Array.isArray(parsed) ? parsed.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id)) : [];
+      return filtered;
     } catch {
-      return [defaultPythonGoal];
+      return [];
     }
   });
   const [events, setEvents] = useState<CalendarEvent[]>(() => {
     try {
       const val = localStorage.getItem("cached_events");
-      return val ? JSON.parse(val) : [];
+      if (!val) return [];
+      const parsed = JSON.parse(val);
+      const filtered = Array.isArray(parsed) ? parsed.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id)) : [];
+      return filtered;
     } catch {
       return [];
     }
@@ -122,28 +107,37 @@ export default function App() {
           const cloudLastSynced = data.lastSyncedAt ? new Date(data.lastSyncedAt).getTime() : 0;
           
           const cachedGoalsRaw = localStorage.getItem("cached_goals");
-          const localGoalsList = cachedGoalsRaw ? JSON.parse(cachedGoalsRaw) : [];
-          const hasLocalData = Array.isArray(localGoalsList) && localGoalsList.length > 0;
-          
-          // Detect if the cloud is blank/default but local storage contains customized user records
-          const cloudIsDefaultOrReset = !data.goals || data.goals.length === 0 || 
-            (data.goals.length === 3 && data.goals.some(g => g.id === "g1" && g.name === "Morning Cardio & Stretch"));
+          const cachedGoalsParsed = cachedGoalsRaw ? JSON.parse(cachedGoalsRaw) : null;
+          const localGoalsList = Array.isArray(cachedGoalsParsed)
+            ? cachedGoalsParsed.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id))
+            : [];
+          const hasLocalData = cachedGoalsRaw !== null;
 
           if (data.coachPersona) {
             setCoachPersona(data.coachPersona);
             localStorage.setItem("coach_persona", data.coachPersona);
           }
 
-          if (hasLocalData && (localLastUpdated > cloudLastSynced || cloudIsDefaultOrReset)) {
-            console.log("Local cache is newer/more complete than cloud. Restoring user custom goals to server...");
+          // Clean legacy default goals from cloud data as well
+          const cloudGoalsClean = Array.isArray(data.goals)
+            ? data.goals.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id))
+            : [];
+          const cloudEventsClean = Array.isArray(data.events)
+            ? data.events.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id))
+            : [];
+
+          if (hasLocalData && localLastUpdated > cloudLastSynced) {
+            console.log("Local cache is newer than cloud. Syncing user custom goals to server...");
             
-            const localEvents = JSON.parse(localStorage.getItem("cached_events") || "[]");
+            const localEventsRaw = JSON.parse(localStorage.getItem("cached_events") || "[]");
+            const localEvents = Array.isArray(localEventsRaw)
+              ? localEventsRaw.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id))
+              : [];
             const localAvailability = JSON.parse(localStorage.getItem("cached_availability") || "[]");
             const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
             const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
 
-            const finalGoals = ensurePythonGoal(localGoalsList);
-            setGoals(finalGoals);
+            setGoals(localGoalsList);
             setEvents(localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
             if (localAvailability.length > 0) {
               setAvailability(localAvailability);
@@ -153,9 +147,9 @@ export default function App() {
             setNotifications(localNotifications);
             setCoachMessages(localCoachMessages);
 
-            // Sync up local data to cloud database
+            // Sync up local user data to cloud database
             await syncToCloud(
-              finalGoals,
+              localGoalsList,
               localEvents,
               localAvailability.length > 0 ? localAvailability : data.availability || [],
               localNotifications,
@@ -163,10 +157,9 @@ export default function App() {
               (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor"
             );
           } else {
-            // Cloud is newer, load cloud data and update local cache
-            const cloudGoals = ensurePythonGoal(data.goals || []);
-            setGoals(cloudGoals);
-            setEvents((data.events || []).map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
+            // Cloud is newer or initial load
+            setGoals(cloudGoalsClean);
+            setEvents(cloudEventsClean.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
             setAvailability(data.availability || []);
             setNotifications(data.notifications || []);
             setCoachMessages(data.coachMessages || []);
@@ -175,8 +168,8 @@ export default function App() {
               localStorage.setItem("coach_persona", data.coachPersona);
             }
 
-            localStorage.setItem("cached_goals", JSON.stringify(cloudGoals));
-            localStorage.setItem("cached_events", JSON.stringify(data.events || []));
+            localStorage.setItem("cached_goals", JSON.stringify(cloudGoalsClean));
+            localStorage.setItem("cached_events", JSON.stringify(cloudEventsClean));
             localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
             localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));
             localStorage.setItem("cached_coachMessages", JSON.stringify(data.coachMessages || []));
@@ -775,6 +768,131 @@ export default function App() {
     syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
   };
 
+  // Helper to generate dynamic calendar event sessions for a goal
+  const generateGoalSessions = (
+    goal: Goal,
+    existingEvents: CalendarEvent[],
+    neededCount: number,
+    availList: AvailabilityWindow[]
+  ): CalendarEvent[] => {
+    if (neededCount <= 0) return [];
+    const newEvents: CalendarEvent[] = [];
+    let successBooked = 0;
+    const now = new Date();
+    const goalNameLower = goal.name.toLowerCase();
+
+    for (let dayOffset = 0; dayOffset <= 14; dayOffset++) {
+      if (successBooked >= neededCount) break;
+
+      const targetDay = new Date(now);
+      targetDay.setDate(now.getDate() + dayOffset);
+      const dayOfWeek = targetDay.getDay();
+
+      const availDay = availList.find(a => a.dayOfWeek === dayOfWeek);
+      if (!availDay || !availDay.active) continue;
+
+      const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
+      const targetDayString = targetDay.toDateString();
+
+      const sessionsOnTargetDay = [...existingEvents, ...newEvents].filter(evt => {
+        const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+        return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+      }).length;
+
+      if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
+
+      let [availStartHour] = availDay.startTime.split(":").map(Number);
+      let [availEndHour] = availDay.endTime.split(":").map(Number);
+
+      let prefStart = availStartHour;
+      let prefEnd = availEndHour;
+
+      if (goal.timePreference === TimePreference.MORNING) {
+        prefStart = Math.max(availStartHour, 8);
+        prefEnd = Math.min(availEndHour, 12);
+      } else if (goal.timePreference === TimePreference.AFTERNOON) {
+        prefStart = Math.max(availStartHour, 12);
+        prefEnd = Math.min(availEndHour, 17);
+      } else if (goal.timePreference === TimePreference.EVENING) {
+        prefStart = Math.max(availStartHour, 17);
+        prefEnd = Math.min(availEndHour, 22);
+      }
+
+      if (prefStart >= prefEnd) {
+        prefStart = availStartHour;
+        prefEnd = availEndHour;
+      }
+
+      const blockDurationHours = (goal.durationMinutes || 60) / 60;
+
+      const windowsToTry = [
+        { start: prefStart, end: prefEnd },
+        { start: availStartHour, end: availEndHour }
+      ];
+
+      let slotBookedOnDay = false;
+
+      for (const win of windowsToTry) {
+        if (slotBookedOnDay) break;
+
+        for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
+          if (successBooked >= neededCount) break;
+
+          const currentDayCount = [...existingEvents, ...newEvents].filter(evt => {
+            const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+            return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+          }).length;
+
+          if (currentDayCount >= maxSessionsPerDay) break;
+
+          const slotStart = new Date(targetDay);
+          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+          if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
+            continue;
+          }
+
+          const slotEnd = new Date(slotStart);
+          slotEnd.setMinutes(slotStart.getMinutes() + (goal.durationMinutes || 60));
+
+          const overlap = [...existingEvents, ...newEvents].some(evt => {
+            const evtStart = new Date(evt.start);
+            const evtEnd = new Date(evt.end);
+            return slotStart < evtEnd && slotEnd > evtStart;
+          });
+
+          if (!overlap) {
+            const mappedType =
+              goal.type === GoalType.WORKOUT ? "workout" :
+              goal.type === GoalType.STUDY ? "study" :
+              goal.type === GoalType.JOB_SEARCH ? "job_search" :
+              goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+              goal.type === GoalType.ROUTINE ? "routine" :
+              "personal";
+
+            newEvents.push({
+              id: `e_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+              title: goal.name,
+              type: mappedType,
+              start: slotStart.toISOString(),
+              end: slotEnd.toISOString(),
+              goalId: goal.id,
+              completed: false,
+              notes: `Auto-scheduled session for ${goal.name}`,
+              icon: goal.icon
+            });
+
+            successBooked++;
+            slotBookedOnDay = true;
+            break;
+          }
+        }
+      }
+    }
+
+    return newEvents;
+  };
+
   // D. Create custom Goal Object
   const handleAddGoal = (newGoalRaw: Omit<Goal, "id" | "completedCount" | "createdAt">) => {
     const newGoal: Goal = {
@@ -783,9 +901,23 @@ export default function App() {
       completedCount: 0,
       createdAt: new Date().toISOString()
     };
+
+    // Auto-schedule sessions on calendar right when goal is created
+    const autoEvents = generateGoalSessions(newGoal, events, newGoal.weeklyTarget, availability);
     const nextGoals = [newGoal, ...goals];
+    const nextEvents = [...autoEvents, ...events];
+
     setGoals(nextGoals);
-    syncToCloud(nextGoals, events, availability, notifications, coachMessages);
+    setEvents(nextEvents);
+    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+
+    if (autoEvents.length > 0) {
+      triggerSystemNotification(
+        "Goal Created & Scheduled",
+        `Created "${newGoal.name}" and scheduled ${autoEvents.length} session(s) on your calendar!`,
+        "success"
+      );
+    }
   };
 
   // E. Delete custom Goal
@@ -800,35 +932,169 @@ export default function App() {
 
   // EE. Edit custom Goal in cloud database
   const handleEditGoal = (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => {
+    const targetGoal = goals.find(g => g.id === goalId);
+    if (!targetGoal) return;
+
+    const updatedGoal: Goal = { ...targetGoal, ...updatedFields };
+
     const nextGoals = goals.map(g => 
-      g.id === goalId ? { ...g, ...updatedFields } : g
+      g.id === goalId ? updatedGoal : g
     );
 
-    // If name or type changed, synchronize tied event attributes
-    let nextEvents = [...events];
-    if (updatedFields.name !== undefined || updatedFields.type !== undefined) {
-      const oldGoal = goals.find(g => g.id === goalId);
-      nextEvents = events.map(evt => {
-        if (evt.goalId === goalId) {
-          let newTitle = evt.title;
-          if (oldGoal && updatedFields.name !== undefined) {
-            newTitle = updatedFields.name;
-          }
-          return {
-            ...evt,
-            title: newTitle,
-            type: updatedFields.type !== undefined
-              ? (updatedFields.type === GoalType.WORKOUT ? "workout" :
-                 updatedFields.type === GoalType.STUDY ? "study" :
-                 updatedFields.type === GoalType.JOB_SEARCH ? "job_search" :
-                 updatedFields.type === GoalType.SIDE_PROJECT ? "side_project" :
-                 updatedFields.type === GoalType.ROUTINE ? "routine" :
-                 "personal")
-              : evt.type
-          } as CalendarEvent;
+    // 1. Synchronize tied event attributes and reschedule uncompleted events if timePreference or duration changed
+    let nextEvents = events.map(evt => {
+      if (evt.goalId === goalId) {
+        let newTitle = evt.title;
+        if (updatedFields.name !== undefined) {
+          newTitle = updatedFields.name;
         }
-        return evt;
-      });
+        let newType = evt.type;
+        if (updatedFields.type !== undefined) {
+          newType = updatedFields.type === GoalType.WORKOUT ? "workout" :
+                    updatedFields.type === GoalType.STUDY ? "study" :
+                    updatedFields.type === GoalType.JOB_SEARCH ? "job_search" :
+                    updatedFields.type === GoalType.SIDE_PROJECT ? "side_project" :
+                    updatedFields.type === GoalType.ROUTINE ? "routine" :
+                    "personal";
+        }
+        let newIcon = evt.icon;
+        if (updatedFields.icon !== undefined) {
+          newIcon = updatedFields.icon;
+        }
+
+        let newStart = evt.start;
+        let newEnd = evt.end;
+
+        // If timePreference or durationMinutes changed, reschedule uncompleted events
+        if (!evt.completed && (updatedFields.timePreference !== undefined || updatedFields.durationMinutes !== undefined)) {
+          const evtDate = new Date(evt.start);
+          const dayOfWeek = evtDate.getDay();
+          const availDay = availability.find(a => a.dayOfWeek === dayOfWeek);
+
+          let availStartHour = 8;
+          let availEndHour = 22;
+          if (availDay && availDay.active) {
+            availStartHour = Number(availDay.startTime.split(":")[0]) || 8;
+            availEndHour = Number(availDay.endTime.split(":")[0]) || 22;
+          }
+
+          const timePref = updatedGoal.timePreference;
+          let prefStart = availStartHour;
+          let prefEnd = availEndHour;
+
+          if (timePref === TimePreference.MORNING) {
+            prefStart = Math.max(availStartHour, 8);
+            prefEnd = Math.min(availEndHour, 12);
+          } else if (timePref === TimePreference.AFTERNOON) {
+            prefStart = Math.max(availStartHour, 12);
+            prefEnd = Math.min(availEndHour, 17);
+          } else if (timePref === TimePreference.EVENING) {
+            prefStart = Math.max(availStartHour, 17);
+            prefEnd = Math.min(availEndHour, 22);
+          }
+
+          if (prefStart >= prefEnd) {
+            prefStart = availStartHour;
+            prefEnd = availEndHour;
+          }
+
+          const durMins = updatedGoal.durationMinutes || 60;
+          const durHours = durMins / 60;
+
+          const windowsToTry = [
+            { start: prefStart, end: prefEnd },
+            { start: availStartHour, end: availEndHour }
+          ];
+
+          let slotFound = false;
+
+          for (const win of windowsToTry) {
+            if (slotFound) break;
+
+            for (let hrs = win.start; hrs <= win.end - durHours; hrs += 0.5) {
+              const testStart = new Date(evtDate);
+              testStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+              const testEnd = new Date(testStart);
+              testEnd.setMinutes(testStart.getMinutes() + durMins);
+
+              // Check overlap with other events (excluding this event itself)
+              const overlap = events.some(otherEvt => {
+                if (otherEvt.id === evt.id) return false;
+                const oStart = new Date(otherEvt.start);
+                const oEnd = new Date(otherEvt.end);
+                return testStart < oEnd && testEnd > oStart;
+              });
+
+              if (!overlap) {
+                newStart = testStart.toISOString();
+                newEnd = testEnd.toISOString();
+                slotFound = true;
+                break;
+              }
+            }
+          }
+
+          // Fallback if no clean non-overlapping slot was found
+          if (!slotFound) {
+            const fallbackStart = new Date(evtDate);
+            let targetHour = 9;
+            if (timePref === TimePreference.AFTERNOON) targetHour = 13;
+            if (timePref === TimePreference.EVENING) targetHour = 18;
+            fallbackStart.setHours(targetHour, 0, 0, 0);
+
+            const fallbackEnd = new Date(fallbackStart);
+            fallbackEnd.setMinutes(fallbackStart.getMinutes() + durMins);
+
+            newStart = fallbackStart.toISOString();
+            newEnd = fallbackEnd.toISOString();
+          }
+        }
+
+        return {
+          ...evt,
+          title: newTitle,
+          type: newType,
+          icon: newIcon,
+          start: newStart,
+          end: newEnd,
+          notes: updatedFields.timePreference
+            ? `Rescheduled to align with ${updatedFields.timePreference} preference`
+            : evt.notes
+        } as CalendarEvent;
+      }
+      return evt;
+    });
+
+    // 2. Adjust calendar session count if weeklyTarget changed
+    const existingGoalEvents = nextEvents.filter(e => e.goalId === goalId);
+    const targetCount = updatedGoal.weeklyTarget;
+
+    if (existingGoalEvents.length < targetCount) {
+      const neededCount = targetCount - existingGoalEvents.length;
+      const additionalEvents = generateGoalSessions(updatedGoal, nextEvents, neededCount, availability);
+      nextEvents = [...nextEvents, ...additionalEvents];
+
+      triggerSystemNotification(
+        "Calendar Sessions Added",
+        `Target updated to ${targetCount} sessions/week. Scheduled ${additionalEvents.length} new session(s) on your calendar for "${updatedGoal.name}".`,
+        "sync"
+      );
+    } else if (existingGoalEvents.length > targetCount) {
+      const excessCount = existingGoalEvents.length - targetCount;
+      // Remove excess uncompleted future events (sort latest start time first)
+      const uncompletedEvents = existingGoalEvents
+        .filter(e => !e.completed)
+        .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+
+      const idsToRemove = new Set(uncompletedEvents.slice(0, excessCount).map(e => e.id));
+      nextEvents = nextEvents.filter(e => !idsToRemove.has(e.id));
+
+      triggerSystemNotification(
+        "Calendar Sessions Adjusted",
+        `Target updated to ${targetCount} sessions/week. Removed ${idsToRemove.size} session(s) from your calendar to match your new target for "${updatedGoal.name}".`,
+        "sync"
+      );
     }
 
     setGoals(nextGoals);
