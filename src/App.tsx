@@ -1501,6 +1501,9 @@ export default function App() {
               localStorage.setItem("coach_persona", p);
               syncToCloud(goals, events, availability, notifications, coachMessages, p);
             }}
+            onAddGoal={handleAddGoal}
+            onEditGoal={handleEditGoal}
+            onDeleteGoal={handleDeleteGoal}
             onApplyEnergySchedule={(newEvts) => {
               const updatedEvents = [...events, ...newEvts];
               setEvents(updatedEvents);

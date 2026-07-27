@@ -135,31 +135,6 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
     }
   }
 
-  // 3. Goal-Specific Milestone & Streak Badges Computation
-  const pythonGoal = goals.find(g => 
-    g.name.toLowerCase().includes("python") || 
-    (g.category && g.category.toLowerCase().includes("python"))
-  );
-  
-  const pythonEvents = completedEvents.filter(e => {
-    if (pythonGoal && e.goalId === pythonGoal.id) return true;
-    return e.title && e.title.toLowerCase().includes("python");
-  });
-
-  const fitnessGoal = goals.find(g => 
-    g.type === "workout" || 
-    g.name.toLowerCase().includes("workout") || 
-    g.name.toLowerCase().includes("fitness") ||
-    g.name.toLowerCase().includes("gym")
-  );
-
-  const fitnessEvents = completedEvents.filter(e => {
-    if (fitnessGoal && e.goalId === fitnessGoal.id) return true;
-    return e.type === "workout" || (e.title && (e.title.toLowerCase().includes("workout") || e.title.toLowerCase().includes("fitness")));
-  });
-
-  const studyEventsAll = completedEvents.filter(e => e.type === "study");
-
   // Badge tier helper
   const getBadgeTier = (count: number, bronzeThreshold = 2, silverThreshold = 5, goldThreshold = 10) => {
     if (count >= goldThreshold) return { label: "Gold Titan 🥇", color: "text-amber-300 bg-amber-500/10 border-amber-500/30", nextLevel: "MAX", target: goldThreshold, level: 3 };
@@ -168,9 +143,6 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
     return { label: "Apprentice 🔒", color: "text-slate-400 bg-white/5 border-white/10", nextLevel: `${bronzeThreshold - count} to Bronze`, target: bronzeThreshold, level: 0 };
   };
 
-  const pythonBadge = getBadgeTier(pythonEvents.length, 2, 5, 8);
-  const fitnessBadge = getBadgeTier(fitnessEvents.length, 2, 5, 8);
-  const studyBadge = getBadgeTier(studyEventsAll.length, 2, 5, 10);
   const streakBadge = getBadgeTier(maxStreak, 3, 5, 7);
 
   // Chart A: Target vs Actual bar chart data
@@ -258,35 +230,73 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
           </div>
         </div>
 
-        {/* ACTIVE & WELLNESS */}
-        <div id="metric_card_workout" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
-          <div className="p-3 bg-pink-500/15 text-pink-300 rounded-xl">
-            <Activity className="w-5 h-5" />
+        {/* CARD 3: TOP GOAL 1 OR TOTAL FOCUS HOURS */}
+        {goals.length > 0 ? (
+          <div id="metric_card_goal1" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
+            <div className="p-3 bg-emerald-500/15 text-emerald-300 rounded-xl shrink-0">
+              <Target className="w-5 h-5" />
+            </div>
+            <div className="select-none min-w-0 flex-1">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5 truncate">
+                {goals[0].name}
+              </p>
+              <h4 className="text-xl font-sans font-bold text-white leading-none">
+                {completedEvents.filter(e => e.goalId === goals[0].id).length} Sessions
+              </h4>
+              <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium truncate">
+                Target: {goals[0].weeklyTarget}/wk ({goals[0].category || "Active Goal"})
+              </p>
+            </div>
           </div>
-          <div className="select-none">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active & Fitness</p>
-            <h4 id="metrics_workout_hours" className="text-xl font-sans font-bold text-white leading-none">
-              {Math.round((totalActiveMinutes / 60) * 10) / 10}h
-            </h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">{fitnessEvents.length} Fitness Sessions Done</p>
+        ) : (
+          <div id="metric_card_focus_time" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
+            <div className="p-3 bg-pink-500/15 text-pink-300 rounded-xl shrink-0">
+              <Activity className="w-5 h-5" />
+            </div>
+            <div className="select-none">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Total Focus Time</p>
+              <h4 className="text-xl font-sans font-bold text-white leading-none">
+                {Math.round((totalCompletedMinutes / 60) * 10) / 10}h
+              </h4>
+              <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">{completedEvents.length} Total Sessions Done</p>
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* PYTHON & CAREER */}
-        <div id="metric_card_study" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
-          <div className="p-3 bg-cyan-500/15 text-cyan-300 rounded-xl">
-            <Code className="w-5 h-5" />
+        {/* CARD 4: TOP GOAL 2 OR ACTIVE GOALS COUNT */}
+        {goals.length > 1 ? (
+          <div id="metric_card_goal2" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
+            <div className="p-3 bg-cyan-500/15 text-cyan-300 rounded-xl shrink-0">
+              <Award className="w-5 h-5" />
+            </div>
+            <div className="select-none min-w-0 flex-1">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5 truncate">
+                {goals[1].name}
+              </p>
+              <h4 className="text-xl font-sans font-bold text-white leading-none">
+                {completedEvents.filter(e => e.goalId === goals[1].id).length} Sessions
+              </h4>
+              <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium truncate">
+                Target: {goals[1].weeklyTarget}/wk ({goals[1].category || "Active Goal"})
+              </p>
+            </div>
           </div>
-          <div className="select-none">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Python & Career</p>
-            <h4 id="metrics_study_hours" className="text-xl font-sans font-bold text-white leading-none">
-              {pythonEvents.length} Sessions
-            </h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">
-              {pythonGoal ? `Target: ${pythonGoal.weeklyTarget}/wk` : "Python Masterclass"}
-            </p>
+        ) : (
+          <div id="metric_card_goals_count" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
+            <div className="p-3 bg-cyan-500/15 text-cyan-300 rounded-xl shrink-0">
+              <Code className="w-5 h-5" />
+            </div>
+            <div className="select-none">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active Goals</p>
+              <h4 className="text-xl font-sans font-bold text-white leading-none">
+                {goals.length} {goals.length === 1 ? 'Goal' : 'Goals'}
+              </h4>
+              <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">
+                {goals.length > 0 ? `Target: ${goals.reduce((acc, g) => acc + g.weeklyTarget, 0)} sessions/wk` : "Create goals to start"}
+              </p>
+            </div>
           </div>
-        </div>
+        )}
 
       </div>
 

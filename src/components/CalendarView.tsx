@@ -331,6 +331,41 @@ export default function CalendarView({
 
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
 
+  const scrollToCurrentTimeLine = (smooth: boolean = true) => {
+    if (!gridScrollRef.current) return;
+
+    const scrollContainer = gridScrollRef.current;
+    const currentHourDecimal = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+    const containerHeight = scrollContainer.clientHeight || 500;
+
+    if (viewMode === "week") {
+      // 64px per hour (8 AM start)
+      const targetTopPixel = (currentHourDecimal - 8) * 64;
+      const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 2);
+      scrollContainer.scrollTo({
+        top: scrollToPixel,
+        behavior: smooth ? "smooth" : "auto"
+      });
+    } else if (viewMode === "day") {
+      // 96px per hour (8 AM start)
+      const targetTopPixel = (currentHourDecimal - 8) * 96;
+      const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 2);
+      scrollContainer.scrollTo({
+        top: scrollToPixel,
+        behavior: smooth ? "smooth" : "auto"
+      });
+    } else if (viewMode === "list") {
+      const marker = scrollContainer.querySelector("#current_time_list_marker") as HTMLElement;
+      if (marker) {
+        const scrollToPixel = Math.max(0, marker.offsetTop - containerHeight / 2);
+        scrollContainer.scrollTo({
+          top: scrollToPixel,
+          behavior: smooth ? "smooth" : "auto"
+        });
+      }
+    }
+  };
+
   useEffect(() => {
     const interval = setInterval(() => {
       setNow(new Date());
@@ -340,36 +375,18 @@ export default function CalendarView({
 
   // Auto-scroll the Schedule Grid directly to where the current time horizontal line is located
   useEffect(() => {
-    if (!gridScrollRef.current) return;
+    scrollToCurrentTimeLine(false);
 
-    const scrollContainer = gridScrollRef.current;
-    const currentHourDecimal = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+    const t1 = setTimeout(() => scrollToCurrentTimeLine(false), 50);
+    const t2 = setTimeout(() => scrollToCurrentTimeLine(true), 250);
+    const t3 = setTimeout(() => scrollToCurrentTimeLine(true), 600);
 
-    const timer = setTimeout(() => {
-      if (!scrollContainer) return;
-      const containerHeight = scrollContainer.clientHeight || 500;
-
-      if (viewMode === "week") {
-        // 64px per hour (8 AM start)
-        const targetTopPixel = (currentHourDecimal - 8) * 64;
-        const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 3);
-        scrollContainer.scrollTo({ top: scrollToPixel, behavior: "smooth" });
-      } else if (viewMode === "day") {
-        // 96px per hour (8 AM start)
-        const targetTopPixel = (currentHourDecimal - 8) * 96;
-        const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 3);
-        scrollContainer.scrollTo({ top: scrollToPixel, behavior: "smooth" });
-      } else if (viewMode === "list") {
-        const marker = scrollContainer.querySelector("#current_time_list_marker") as HTMLElement;
-        if (marker) {
-          const scrollToPixel = Math.max(0, marker.offsetTop - containerHeight / 3);
-          scrollContainer.scrollTo({ top: scrollToPixel, behavior: "smooth" });
-        }
-      }
-    }, 120);
-
-    return () => clearTimeout(timer);
-  }, [viewMode, currentDate, now]);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [viewMode, currentDate]);
 
   // Resolve custom goal color if event is associated with a goal
   const getEventColorStyles = (evt: CalendarEvent) => {
@@ -905,6 +922,9 @@ export default function CalendarView({
 
   const handleToday = () => {
     setCurrentDate(new Date());
+    setTimeout(() => {
+      scrollToCurrentTimeLine();
+    }, 50);
   };
 
   // Submit new manual event or edit current
@@ -1237,6 +1257,23 @@ export default function CalendarView({
             className="text-xs font-semibold px-2.5 py-1 rounded-lg hover:bg-white/10 text-white transition cursor-pointer"
           >
             Today
+          </button>
+          <button 
+            id="nav_focus_now_btn"
+            type="button"
+            onClick={() => {
+              setCurrentDate(new Date());
+              setNow(new Date());
+              setTimeout(() => scrollToCurrentTimeLine(true), 50);
+            }} 
+            className="text-xs font-bold px-2.5 py-1 rounded-lg bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+            title="Focus current time line in calendar"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+            </span>
+            <span>Focus Now</span>
           </button>
           <button 
             id="nav_next_btn"
@@ -1634,19 +1671,26 @@ export default function CalendarView({
               {/* Google Calendar Current Time Horizontal Line */}
               {todayIdx !== -1 && currentTopPixelWeek >= 0 && currentTopPixelWeek <= hours.length * 64 && (
                 <div
+                  id="current_time_week_line"
                   className="absolute z-30 pointer-events-none flex items-center left-[80px] right-0"
                   style={{ top: `${currentTopPixelWeek}px` }}
                   title={`Current Time: ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
                 >
+                  {/* Glowing Time Badge on the left of red line */}
+                  <div className="absolute -left-1 font-mono text-[9px] font-extrabold bg-red-600 text-white px-1.5 py-0.5 rounded-full shadow-lg shadow-red-500/80 z-50 -translate-x-full flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
+                    <span>{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  </div>
+
                   {/* Red Circle Indicator centered on today's column vertical grid border */}
                   <div
-                    className="absolute w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/70 z-40 -translate-x-1/2 flex items-center justify-center transition-all duration-300"
+                    className="absolute w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/80 z-40 -translate-x-1/2 flex items-center justify-center transition-all duration-300"
                     style={{ left: `calc(${todayIdx} * (100% / 7))` }}
                   >
                     <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
                   </div>
                   {/* Red horizontal line across grid */}
-                  <div className="h-[2px] bg-red-500 w-full shadow-sm shadow-red-500/50"></div>
+                  <div className="h-[2px] bg-red-500 w-full shadow-md shadow-red-500/70"></div>
                 </div>
               )}
 
@@ -1839,16 +1883,23 @@ export default function CalendarView({
               {/* Google Calendar Current Time Horizontal Line (Day View) */}
               {isSameDay(currentDate, now) && currentTopPixelDay >= 0 && currentTopPixelDay <= hours.length * 96 && (
                 <div
+                  id="current_time_day_line"
                   className="absolute z-30 pointer-events-none flex items-center left-[100px] right-0"
                   style={{ top: `${currentTopPixelDay}px` }}
                   title={`Current Time: ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
                 >
+                  {/* Glowing Time Badge on the left of red line */}
+                  <div className="absolute -left-1 font-mono text-[9px] font-extrabold bg-red-600 text-white px-1.5 py-0.5 rounded-full shadow-lg shadow-red-500/80 z-50 -translate-x-full flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
+                    <span>{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  </div>
+
                   {/* Red Circle Indicator on 100px vertical time line border */}
-                  <div className="absolute left-0 w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/70 z-40 -translate-x-1/2 flex items-center justify-center">
+                  <div className="absolute left-0 w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/80 z-40 -translate-x-1/2 flex items-center justify-center">
                     <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
                   </div>
                   {/* Red horizontal line across day view schedule */}
-                  <div className="h-[2px] bg-red-500 w-full shadow-sm shadow-red-500/50"></div>
+                  <div className="h-[2px] bg-red-500 w-full shadow-md shadow-red-500/70"></div>
                 </div>
               )}
 

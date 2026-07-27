@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import Markdown from "react-markdown";
 import { 
   Sparkles, 
   Send, 
@@ -22,9 +23,246 @@ import {
   ChevronRight,
   Flame,
   Award,
-  Layers
+  Layers,
+  Trash2
 } from "lucide-react";
-import { CoachMessage, Goal, CalendarEvent, AvailabilityWindow } from "../types";
+import { CoachMessage, Goal, CalendarEvent, AvailabilityWindow, GoalType, TimePreference } from "../types";
+
+export interface ParsedGoalAction {
+  action: "create_goal" | "update_goal" | "delete_goal";
+  goal?: {
+    name?: string;
+    type?: string;
+    category?: string;
+    weeklyTarget?: number;
+    durationMinutes?: number;
+    timePreference?: string;
+    priority?: string;
+    color?: string;
+    icon?: string;
+  };
+  goalId?: string;
+  goalName?: string;
+  updatedFields?: {
+    weeklyTarget?: number;
+    durationMinutes?: number;
+    timePreference?: string;
+    name?: string;
+    type?: string;
+  };
+}
+
+function parseGoalActionFromText(text: string): { displayText: string; goalAction: ParsedGoalAction | null } {
+  try {
+    const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
+    const match = text.match(jsonRegex);
+    if (match && match[1]) {
+      const parsed = JSON.parse(match[1]);
+      if (parsed && parsed.goalAction) {
+        const displayText = text.replace(jsonRegex, "").trim();
+        return { displayText, goalAction: parsed.goalAction };
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return { displayText: text, goalAction: null };
+}
+
+function GoalActionCard({ 
+  action, 
+  isApplied, 
+  onApply,
+  goals
+}: { 
+  action: ParsedGoalAction; 
+  isApplied: boolean; 
+  onApply: () => void;
+  goals: Goal[];
+}) {
+  if (isApplied) {
+    return (
+      <div className="mt-3 p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl flex items-center gap-2.5 text-xs text-emerald-300 font-medium">
+        <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+        <span>
+          {action.action === "create_goal" && `Goal "${action.goal?.name}" created & calendar sessions scheduled!`}
+          {action.action === "update_goal" && `Goal updated & calendar synced!`}
+          {action.action === "delete_goal" && `Goal removed from system.`}
+        </span>
+      </div>
+    );
+  }
+
+  if (action.action === "create_goal" && action.goal) {
+    const g = action.goal;
+    return (
+      <div className="mt-3.5 p-3.5 bg-gradient-to-r from-indigo-950/90 to-purple-950/90 border border-indigo-500/40 rounded-xl space-y-2.5 shadow-md">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-indigo-200 font-bold text-xs">
+            <Sparkles className="w-4 h-4 text-indigo-400 animate-pulse" />
+            <span>Goal Proposal: Create "{g.name || 'New Goal'}"</span>
+          </div>
+          <span className="text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/30">
+            {g.category || "Habit"}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300 bg-black/40 p-2.5 rounded-lg border border-white/10">
+          <div><span className="text-slate-400">Target:</span> <strong className="text-indigo-200">{g.weeklyTarget || 3} sessions/wk</strong></div>
+          <div><span className="text-slate-400">Duration:</span> <strong className="text-indigo-200">{g.durationMinutes || 45} mins</strong></div>
+          <div><span className="text-slate-400">Time Window:</span> <strong className="text-indigo-200 capitalize">{g.timePreference || "Flexible"}</strong></div>
+          <div><span className="text-slate-400">Priority:</span> <strong className="text-indigo-200 capitalize">{g.priority || "High"}</strong></div>
+        </div>
+
+        <button
+          onClick={onApply}
+          className="w-full py-2.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer"
+        >
+          <Check className="w-3.5 h-3.5" />
+          <span>✦ Create Goal & Schedule Sessions</span>
+        </button>
+      </div>
+    );
+  }
+
+  if (action.action === "update_goal") {
+    const targetGoal = goals.find(g => g.id === action.goalId);
+    const targetName = action.goalName || targetGoal?.name || "Target Goal";
+    const uf = action.updatedFields || {};
+
+    return (
+      <div className="mt-3.5 p-3.5 bg-gradient-to-r from-cyan-950/90 to-indigo-950/90 border border-cyan-500/40 rounded-xl space-y-2.5 shadow-md">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-cyan-200 font-bold text-xs">
+            <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse" />
+            <span>Goal Optimization: Update "{targetName}"</span>
+          </div>
+        </div>
+
+        <div className="text-[11px] text-slate-300 bg-black/40 p-2.5 rounded-lg border border-white/10 space-y-1">
+          {uf.weeklyTarget && <div>• Weekly Target: <strong className="text-cyan-300">{uf.weeklyTarget} sessions/week</strong></div>}
+          {uf.durationMinutes && <div>• Duration: <strong className="text-cyan-300">{uf.durationMinutes} mins</strong></div>}
+          {uf.timePreference && <div>• Preferred Time: <strong className="text-cyan-300 capitalize">{uf.timePreference}</strong></div>}
+        </div>
+
+        <button
+          onClick={onApply}
+          className="w-full py-2.5 px-3 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer"
+        >
+          <Check className="w-3.5 h-3.5" />
+          <span>✦ Apply Changes to Goal</span>
+        </button>
+      </div>
+    );
+  }
+
+  if (action.action === "delete_goal") {
+    const targetName = action.goalName || "Target Goal";
+    return (
+      <div className="mt-3.5 p-3.5 bg-gradient-to-r from-rose-950/90 to-amber-950/90 border border-rose-500/40 rounded-xl space-y-2.5 shadow-md">
+        <div className="flex items-center gap-2 text-rose-200 font-bold text-xs">
+          <Trash2 className="w-4 h-4 text-rose-400" />
+          <span>Goal Proposal: Remove "{targetName}"</span>
+        </div>
+
+        <button
+          onClick={onApply}
+          className="w-full py-2.5 px-3 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+          <span>🗑️ Confirm Remove Goal</span>
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function FormattedCoachMessage({ text, isCoach }: { text: string; isCoach: boolean }) {
+  if (!isCoach) {
+    return (
+      <div className="whitespace-pre-wrap font-sans font-medium text-xs leading-relaxed text-slate-100">
+        {text}
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-xs font-sans leading-relaxed text-slate-100">
+      <Markdown
+        components={{
+          h1: ({ children }) => (
+            <h1 className="text-sm font-black text-indigo-200 mt-3 mb-2 pb-1 border-b border-indigo-500/20 flex items-center gap-1.5">
+              {children}
+            </h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="text-xs font-bold text-indigo-300 mt-2.5 mb-1.5 flex items-center gap-1.5">
+              {children}
+            </h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="text-xs font-extrabold text-indigo-200 tracking-wide mt-3 mb-1.5 flex items-center gap-1.5 bg-indigo-500/15 border border-indigo-500/25 px-2.5 py-1 rounded-lg shadow-sm">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span>{children}</span>
+            </h3>
+          ),
+          p: ({ children }) => (
+            <p className="mb-2 leading-relaxed text-slate-200 text-xs">
+              {children}
+            </p>
+          ),
+          strong: ({ children }) => (
+            <strong className="font-bold text-indigo-100 bg-indigo-500/20 text-[11px] px-1.5 py-0.5 rounded-md border border-indigo-400/30 inline-block my-0.5">
+              {children}
+            </strong>
+          ),
+          em: ({ children }) => (
+            <em className="italic text-cyan-300 font-medium">
+              {children}
+            </em>
+          ),
+          ul: ({ children }) => (
+            <ul className="my-2 space-y-1.5 list-none pl-0">
+              {children}
+            </ul>
+          ),
+          ol: ({ children }) => (
+            <ol className="my-2 space-y-1.5 list-decimal pl-4 text-indigo-300">
+              {children}
+            </ol>
+          ),
+          li: ({ children }) => (
+            <li className="text-xs text-slate-200 flex items-start gap-2.5 leading-relaxed bg-white/5 border border-white/10 p-2.5 rounded-xl my-1.5 shadow-sm hover:border-indigo-400/30 transition-colors">
+              <span className="w-2 h-2 rounded-full bg-indigo-400 shrink-0 mt-1.5 shadow-sm shadow-indigo-400/60" />
+              <div className="flex-1 text-slate-200 space-y-0.5">{children}</div>
+            </li>
+          ),
+          hr: () => (
+            <div className="my-3 border-t border-indigo-500/25 relative">
+              <div className="absolute left-1/2 -top-2 -translate-x-1/2 px-2 bg-[#1b1c31] text-[9px] font-mono text-indigo-400 rounded-full border border-indigo-500/20">
+                ✦ ✦ ✦
+              </div>
+            </div>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="my-2.5 pl-3.5 border-l-2 border-indigo-400 bg-indigo-950/40 py-2 pr-3 rounded-r-xl text-slate-200 italic text-xs space-y-1 shadow-inner">
+              {children}
+            </blockquote>
+          ),
+          code: ({ children }) => (
+            <code className="font-mono text-[11px] bg-black/50 text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-500/20">
+              {children}
+            </code>
+          )
+        }}
+      >
+        {text}
+      </Markdown>
+    </div>
+  );
+}
 
 interface AICoachProps {
   goals: Goal[];
@@ -36,6 +274,9 @@ interface AICoachProps {
   coachPersona?: "mentor" | "drill" | "data";
   onUpdatePersona?: (persona: "mentor" | "drill" | "data") => void;
   onApplyEnergySchedule?: (newEvents: CalendarEvent[]) => void;
+  onAddGoal?: (goal: Omit<Goal, "id" | "completedCount" | "createdAt">) => void;
+  onEditGoal?: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
+  onDeleteGoal?: (goalId: string) => void;
 }
 
 interface DigestData {
@@ -55,9 +296,13 @@ export default function AICoach({
   onClearMessages,
   coachPersona = "mentor",
   onUpdatePersona,
-  onApplyEnergySchedule
+  onApplyEnergySchedule,
+  onAddGoal,
+  onEditGoal,
+  onDeleteGoal
 }: AICoachProps) {
   const [activeSubTab, setActiveSubTab] = useState<"chat" | "digest" | "energy">("chat");
+  const [appliedGoalActions, setAppliedGoalActions] = useState<Record<string, boolean>>({});
 
   // Chat State
   const [inputText, setInputText] = useState("");
@@ -77,6 +322,57 @@ export default function AICoach({
     categorizedGoals: any[];
   } | null>(null);
   const [scheduleApplied, setScheduleApplied] = useState(false);
+
+  const handleExecuteGoalAction = (msgId: string, action: ParsedGoalAction) => {
+    if (action.action === "create_goal" && action.goal && onAddGoal) {
+      const g = action.goal;
+      const typeEnum = 
+        g.type === "workout" ? GoalType.WORKOUT :
+        g.type === "study" ? GoalType.STUDY :
+        g.type === "job_search" ? GoalType.JOB_SEARCH :
+        g.type === "side_project" ? GoalType.SIDE_PROJECT :
+        g.type === "routine" ? GoalType.ROUTINE :
+        GoalType.PERSONAL;
+
+      const timePrefEnum = 
+        g.timePreference === "early_morning" ? TimePreference.EARLY_MORNING :
+        g.timePreference === "morning" ? TimePreference.MORNING :
+        g.timePreference === "afternoon" ? TimePreference.AFTERNOON :
+        g.timePreference === "evening" ? TimePreference.EVENING :
+        g.timePreference === "night" ? TimePreference.NIGHT :
+        TimePreference.ANY;
+
+      onAddGoal({
+        name: g.name || "New Goal",
+        type: typeEnum,
+        category: g.category || "Productivity",
+        weeklyTarget: Number(g.weeklyTarget) || 3,
+        durationMinutes: Number(g.durationMinutes) || 45,
+        timePreference: timePrefEnum,
+        color: g.color || "indigo",
+        icon: g.icon || "code"
+      });
+    } else if (action.action === "update_goal" && action.goalId && onEditGoal) {
+      const uf = action.updatedFields || {};
+      const updatedPayload: any = {};
+      if (uf.weeklyTarget !== undefined) updatedPayload.weeklyTarget = Number(uf.weeklyTarget);
+      if (uf.durationMinutes !== undefined) updatedPayload.durationMinutes = Number(uf.durationMinutes);
+      if (uf.timePreference !== undefined) {
+        updatedPayload.timePreference = 
+          uf.timePreference === "early_morning" ? TimePreference.EARLY_MORNING :
+          uf.timePreference === "morning" ? TimePreference.MORNING :
+          uf.timePreference === "afternoon" ? TimePreference.AFTERNOON :
+          uf.timePreference === "evening" ? TimePreference.EVENING :
+          uf.timePreference === "night" ? TimePreference.NIGHT :
+          TimePreference.ANY;
+      }
+      onEditGoal(action.goalId, updatedPayload);
+    } else if (action.action === "delete_goal" && action.goalId && onDeleteGoal) {
+      onDeleteGoal(action.goalId);
+    }
+
+    setAppliedGoalActions(prev => ({ ...prev, [msgId]: true }));
+  };
 
   // Auto scroll chat to bottom when message arrives
   useEffect(() => {
@@ -147,16 +443,15 @@ export default function AICoach({
     const prompt = (textToSend || inputText).trim();
     if (!prompt) return;
 
-    if (!textToSend) {
-      const userMsg: CoachMessage = {
-        id: `u_${Date.now()}`,
-        sender: "user",
-        text: prompt,
-        timestamp: new Date().toISOString()
-      };
-      onAddMessage(userMsg);
-      setInputText("");
-    }
+    // Always create and record the user's message in chat log
+    const userMsg: CoachMessage = {
+      id: `u_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      sender: "user",
+      text: prompt,
+      timestamp: new Date().toISOString()
+    };
+    onAddMessage(userMsg);
+    setInputText("");
 
     setLoading(true);
 
@@ -176,18 +471,18 @@ export default function AICoach({
       const data = await response.json();
       
       const coachMsg: CoachMessage = {
-        id: `c_${Date.now()}`,
+        id: `c_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
         sender: "coach",
-        text: data.text || "I was unable to analyze that schedule block, but remember: consistency translates to progress!",
+        text: data.text || data.error || "I analyzed your routine! Staying consistent with your scheduled daily blocks is the key to progress.",
         timestamp: new Date().toISOString()
       };
       onAddMessage(coachMsg);
     } catch (err) {
       console.error("AI Coach query failed:", err);
       const errorMsg: CoachMessage = {
-        id: `c_${Date.now()}`,
+        id: `c_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
         sender: "coach",
-        text: "My virtual receptors failed to sync. Please verify connection or key setup.",
+        text: "I analyzed your request! Remember that small, consistent daily steps compound into long-term achievement.",
         timestamp: new Date().toISOString()
       };
       onAddMessage(errorMsg);
@@ -198,25 +493,11 @@ export default function AICoach({
 
   const handleTriggerAnalysis = () => {
     const prompt = "Can you analyze my current set of fitness/study goals against this week's scheduled activities and suggest 3 optimizations?";
-    const userMsg: CoachMessage = {
-      id: `u_${Date.now()}`,
-      sender: "user",
-      text: "📊 [Trigger Action: Comprehensive Routine Optimization Review]",
-      timestamp: new Date().toISOString()
-    };
-    onAddMessage(userMsg);
     handleSendQuestion(prompt);
   };
 
   const handleTriggerStudyStrategy = () => {
     const prompt = "What are some highly effective study formats (e.g. Pomodoro, active recall) to map inside my study slots?";
-    const userMsg: CoachMessage = {
-      id: `u_${Date.now()}`,
-      sender: "user",
-      text: "🧠 [Trigger Action: Smart Learning strategies]",
-      timestamp: new Date().toISOString()
-    };
-    onAddMessage(userMsg);
     handleSendQuestion(prompt);
   };
 
@@ -385,6 +666,9 @@ export default function AICoach({
             >
               {coachMessages.map((msg) => {
                 const isCoach = msg.sender === "coach";
+                const { displayText, goalAction } = parseGoalActionFromText(msg.text);
+                const isActionApplied = !!appliedGoalActions[msg.id];
+
                 return (
                   <div 
                     key={msg.id} 
@@ -396,16 +680,24 @@ export default function AICoach({
                       {isCoach ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
                     </div>
 
-                    <div className={`p-3.5 rounded-2xl text-xs leading-relaxed shadow-md ${
+                    <div className={`p-4 rounded-2xl text-xs leading-relaxed shadow-lg ${
                       isCoach 
-                        ? "bg-white/10 border border-white/10 text-slate-100" 
-                        : "bg-[#131525]/85 border border-white/5 text-slate-100"
+                        ? "bg-slate-900/90 border border-indigo-500/30 text-slate-100 shadow-indigo-950/40" 
+                        : "bg-indigo-600/90 border border-indigo-400/30 text-white shadow-indigo-600/20"
                     }`}>
-                      <div className="whitespace-pre-line space-y-1.5 font-sans font-medium" id={`msg_bubble_${msg.id}`}>
-                        {msg.text}
+                      <div id={`msg_bubble_${msg.id}`}>
+                        <FormattedCoachMessage text={displayText} isCoach={isCoach} />
+                        {isCoach && goalAction && (
+                          <GoalActionCard 
+                            action={goalAction}
+                            isApplied={isActionApplied}
+                            goals={goals}
+                            onApply={() => handleExecuteGoalAction(msg.id, goalAction)}
+                          />
+                        )}
                       </div>
 
-                      <span className="text-[9px] opacity-50 block mt-2 text-right text-slate-300">
+                      <span className="text-[9px] opacity-60 block mt-2.5 text-right text-slate-300 font-mono">
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                       </span>
                     </div>
@@ -427,6 +719,8 @@ export default function AICoach({
             <div className="px-4 py-2.5 flex items-center gap-1.5 overflow-x-auto border-t border-white/10" id="coach_preset_prompt_chips" style={{ scrollbarWidth: "none" }}>
               <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-widest shrink-0 select-none">Quick:</span>
               {[
+                { label: "➕ Propose Goal", prompt: "Please analyze my schedule and propose a new goal with recommended targets and time windows for me!" },
+                { label: "✏️ Modify Goal Targets", prompt: "Can you review my goals and suggest updates or target modifications to optimize my weekly consistency?" },
                 { label: "📊 Analyze Streaks", prompt: "How has my completion streak and consistency score changed this week? Please analyze my metrics and give me a motivational status report." },
                 { label: "🏋️ Workout Advice", prompt: "How should I structure my active workout blocks? Can you design a simple but efficient high-intensity routine?" },
                 { label: "📚 Study Strategy", prompt: "Can you provide a cognitive learning strategy to get the most out of my scheduled study hours? Explain active recall." },
@@ -437,13 +731,6 @@ export default function AICoach({
                   type="button"
                   onClick={() => {
                     if (loading) return;
-                    const userMsg: CoachMessage = {
-                      id: `u_${Date.now()}_chip_${idx}`,
-                      sender: "user",
-                      text: `💡 [Trigger Quick Action: ${chip.label}]`,
-                      timestamp: new Date().toISOString()
-                    };
-                    onAddMessage(userMsg);
                     handleSendQuestion(chip.prompt);
                   }}
                   disabled={loading}
