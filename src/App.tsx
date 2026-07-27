@@ -807,7 +807,10 @@ export default function App() {
       let prefStart = availStartHour;
       let prefEnd = availEndHour;
 
-      if (goal.timePreference === TimePreference.MORNING) {
+      if (goal.timePreference === TimePreference.EARLY_MORNING) {
+        prefStart = Math.max(availStartHour, 5);
+        prefEnd = Math.min(availEndHour, 8);
+      } else if (goal.timePreference === TimePreference.MORNING) {
         prefStart = Math.max(availStartHour, 8);
         prefEnd = Math.min(availEndHour, 12);
       } else if (goal.timePreference === TimePreference.AFTERNOON) {
@@ -815,7 +818,17 @@ export default function App() {
         prefEnd = Math.min(availEndHour, 17);
       } else if (goal.timePreference === TimePreference.EVENING) {
         prefStart = Math.max(availStartHour, 17);
-        prefEnd = Math.min(availEndHour, 22);
+        prefEnd = Math.min(availEndHour, 21);
+      } else if (goal.timePreference === TimePreference.NIGHT) {
+        prefStart = Math.max(availStartHour, 21);
+        prefEnd = Math.min(availEndHour, 24);
+      } else if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart && goal.customTimeEnd) {
+        const [sH, sM] = goal.customTimeStart.split(":").map(Number);
+        const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
+        const sDec = (sH || 0) + (sM || 0) / 60;
+        const eDec = (eH || 0) + (eM || 0) / 60;
+        prefStart = Math.max(availStartHour, sDec);
+        prefEnd = Math.min(availEndHour, eDec);
       }
 
       if (prefStart >= prefEnd) {
@@ -965,8 +978,13 @@ export default function App() {
         let newStart = evt.start;
         let newEnd = evt.end;
 
-        // If timePreference or durationMinutes changed, reschedule uncompleted events
-        if (!evt.completed && (updatedFields.timePreference !== undefined || updatedFields.durationMinutes !== undefined)) {
+        // If timePreference, custom times, or durationMinutes changed, reschedule uncompleted events
+        if (!evt.completed && (
+          updatedFields.timePreference !== undefined ||
+          updatedFields.customTimeStart !== undefined ||
+          updatedFields.customTimeEnd !== undefined ||
+          updatedFields.durationMinutes !== undefined
+        )) {
           const evtDate = new Date(evt.start);
           const dayOfWeek = evtDate.getDay();
           const availDay = availability.find(a => a.dayOfWeek === dayOfWeek);
@@ -982,7 +1000,10 @@ export default function App() {
           let prefStart = availStartHour;
           let prefEnd = availEndHour;
 
-          if (timePref === TimePreference.MORNING) {
+          if (timePref === TimePreference.EARLY_MORNING) {
+            prefStart = Math.max(availStartHour, 5);
+            prefEnd = Math.min(availEndHour, 8);
+          } else if (timePref === TimePreference.MORNING) {
             prefStart = Math.max(availStartHour, 8);
             prefEnd = Math.min(availEndHour, 12);
           } else if (timePref === TimePreference.AFTERNOON) {
@@ -990,7 +1011,17 @@ export default function App() {
             prefEnd = Math.min(availEndHour, 17);
           } else if (timePref === TimePreference.EVENING) {
             prefStart = Math.max(availStartHour, 17);
-            prefEnd = Math.min(availEndHour, 22);
+            prefEnd = Math.min(availEndHour, 21);
+          } else if (timePref === TimePreference.NIGHT) {
+            prefStart = Math.max(availStartHour, 21);
+            prefEnd = Math.min(availEndHour, 24);
+          } else if (timePref === TimePreference.CUSTOM && updatedGoal.customTimeStart && updatedGoal.customTimeEnd) {
+            const [sH, sM] = updatedGoal.customTimeStart.split(":").map(Number);
+            const [eH, eM] = updatedGoal.customTimeEnd.split(":").map(Number);
+            const sDec = (sH || 0) + (sM || 0) / 60;
+            const eDec = (eH || 0) + (eM || 0) / 60;
+            prefStart = Math.max(availStartHour, sDec);
+            prefEnd = Math.min(availEndHour, eDec);
           }
 
           if (prefStart >= prefEnd) {

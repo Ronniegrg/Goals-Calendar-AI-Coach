@@ -9,9 +9,12 @@ export enum GoalType {
 
 export enum TimePreference {
   ANY = "any",
+  EARLY_MORNING = "early_morning", // 05:00 - 08:00
   MORNING = "morning", // 08:00 - 12:00
   AFTERNOON = "afternoon", // 12:00 - 17:00
-  EVENING = "evening" // 17:00 - 21:00
+  EVENING = "evening", // 17:00 - 21:00
+  NIGHT = "night", // 21:00 - 02:00
+  CUSTOM = "custom" // Custom hours (e.g. 14:00 - 16:30)
 }
 
 export interface SubTask {
@@ -28,6 +31,8 @@ export interface Goal {
   weeklyTarget: number; // times per week
   durationMinutes: number;
   timePreference: TimePreference;
+  customTimeStart?: string; // e.g. "14:00"
+  customTimeEnd?: string;   // e.g. "16:30"
   completedCount: number;
   color: string;
   createdAt: string;

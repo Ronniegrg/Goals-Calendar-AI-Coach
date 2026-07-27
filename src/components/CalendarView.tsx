@@ -35,10 +35,12 @@ import {
   Briefcase,
   Laptop,
   RotateCw,
-  Smile
+  Smile,
+  Play
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
+import FocusTimerModal from "./FocusTimerModal";
 
 interface CalendarViewProps {
   events: CalendarEvent[];
@@ -76,7 +78,11 @@ export default function CalendarView({
   const [goalCategory, setGoalCategory] = useState("");
   const [goalWeeklyTarget, setGoalWeeklyTarget] = useState(3);
   const [goalDuration, setGoalDuration] = useState(60);
+  const [isCustomGoalDuration, setIsCustomGoalDuration] = useState(false);
+  const [customGoalDurationVal, setCustomGoalDurationVal] = useState("25");
   const [goalTimePref, setGoalTimePref] = useState<TimePreference>(TimePreference.ANY);
+  const [goalCustomStart, setGoalCustomStart] = useState("14:00");
+  const [goalCustomEnd, setGoalCustomEnd] = useState("16:00");
   const [goalColor, setGoalColor] = useState("#f43f5e");
   const [goalIcon, setGoalIcon] = useState("target");
   
@@ -91,6 +97,55 @@ export default function CalendarView({
   const [newGoalId, setNewGoalId] = useState("");
   const [newCompleted, setNewCompleted] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
+
+  // Focus Timer Modal state
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [timerTitle, setTimerTitle] = useState("Focus Session");
+  const [timerDuration, setTimerDuration] = useState(60);
+  const [timerEventId, setTimerEventId] = useState<string | undefined>();
+  const [timerGoalId, setTimerGoalId] = useState<string | undefined>();
+  const [timerCategory, setTimerCategory] = useState<string | undefined>();
+  const [timerColor, setTimerColor] = useState<string>("#6366f1");
+
+  const handleOpenTimerForEvent = (evt: CalendarEvent, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const startMs = new Date(evt.start).getTime();
+    const endMs = new Date(evt.end).getTime();
+    const durationMins = Math.max(5, Math.round((endMs - startMs) / (1000 * 60)));
+    
+    const associatedGoal = goals.find(g => g.id === evt.goalId);
+    
+    setTimerTitle(evt.title);
+    setTimerDuration(durationMins);
+    setTimerEventId(evt.id);
+    setTimerGoalId(evt.goalId);
+    setTimerCategory(associatedGoal?.category || evt.type);
+    setTimerColor(associatedGoal?.color || (evt.type === "study" ? "#3b82f6" : evt.type === "workout" ? "#f43f5e" : "#10b981"));
+    setTimerOpen(true);
+  };
+
+  const handleOpenTimerForGoal = (goal: Goal, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setTimerTitle(goal.name);
+    setTimerDuration(goal.durationMinutes || 60);
+    setTimerEventId(undefined);
+    setTimerGoalId(goal.id);
+    setTimerCategory(goal.category || goal.type);
+    setTimerColor(goal.color || "#6366f1");
+    setTimerOpen(true);
+  };
+
+  const handleCompleteTimerSession = (eventId?: string, goalId?: string) => {
+    if (eventId) {
+      onToggleCompleteEvent(eventId);
+    }
+    if (goalId && onEditGoal) {
+      const g = goals.find(item => item.id === goalId);
+      if (g) {
+        onEditGoal(g.id, { completedCount: g.completedCount + 1 });
+      }
+    }
+  };
 
   // External Calendar Sync State
   const [externalSource, setExternalSource] = useState("");
@@ -927,7 +982,11 @@ export default function CalendarView({
     setGoalCategory("");
     setGoalWeeklyTarget(3);
     setGoalDuration(60);
+    setIsCustomGoalDuration(false);
+    setCustomGoalDurationVal("25");
     setGoalTimePref(TimePreference.ANY);
+    setGoalCustomStart("14:00");
+    setGoalCustomEnd("16:00");
     setGoalColor("#f43f5e");
     setGoalIcon("target");
     setShowGoalForm(true);
@@ -941,7 +1000,17 @@ export default function CalendarView({
     setGoalCategory(g.category);
     setGoalWeeklyTarget(g.weeklyTarget);
     setGoalDuration(g.durationMinutes);
+    const standardDurations = [15, 30, 45, 60, 90, 120, 180];
+    if (!standardDurations.includes(g.durationMinutes)) {
+      setIsCustomGoalDuration(true);
+      setCustomGoalDurationVal(String(g.durationMinutes));
+    } else {
+      setIsCustomGoalDuration(false);
+      setCustomGoalDurationVal("25");
+    }
     setGoalTimePref(g.timePreference);
+    setGoalCustomStart(g.customTimeStart || "14:00");
+    setGoalCustomEnd(g.customTimeEnd || "16:00");
     setGoalColor(g.color);
     setGoalIcon(g.icon || "target");
     setShowGoalForm(true);
@@ -953,6 +1022,8 @@ export default function CalendarView({
     if (!goalName.trim()) return;
 
     const trimmedCategory = goalCategory.trim() || (goalType === GoalType.WORKOUT ? "Fitness" : "Study");
+    const customStartVal = goalTimePref === TimePreference.CUSTOM ? goalCustomStart : undefined;
+    const customEndVal = goalTimePref === TimePreference.CUSTOM ? goalCustomEnd : undefined;
 
     if (editingGoalId) {
       if (onEditGoal) {
@@ -963,6 +1034,8 @@ export default function CalendarView({
           weeklyTarget: Number(goalWeeklyTarget),
           durationMinutes: Number(goalDuration),
           timePreference: goalTimePref,
+          customTimeStart: customStartVal,
+          customTimeEnd: customEndVal,
           color: goalColor,
           icon: goalIcon
         });
@@ -976,6 +1049,8 @@ export default function CalendarView({
           weeklyTarget: Number(goalWeeklyTarget),
           durationMinutes: Number(goalDuration),
           timePreference: goalTimePref,
+          customTimeStart: customStartVal,
+          customTimeEnd: customEndVal,
           color: goalColor,
           icon: goalIcon
         });
@@ -1642,9 +1717,14 @@ export default function CalendarView({
                             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: colors.borderLeftColor }} />
                           )}
                         </div>
-                        <p className="text-[8.5px] opacity-80 flex items-center gap-0.5 font-mono mt-0.5 truncate">
-                          <Clock className="w-2.5 h-2.5 shrink-0" />
+                        <p 
+                          onClick={(e) => handleOpenTimerForEvent(evt, e)}
+                          className="text-[8.5px] opacity-80 hover:opacity-100 text-indigo-300 flex items-center gap-0.5 font-mono mt-0.5 truncate cursor-pointer hover:underline"
+                          title="Click to start Focus Timer for this session"
+                        >
+                          <Clock className="w-2.5 h-2.5 shrink-0 text-indigo-400" />
                           <span>{evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                          <Play className="w-2 h-2 ml-0.5 fill-current text-emerald-400 shrink-0" />
                         </p>
                       </div>
 
@@ -1674,6 +1754,16 @@ export default function CalendarView({
                       {/* Action buttons footer */}
                       {(isHovered || heightPixel >= 52) && (
                         <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-0.5 gap-1">
+                          <button
+                            id={`timer_event_btn_week_${evt.id}`}
+                            onClick={(e) => handleOpenTimerForEvent(evt, e)}
+                            className="text-[8.5px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/30 transition cursor-pointer shrink-0"
+                            title="Start Focus Timer"
+                          >
+                            <Play className="w-2 h-2 fill-current text-emerald-400" />
+                            <span>Timer</span>
+                          </button>
+
                           <button
                             id={`complete_event_btn_week_${evt.id}`}
                             onClick={(e) => {
@@ -1850,6 +1940,17 @@ export default function CalendarView({
                               </div>
                               <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 gap-1">
                                 <button
+                                  type="button"
+                                  id={`timer_event_btn_day_${evt.id}`}
+                                  onClick={(e) => handleOpenTimerForEvent(evt, e)}
+                                  className="text-[10px] px-2.5 py-1 rounded-md font-bold bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/30 transition flex items-center gap-1 cursor-pointer"
+                                  title="Start Focus Timer"
+                                >
+                                  <Play className="w-3 h-3 fill-current text-indigo-400" />
+                                  <span>Start Timer</span>
+                                </button>
+
+                                <button
                                   id={`complete_event_btn_day_${evt.id}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -2003,6 +2104,17 @@ export default function CalendarView({
 
                           <div className="flex items-center gap-2">
                             <button
+                              type="button"
+                              id={`timer_event_btn_list_${evt.id}`}
+                              onClick={(e) => handleOpenTimerForEvent(evt, e)}
+                              className="text-[10px] p-2 px-3 leading-none rounded-lg font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/20 flex items-center gap-1 cursor-pointer transition"
+                              title="Start Focus Timer"
+                            >
+                              <Play className="w-3 h-3 fill-current text-indigo-400" />
+                              <span>Start Timer</span>
+                            </button>
+
+                            <button
                               id={`complete_event_btn_list_${evt.id}`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2151,18 +2263,99 @@ export default function CalendarView({
 
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Duration (Minutes)</label>
-                  <select
-                    value={goalDuration}
-                    onChange={(e) => setGoalDuration(Number(e.target.value))}
-                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
-                  >
-                    <option value={30}>30 minutes</option>
-                    <option value={45}>45 minutes</option>
-                    <option value={60}>60 minutes (1 hour)</option>
-                    <option value={90}>90 minutes (1.5 hrs)</option>
-                    <option value={120}>120 minutes (2 hrs)</option>
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={isCustomGoalDuration ? "custom" : goalDuration}
+                      onChange={(e) => {
+                        if (e.target.value === "custom") {
+                          setIsCustomGoalDuration(true);
+                          const num = Number(customGoalDurationVal);
+                          if (num > 0) setGoalDuration(num);
+                        } else {
+                          setIsCustomGoalDuration(false);
+                          setGoalDuration(Number(e.target.value));
+                        }
+                      }}
+                      className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                    >
+                      <option value={15}>15 minutes (Quick session)</option>
+                      <option value={30}>30 minutes</option>
+                      <option value={45}>45 minutes</option>
+                      <option value={60}>60 minutes (1 hour)</option>
+                      <option value={90}>90 minutes (1.5 hrs)</option>
+                      <option value={120}>120 minutes (2 hrs)</option>
+                      <option value={180}>180 minutes (3 hrs)</option>
+                      <option value="custom">Custom minutes...</option>
+                    </select>
+
+                    {isCustomGoalDuration && (
+                      <div className="flex items-center gap-1 shrink-0 w-28">
+                        <input
+                          type="number"
+                          min="5"
+                          max="720"
+                          placeholder="mins"
+                          value={customGoalDurationVal}
+                          onChange={(e) => {
+                            const valStr = e.target.value;
+                            setCustomGoalDurationVal(valStr);
+                            const valNum = Number(valStr);
+                            if (valNum > 0) {
+                              setGoalDuration(valNum);
+                            }
+                          }}
+                          className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400 font-bold"
+                        />
+                        <span className="text-[10px] text-slate-400 font-medium">mins</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Time Preference</label>
+                <select
+                  value={goalTimePref}
+                  onChange={(e) => setGoalTimePref(e.target.value as TimePreference)}
+                  className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                >
+                  <option value={TimePreference.ANY}>Any hour of the day</option>
+                  <option value={TimePreference.EARLY_MORNING}>Early Morning (05:00 - 08:00)</option>
+                  <option value={TimePreference.MORNING}>Morning (08:00 - 12:00)</option>
+                  <option value={TimePreference.AFTERNOON}>Afternoon (12:00 - 17:00)</option>
+                  <option value={TimePreference.EVENING}>Evening (17:00 - 21:00)</option>
+                  <option value={TimePreference.NIGHT}>Night / Late Night (21:00 - 02:00)</option>
+                  <option value={TimePreference.CUSTOM}>Custom Time Window...</option>
+                </select>
+
+                {goalTimePref === TimePreference.CUSTOM && (
+                  <div className="mt-2 p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg space-y-2">
+                    <div className="text-[10px] font-semibold text-indigo-300 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" /> Preferred Custom Window
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[9px] font-bold text-slate-400 mb-0.5">Start Time</label>
+                        <input
+                          type="time"
+                          value={goalCustomStart}
+                          onChange={(e) => setGoalCustomStart(e.target.value)}
+                          className="w-full text-xs p-2 bg-[#0f111a] border border-white/10 rounded-md text-white focus:outline-none focus:border-indigo-400 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-bold text-slate-400 mb-0.5">End Time</label>
+                        <input
+                          type="time"
+                          value={goalCustomEnd}
+                          onChange={(e) => setGoalCustomEnd(e.target.value)}
+                          className="w-full text-xs p-2 bg-[#0f111a] border border-white/10 rounded-md text-white focus:outline-none focus:border-indigo-400 font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Goal Icon Selector */}
@@ -2395,6 +2588,19 @@ export default function CalendarView({
           </div>
         </div>
       )}
+
+      {/* Focus Session Countdown Timer Modal */}
+      <FocusTimerModal
+        isOpen={timerOpen}
+        onClose={() => setTimerOpen(false)}
+        sessionTitle={timerTitle}
+        initialDurationMinutes={timerDuration}
+        eventId={timerEventId}
+        goalId={timerGoalId}
+        category={timerCategory}
+        color={timerColor}
+        onCompleteSession={handleCompleteTimerSession}
+      />
     </div>
   );
 }

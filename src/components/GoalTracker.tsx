@@ -15,10 +15,12 @@ import {
   Laptop,
   RotateCw,
   Smile,
-  X
+  X,
+  Play
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
+import FocusTimerModal from "./FocusTimerModal";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -110,7 +112,7 @@ interface GoalTrackerProps {
   events: CalendarEvent[];
   onAddGoal: (goal: Omit<Goal, "id" | "completedCount" | "createdAt">) => void;
   onDeleteGoal: (goalId: string) => void;
-  onEditGoal: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "completedCount" | "createdAt">>) => void;
+  onEditGoal: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
   onUpdateAvailability: (avail: AvailabilityWindow[]) => void;
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
@@ -135,6 +137,24 @@ export default function GoalTracker({
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Focus Timer Modal State
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [timerGoal, setTimerGoal] = useState<Goal | null>(null);
+
+  const handleStartTimer = (g: Goal) => {
+    setTimerGoal(g);
+    setTimerOpen(true);
+  };
+
+  const handleCompleteTimerSession = (_eventId?: string, goalId?: string) => {
+    if (goalId) {
+      const g = goals.find(item => item.id === goalId);
+      if (g) {
+        onEditGoal(g.id, { completedCount: g.completedCount + 1 });
+      }
+    }
+  };
   const [name, setName] = useState("");
   const [type, setType] = useState<GoalType>(GoalType.WORKOUT);
   const [category, setCategory] = useState("");
@@ -143,6 +163,10 @@ export default function GoalTracker({
   const [customTargetVal, setCustomTargetVal] = useState("10");
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [timePreference, setTimePreference] = useState<TimePreference>(TimePreference.ANY);
+  const [customTimeStart, setCustomTimeStart] = useState("14:00");
+  const [customTimeEnd, setCustomTimeEnd] = useState("16:00");
+  const [isCustomDuration, setIsCustomDuration] = useState(false);
+  const [customDurationVal, setCustomDurationVal] = useState("25");
   const [color, setColor] = useState("#f43f5e");
   const [icon, setIcon] = useState("target");
 
@@ -154,7 +178,11 @@ export default function GoalTracker({
     setWeeklyTarget(preset.weeklyTarget);
     setIsCustomTarget(false);
     setDurationMinutes(preset.durationMinutes);
+    setIsCustomDuration(false);
+    setCustomDurationVal("25");
     setTimePreference(preset.timePreference);
+    setCustomTimeStart("14:00");
+    setCustomTimeEnd("16:00");
     setColor(preset.color);
     setIcon(preset.type === GoalType.WORKOUT ? "dumbbell" : preset.type === GoalType.STUDY ? "book" : preset.type === GoalType.JOB_SEARCH ? "briefcase" : preset.type === GoalType.SIDE_PROJECT ? "laptop" : preset.type === GoalType.ROUTINE ? "coffee" : "smile");
     setEditingGoalId(null);
@@ -190,6 +218,9 @@ export default function GoalTracker({
     }
     setFormError(null);
 
+    const customStartVal = timePreference === TimePreference.CUSTOM ? customTimeStart : undefined;
+    const customEndVal = timePreference === TimePreference.CUSTOM ? customTimeEnd : undefined;
+
     if (editingGoalId) {
       onEditGoal(editingGoalId, {
         name,
@@ -205,6 +236,8 @@ export default function GoalTracker({
         weeklyTarget,
         durationMinutes,
         timePreference,
+        customTimeStart: customStartVal,
+        customTimeEnd: customEndVal,
         color,
         icon
       });
@@ -229,6 +262,8 @@ export default function GoalTracker({
         weeklyTarget,
         durationMinutes,
         timePreference,
+        customTimeStart: customStartVal,
+        customTimeEnd: customEndVal,
         color,
         icon
       });
@@ -247,7 +282,11 @@ export default function GoalTracker({
     setIsCustomTarget(false);
     setCustomTargetVal("10");
     setDurationMinutes(60);
+    setIsCustomDuration(false);
+    setCustomDurationVal("25");
     setTimePreference(TimePreference.ANY);
+    setCustomTimeStart("14:00");
+    setCustomTimeEnd("16:00");
     setIcon("target");
     setShowAddGoal(false);
     setEditingGoalId(null);
@@ -263,6 +302,8 @@ export default function GoalTracker({
       setIsCustomTarget(false);
       setCustomTargetVal("10");
       setDurationMinutes(60);
+      setIsCustomDuration(false);
+      setCustomDurationVal("25");
       setTimePreference(TimePreference.ANY);
       setColor("#f43f5e");
       setIcon("target");
@@ -283,6 +324,8 @@ export default function GoalTracker({
     setIsCustomTarget(false);
     setCustomTargetVal("10");
     setDurationMinutes(60);
+    setIsCustomDuration(false);
+    setCustomDurationVal("25");
     setTimePreference(TimePreference.ANY);
     setIcon("target");
     setShowAddGoal(false);
@@ -303,7 +346,17 @@ export default function GoalTracker({
       setCustomTargetVal("10");
     }
     setDurationMinutes(g.durationMinutes);
+    const standardDurations = [15, 30, 45, 60, 90, 120, 180];
+    if (!standardDurations.includes(g.durationMinutes)) {
+      setIsCustomDuration(true);
+      setCustomDurationVal(String(g.durationMinutes));
+    } else {
+      setIsCustomDuration(false);
+      setCustomDurationVal("25");
+    }
     setTimePreference(g.timePreference);
+    setCustomTimeStart(g.customTimeStart || "14:00");
+    setCustomTimeEnd(g.customTimeEnd || "16:00");
     setColor(g.color);
     setIcon(g.icon || "target");
     setShowAddGoal(true);
@@ -702,18 +755,55 @@ export default function GoalTracker({
 
               <div>
                 <label className="block text-[10px] font-bold text-slate-300 mb-1">Session Duration</label>
-                <select
-                  id="goal_duration_select"
-                  value={durationMinutes}
-                  onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                  className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white"
-                >
-                  <option value={30} className="bg-[#0f111a]">30 Minutes</option>
-                  <option value={45} className="bg-[#0f111a]">45 Minutes</option>
-                  <option value={60} className="bg-[#0f111a]">1 Hour / 60 mins</option>
-                  <option value={90} className="bg-[#0f111a]">1.5 Hours / 90 mins</option>
-                  <option value={120} className="bg-[#0f111a]">2 Hours / 120 mins</option>
-                </select>
+                <div className="flex items-center gap-2">
+                  <select
+                    id="goal_duration_select"
+                    value={isCustomDuration ? "custom" : durationMinutes}
+                    onChange={(e) => {
+                      if (e.target.value === "custom") {
+                        setIsCustomDuration(true);
+                        const num = Number(customDurationVal);
+                        if (num > 0) setDurationMinutes(num);
+                      } else {
+                        setIsCustomDuration(false);
+                        setDurationMinutes(Number(e.target.value));
+                      }
+                    }}
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white"
+                  >
+                    <option value={15} className="bg-[#0f111a]">15 Minutes (Quick check-in)</option>
+                    <option value={30} className="bg-[#0f111a]">30 Minutes</option>
+                    <option value={45} className="bg-[#0f111a]">45 Minutes</option>
+                    <option value={60} className="bg-[#0f111a]">1 Hour / 60 mins</option>
+                    <option value={90} className="bg-[#0f111a]">1.5 Hours / 90 mins</option>
+                    <option value={120} className="bg-[#0f111a]">2 Hours / 120 mins</option>
+                    <option value={180} className="bg-[#0f111a]">3 Hours / 180 mins</option>
+                    <option value="custom" className="bg-[#0f111a]">Custom duration in minutes...</option>
+                  </select>
+
+                  {isCustomDuration && (
+                    <div className="flex items-center gap-1 shrink-0 w-28">
+                      <input
+                        type="number"
+                        min="5"
+                        max="720"
+                        id="goal_custom_duration_input"
+                        placeholder="mins"
+                        value={customDurationVal}
+                        onChange={(e) => {
+                          const valStr = e.target.value;
+                          setCustomDurationVal(valStr);
+                          const valNum = Number(valStr);
+                          if (valNum > 0) {
+                            setDurationMinutes(valNum);
+                          }
+                        }}
+                        className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400 font-bold"
+                      />
+                      <span className="text-[10px] text-slate-400 font-medium">mins</span>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -725,10 +815,41 @@ export default function GoalTracker({
                   className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white"
                 >
                   <option value={TimePreference.ANY} className="bg-[#0f111a]">Any hour of the day</option>
+                  <option value={TimePreference.EARLY_MORNING} className="bg-[#0f111a]">Early Morning (05:00 - 08:00)</option>
                   <option value={TimePreference.MORNING} className="bg-[#0f111a]">Morning (08:00 - 12:00)</option>
                   <option value={TimePreference.AFTERNOON} className="bg-[#0f111a]">Afternoon (12:00 - 17:00)</option>
                   <option value={TimePreference.EVENING} className="bg-[#0f111a]">Evening (17:00 - 21:00)</option>
+                  <option value={TimePreference.NIGHT} className="bg-[#0f111a]">Night / Late Night (21:00 - 02:00)</option>
+                  <option value={TimePreference.CUSTOM} className="bg-[#0f111a]">Custom Time Window...</option>
                 </select>
+
+                {timePreference === TimePreference.CUSTOM && (
+                  <div className="mt-2 p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg space-y-1.5">
+                    <div className="text-[10px] font-semibold text-indigo-300 flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Custom Time Range
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[9px] font-bold text-slate-400 mb-0.5">Start Time</label>
+                        <input
+                          type="time"
+                          value={customTimeStart}
+                          onChange={(e) => setCustomTimeStart(e.target.value)}
+                          className="w-full text-xs p-2 bg-[#0f111a] border border-white/10 rounded-md text-white focus:outline-none focus:border-indigo-400 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-bold text-slate-400 mb-0.5">End Time</label>
+                        <input
+                          type="time"
+                          value={customTimeEnd}
+                          onChange={(e) => setCustomTimeEnd(e.target.value)}
+                          className="w-full text-xs p-2 bg-[#0f111a] border border-white/10 rounded-md text-white focus:outline-none focus:border-indigo-400 font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -830,7 +951,21 @@ export default function GoalTracker({
                       </p>
                       <p className="flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5 text-slate-400" />
-                        {g.durationMinutes} mins each ({g.timePreference} preference)
+                        {g.durationMinutes} mins each (
+                        {g.timePreference === TimePreference.EARLY_MORNING
+                          ? "Early Morning"
+                          : g.timePreference === TimePreference.MORNING
+                          ? "Morning"
+                          : g.timePreference === TimePreference.AFTERNOON
+                          ? "Afternoon"
+                          : g.timePreference === TimePreference.EVENING
+                          ? "Evening"
+                          : g.timePreference === TimePreference.NIGHT
+                          ? "Night"
+                          : g.timePreference === TimePreference.CUSTOM && g.customTimeStart && g.customTimeEnd
+                          ? `${g.customTimeStart} - ${g.customTimeEnd}`
+                          : "Any time"}
+                        )
                       </p>
                     </div>
 
@@ -912,7 +1047,7 @@ export default function GoalTracker({
                   </div>
 
                   {/* Micro Progress Track */}
-                  <div className="space-y-1 pt-4 border-t border-white/10 mt-4">
+                  <div className="space-y-2 pt-4 border-t border-white/10 mt-4">
                     <div className="flex justify-between items-center text-[10px] font-bold select-none text-slate-350">
                       <span>Completed: {g.completedCount} / {g.weeklyTarget}</span>
                       <span>{countPercent}%</span>
@@ -923,11 +1058,35 @@ export default function GoalTracker({
                         style={{ width: `${countPercent}%`, backgroundColor: g.color }}
                       />
                     </div>
+
+                    <button
+                      type="button"
+                      id={`start_goal_timer_btn_${g.id}`}
+                      onClick={() => handleStartTimer(g)}
+                      className="w-full mt-2 py-2 px-3 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
+                      <span>Start {g.durationMinutes}m Focus Timer</span>
+                    </button>
                   </div>
                 </div>
               );
             })}
           </div>
+        )}
+
+        {/* Render Focus Timer Modal */}
+        {timerGoal && (
+          <FocusTimerModal
+            isOpen={timerOpen}
+            onClose={() => setTimerOpen(false)}
+            sessionTitle={timerGoal.name}
+            initialDurationMinutes={timerGoal.durationMinutes}
+            goalId={timerGoal.id}
+            category={timerGoal.category}
+            color={timerGoal.color}
+            onCompleteSession={handleCompleteTimerSession}
+          />
         )}
       </div>
 
