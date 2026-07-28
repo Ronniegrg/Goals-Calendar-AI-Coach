@@ -67,8 +67,17 @@ export default function CalendarView({
   onDeleteGoal,
   onEditEvent
 }: CalendarViewProps) {
-  const [viewMode, setViewMode] = useState<"week" | "day" | "list">("week");
+  const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      return "list";
+    }
+    return "week";
+  });
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  
+  // Mobile & List View Search/Filter State
+  const [listSearchQuery, setListSearchQuery] = useState("");
+  const [listCategoryFilter, setListCategoryFilter] = useState<"all" | "workout" | "study" | "personal" | "pending" | "completed">("all");
   
   // Goals Sidebar Form/Mode States
   const [showGoalForm, setShowGoalForm] = useState(false);
@@ -135,14 +144,21 @@ export default function CalendarView({
     setTimerOpen(true);
   };
 
-  const handleCompleteTimerSession = (eventId?: string, goalId?: string) => {
+  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
     if (eventId) {
-      onToggleCompleteEvent(eventId);
+      if (onEditEvent && note) {
+        onEditEvent(eventId, { completed: true, completionNote: note });
+      } else {
+        onToggleCompleteEvent(eventId);
+      }
     }
     if (goalId && onEditGoal) {
       const g = goals.find(item => item.id === goalId);
       if (g) {
-        onEditGoal(g.id, { completedCount: g.completedCount + 1 });
+        onEditGoal(g.id, {
+          completedCount: eventId ? g.completedCount : g.completedCount + 1,
+          ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+        });
       }
     }
   };
@@ -151,6 +167,8 @@ export default function CalendarView({
   const [externalSource, setExternalSource] = useState("");
   const [externalName, setExternalName] = useState("");
   const [showSyncPanel, setShowSyncPanel] = useState(false);
+  const [showDelayTodayMenu, setShowDelayTodayMenu] = useState(false);
+  const [activeShiftMenuId, setActiveShiftMenuId] = useState<string | null>(null);
   const [icsInput, setIcsInput] = useState("");
 
   // Google Calendar Integration State
@@ -326,6 +344,106 @@ export default function CalendarView({
       setRebalanceStatus("⚠️ Could not find open slots for all missed sessions. Try adjusting availability or clearing busy times.");
     }
 
+    setTimeout(() => setRebalanceStatus(null), 5000);
+  };
+
+  // Cascading Ripple Delay helper: Shifts a target event AND ripples all subsequent uncompleted events forward
+  const handleCascadingDelayEvent = (targetEvt: CalendarEvent, delayMs: number, delayLabel: string) => {
+    if (targetEvt.type === "external") {
+      showCustomAlert("External Event", "External Google Calendar events cannot be shifted from here.");
+      return;
+    }
+
+    const targetStart = new Date(targetEvt.start).getTime();
+    const targetEnd = new Date(targetEvt.end).getTime();
+    const duration = targetEnd - targetStart;
+
+    const newTargetStart = targetStart + delayMs;
+    const newTargetEnd = newTargetStart + duration;
+
+    // Shift target event
+    onEditEvent(targetEvt.id, {
+      start: new Date(newTargetStart).toISOString(),
+      end: new Date(newTargetEnd).toISOString(),
+      notes: `${targetEvt.notes || ''} (Delayed +${delayLabel})`.trim()
+    });
+
+    // Find subsequent uncompleted non-external events starting at or after target's original start
+    const subsequent = events.filter(e => {
+      if (e.id === targetEvt.id || e.completed || e.type === "external") return false;
+      const s = new Date(e.start).getTime();
+      return s >= targetStart;
+    }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    let rippleCount = 0;
+    let currentOccupiedEnd = newTargetEnd;
+
+    subsequent.forEach(subEvt => {
+      const subStart = new Date(subEvt.start).getTime();
+      const subEnd = new Date(subEvt.end).getTime();
+      const subDur = subEnd - subStart;
+
+      // If subEvt collides with or starts before the new occupied end, push it forward
+      if (subStart < currentOccupiedEnd) {
+        const newSubStart = currentOccupiedEnd + 15 * 60 * 1000; // 15 mins buffer
+        const newSubEnd = newSubStart + subDur;
+
+        onEditEvent(subEvt.id, {
+          start: new Date(newSubStart).toISOString(),
+          end: new Date(newSubEnd).toISOString(),
+          notes: `${subEvt.notes || ''} (Cascading Ripple Shift)`.trim()
+        });
+
+        currentOccupiedEnd = newSubEnd;
+        rippleCount++;
+      } else {
+        currentOccupiedEnd = Math.max(currentOccupiedEnd, subEnd);
+      }
+    });
+
+    const msg = rippleCount > 0 
+      ? `⚡ Shifted "${targetEvt.title}" (+${delayLabel}) & rippled ${rippleCount} downstream session(s) forward!`
+      : `⚡ Shifted "${targetEvt.title}" forward by +${delayLabel}!`;
+    
+    setRebalanceStatus(msg);
+    setTimeout(() => setRebalanceStatus(null), 5000);
+  };
+
+  // Delay all remaining sessions today by X minutes
+  const handleDelayRemainingToday = (delayMinutes: number) => {
+    const delayMs = delayMinutes * 60 * 1000;
+    const nowTime = now.getTime();
+    
+    // Find today's uncompleted events that end after or around now
+    const todayUncompleted = events.filter(e => {
+      if (e.completed || e.type === "external") return false;
+      const s = new Date(e.start);
+      return isSameDay(s, now) && new Date(e.end).getTime() >= nowTime - 30 * 60 * 1000;
+    }).sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    if (todayUncompleted.length === 0) {
+      showCustomAlert("No Upcoming Sessions Today", "You have no remaining uncompleted sessions scheduled for today to delay.");
+      return;
+    }
+
+    let count = 0;
+    todayUncompleted.forEach(evt => {
+      const s = new Date(evt.start).getTime();
+      const e = new Date(evt.end).getTime();
+      const dur = e - s;
+
+      const newS = new Date(s + delayMs).toISOString();
+      const newE = new Date(s + delayMs + dur).toISOString();
+
+      onEditEvent(evt.id, {
+        start: newS,
+        end: newE,
+        notes: `${evt.notes || ''} (Shifted +${delayMinutes}m)`.trim()
+      });
+      count++;
+    });
+
+    setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today forward by +${delayMinutes} minutes!`);
     setTimeout(() => setRebalanceStatus(null), 5000);
   };
 
@@ -1229,132 +1347,227 @@ export default function CalendarView({
   };
 
   return (
-    <div id="calendar_section_card" className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[750px] text-white">
+    <div id="calendar_section_card" className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl shadow-xl overflow-hidden flex flex-col min-h-[600px] h-auto md:h-[750px] text-white">
       
       {/* Calendar Header toolbar */}
-      <div className="p-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 bg-white/5">
-        <div className="flex items-center gap-2">
-          <CalendarIcon className="w-5 h-5 text-indigo-400" id="header_cal_icon" />
-          <h2 id="calendar_title_header" className="font-sans font-semibold text-white text-lg tracking-tight">Schedule</h2>
-          <span className="text-xs bg-white/10 text-slate-200 px-2.5 py-0.5 rounded-full font-medium" id="total_schedule_count">
-            {events.length} Events Total
-          </span>
-        </div>
-
-        {/* Navigation */}
-        <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 p-1 rounded-xl shadow-xs">
-          <button 
-            id="nav_prev_btn"
-            onClick={handlePrev} 
-            className="p-1 px-1.5 rounded-lg hover:bg-white/10 text-slate-300 transition-colors cursor-pointer"
-            title="Previous"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <button 
-            id="nav_today_btn"
-            onClick={handleToday} 
-            className="text-xs font-semibold px-2.5 py-1 rounded-lg hover:bg-white/10 text-white transition cursor-pointer"
-          >
-            Today
-          </button>
-          <button 
-            id="nav_focus_now_btn"
-            type="button"
-            onClick={() => {
-              setCurrentDate(new Date());
-              setNow(new Date());
-              setTimeout(() => scrollToCurrentTimeLine(true), 50);
-            }} 
-            className="text-xs font-bold px-2.5 py-1 rounded-lg bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-            title="Focus current time line in calendar"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+      <div className="p-3 sm:p-4 border-b border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/5">
+        <div className="flex items-center justify-between w-full sm:w-auto gap-3">
+          <div className="flex items-center gap-2">
+            <CalendarIcon className="w-5 h-5 text-indigo-400" id="header_cal_icon" />
+            <h2 id="calendar_title_header" className="font-sans font-semibold text-white text-base sm:text-lg tracking-tight">Schedule</h2>
+            <span className="text-[11px] sm:text-xs bg-white/10 text-slate-200 px-2.5 py-0.5 rounded-full font-medium" id="total_schedule_count">
+              {events.length} {events.length === 1 ? "Event" : "Events"}
             </span>
-            <span>Focus Now</span>
-          </button>
-          <button 
-            id="nav_next_btn"
-            onClick={handleNext} 
-            className="p-1 px-1.5 rounded-lg hover:bg-white/10 text-slate-300 transition-colors cursor-pointer"
-            title="Next"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
+          </div>
 
-        <div id="calendar_label_header" className="text-sm font-semibold text-slate-200 min-w-[200px] text-center font-display">
-          {getHeaderLabel()}
-        </div>
-
-        {/* View Mode Dropdowns and Event Addition triggers */}
-        <div className="flex items-center gap-2">
-          <div className="bg-white/5 border border-white/5 p-0.5 rounded-lg flex items-center">
+          {/* View Mode Toggle for Mobile & Desktop */}
+          <div className="bg-white/10 border border-white/10 p-1 rounded-xl flex items-center shadow-inner">
             {(["week", "day", "list"] as const).map((mode) => (
               <button
                 key={mode}
                 id={`view_btn_${mode}`}
                 onClick={() => setViewMode(mode)}
-                className={`text-xs px-3 py-1.5 rounded-md font-semibold capitalize transition cursor-pointer ${
+                className={`text-xs px-2.5 sm:px-3 py-1.5 rounded-lg font-bold capitalize transition cursor-pointer min-h-[36px] min-w-[48px] flex items-center justify-center ${
                   viewMode === mode 
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/10" 
-                    : "text-slate-400 hover:text-white"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30" 
+                    : "text-slate-300 hover:text-white hover:bg-white/5"
                 }`}
               >
                 {mode}
               </button>
             ))}
           </div>
+        </div>
 
-          <button
-            id="open_sync_sidebar_btn"
-            onClick={() => setShowSyncPanel(!showSyncPanel)}
-            className="p-2 border border-white/10 bg-white/5 text-slate-300 hover:text-indigo-400 hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold px-3"
-            title="External Calendar Feeds"
-          >
-            <Link2 className="w-4 h-4" />
-            <span>Connect & Sync</span>
-          </button>
-
-          <button
-            id="auto_rebalance_btn"
-            onClick={handleSmartRebalance}
-            className={`p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold px-3 ${
-              missedSessionsCount > 0
-                ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border-amber-500/30 shadow-md shadow-amber-500/10 animate-pulse"
-                : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-300 border-white/10"
-            }`}
-            title="Shift missed sessions to upcoming free time slots automatically"
-          >
-            <RotateCw className={`w-3.5 h-3.5 ${missedSessionsCount > 0 ? "text-amber-400" : "text-indigo-400"}`} />
-            <span>Auto Re-balance</span>
-            {missedSessionsCount > 0 && (
-              <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full">
-                {missedSessionsCount}
+        {/* Navigation & Actions Row */}
+        <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 w-full sm:w-auto pt-1 sm:pt-0 border-t sm:border-t-0 border-white/5">
+          {/* Date Navigation */}
+          <div className="flex items-center gap-1 bg-white/5 border border-white/10 p-1 rounded-xl shadow-xs">
+            <button 
+              id="nav_prev_btn"
+              onClick={handlePrev} 
+              className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
+              title="Previous"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button 
+              id="nav_today_btn"
+              onClick={handleToday} 
+              className="text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-white/10 text-white transition cursor-pointer min-h-[36px] flex items-center"
+            >
+              Today
+            </button>
+            <button 
+              id="nav_focus_now_btn"
+              type="button"
+              onClick={() => {
+                setCurrentDate(new Date());
+                setNow(new Date());
+                setTimeout(() => scrollToCurrentTimeLine(true), 50);
+              }} 
+              className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 min-h-[36px]"
+              title="Focus current time line in calendar"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
               </span>
-            )}
-          </button>
+              <span>Focus</span>
+            </button>
+            <button 
+              id="nav_next_btn"
+              onClick={handleNext} 
+              className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
+              title="Next"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
 
-          <button
-            id="open_add_goal_modal_btn"
-            onClick={handleOpenAddGoal}
-            className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 p-2 md:px-3 md:py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
-            title="Create a new routine goal"
-          >
-            <Target className="w-4 h-4 text-emerald-400" />
-            <span className="hidden md:inline">Add Goal</span>
-          </button>
+          <div id="calendar_label_header" className="text-xs sm:text-sm font-semibold text-slate-200 text-center font-display shrink-0 px-1">
+            {getHeaderLabel()}
+          </div>
 
-          <button
-            id="open_add_event_modal_btn"
-            onClick={() => setShowAddModal(true)}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 md:px-4 md:py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-indigo-600/20 cursor-pointer transition-all"
-          >
-            <Plus className="w-4 h-4" />
-            <span className="hidden md:inline">Add Event</span>
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0 ml-auto sm:ml-0">
+            <button
+              id="open_sync_sidebar_btn"
+              onClick={() => setShowSyncPanel(!showSyncPanel)}
+              className="p-2 border border-white/10 bg-white/5 text-slate-300 hover:text-indigo-400 hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px]"
+              title="External Calendar Feeds"
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Connect</span>
+            </button>
+
+            <button
+              id="auto_rebalance_btn"
+              onClick={handleSmartRebalance}
+              className={`p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px] ${
+                missedSessionsCount > 0
+                  ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border-amber-500/30 shadow-md shadow-amber-500/10 animate-pulse"
+                  : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-300 border-white/10"
+              }`}
+              title="Shift missed sessions to upcoming free time slots automatically"
+            >
+              <RotateCw className={`w-3.5 h-3.5 ${missedSessionsCount > 0 ? "text-amber-400" : "text-indigo-400"}`} />
+              <span className="hidden sm:inline">Re-balance</span>
+              {missedSessionsCount > 0 && (
+                <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                  {missedSessionsCount}
+                </span>
+              )}
+            </button>
+
+            {/* Delay Today Quick Trigger */}
+            <div className="relative">
+              <button
+                id="delay_today_btn"
+                type="button"
+                onClick={() => setShowDelayTodayMenu(!showDelayTodayMenu)}
+                className="p-2 border border-amber-500/30 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px]"
+                title="Shift today's remaining uncompleted sessions forward if running late"
+              >
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span className="hidden sm:inline">Delay Today</span>
+              </button>
+
+              {showDelayTodayMenu && (
+                <div 
+                  className="absolute right-0 mt-2 w-48 bg-[#121320] border border-white/20 rounded-xl shadow-2xl p-2 z-50 text-left animate-fade-in space-y-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDelayRemainingToday(30);
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-white/10 rounded text-xs text-white font-medium flex items-center justify-between cursor-pointer"
+                  >
+                    <span>+30 Minutes</span>
+                    <span className="text-[10px] text-amber-300 font-bold">⏩</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDelayRemainingToday(60);
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-white/10 rounded text-xs text-white font-medium flex items-center justify-between cursor-pointer"
+                  >
+                    <span>+1 Hour</span>
+                    <span className="text-[10px] text-amber-300 font-bold">⏩</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDelayRemainingToday(120);
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-white/10 rounded text-xs text-white font-medium flex items-center justify-between cursor-pointer"
+                  >
+                    <span>+2 Hours</span>
+                    <span className="text-[10px] text-amber-300 font-bold">⏩</span>
+                  </button>
+                  <div className="border-t border-white/10 my-1"></div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDelayRemainingToday(24 * 60);
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-500/20 rounded text-xs text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                  >
+                    <span>+1 Day</span>
+                    <span className="text-[10px] text-amber-300 font-bold">📅</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDelayRemainingToday(2 * 24 * 60);
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-500/20 rounded text-xs text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                  >
+                    <span>+2 Days</span>
+                    <span className="text-[10px] text-amber-300 font-bold">📅</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDelayRemainingToday(7 * 24 * 60);
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-500/20 rounded text-xs text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                  >
+                    <span>+1 Week</span>
+                    <span className="text-[10px] text-amber-300 font-bold">🗓️</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <button
+              id="open_add_goal_modal_btn"
+              onClick={handleOpenAddGoal}
+              className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold flex items-center gap-1 shadow-md cursor-pointer transition-all min-h-[36px]"
+              title="Create a new routine goal"
+            >
+              <Target className="w-3.5 h-3.5 text-emerald-400" />
+              <span>+ Goal</span>
+            </button>
+
+            <button
+              id="open_add_event_modal_btn"
+              onClick={() => setShowAddModal(true)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1 shadow-md shadow-indigo-600/20 cursor-pointer transition-all min-h-[36px]"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ Event</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2069,21 +2282,90 @@ export default function CalendarView({
           </div>
         )}
 
-        {/* VIEW 3: SIMPLIFIED LIST VIEW */}
+        {/* VIEW 3: SIMPLIFIED & MOBILE-OPTIMIZED LIST VIEW */}
         {viewMode === "list" && (
-          <div className="p-4 space-y-4 max-w-2xl mx-auto">
-            <div className="flex items-center justify-between">
-              <h3 className="font-sans font-semibold text-white text-sm">All Upcoming Blocks</h3>
-              <p className="text-xs text-slate-400 font-medium font-sans">Sorted by chronological priority.</p>
+          <div className="p-3 sm:p-5 space-y-4 max-w-3xl mx-auto">
+            
+            {/* Header & Search Bar */}
+            <div className="space-y-3 bg-white/5 border border-white/10 p-3.5 sm:p-4 rounded-2xl shadow-lg">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-sans font-bold text-white text-sm sm:text-base flex items-center gap-2">
+                    <CalendarCheck className="w-4 h-4 text-indigo-400" />
+                    Upcoming Schedule Blocks
+                  </h3>
+                  <p className="text-[11px] sm:text-xs text-slate-400 font-medium">Chronological agenda for quick review and task execution.</p>
+                </div>
+                <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono font-bold px-2.5 py-1 rounded-full self-start sm:self-auto">
+                  {events.length} Total Registered
+                </span>
+              </div>
+
+              {/* Search input & filter chips */}
+              <div className="space-y-2.5 pt-1">
+                <input 
+                  type="text"
+                  placeholder="🔍 Search schedule events or notes..."
+                  value={listSearchQuery}
+                  onChange={(e) => setListSearchQuery(e.target.value)}
+                  className="w-full text-xs p-2.5 bg-slate-900/60 text-white border border-white/10 rounded-xl focus:outline-none focus:border-indigo-400 focus:bg-slate-900 transition placeholder:text-slate-500"
+                />
+
+                <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-1">
+                  {(
+                    [
+                      { id: "all", label: "All Items" },
+                      { id: "workout", label: "🏋️ Workouts" },
+                      { id: "study", label: "📚 Study" },
+                      { id: "personal", label: "⚙️ Personal" },
+                      { id: "pending", label: "⏳ Pending" },
+                      { id: "completed", label: "✅ Completed" }
+                    ] as const
+                  ).map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => setListCategoryFilter(f.id)}
+                      className={`text-[11px] px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer shrink-0 min-h-[32px] ${
+                        listCategoryFilter === f.id
+                          ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
+                          : "bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/5"
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            {events.length === 0 ? (
-              <div className="text-center p-8 border-2 border-dashed border-white/10 bg-white/5 rounded-2xl">
-                <CalendarIcon className="w-8 h-8 text-slate-500 mx-auto mb-2" />
-                <p className="text-xs text-slate-400">No events scheduled. Use automatic smart schedule solver!</p>
-              </div>
-            ) : (() => {
-              const sorted = [...events].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+            {(() => {
+              const filtered = events.filter(evt => {
+                if (listSearchQuery.trim()) {
+                  const q = listSearchQuery.toLowerCase();
+                  const titleMatch = evt.title.toLowerCase().includes(q);
+                  const notesMatch = evt.notes ? evt.notes.toLowerCase().includes(q) : false;
+                  const typeMatch = evt.type.toLowerCase().includes(q);
+                  if (!titleMatch && !notesMatch && !typeMatch) return false;
+                }
+                if (listCategoryFilter === "workout") return evt.type === "workout";
+                if (listCategoryFilter === "study") return evt.type === "study";
+                if (listCategoryFilter === "personal") return evt.type === "personal" || evt.type === "external";
+                if (listCategoryFilter === "pending") return !evt.completed;
+                if (listCategoryFilter === "completed") return evt.completed;
+                return true;
+              });
+
+              if (filtered.length === 0) {
+                return (
+                  <div className="text-center p-8 border-2 border-dashed border-white/10 bg-white/5 rounded-2xl space-y-2">
+                    <CalendarIcon className="w-8 h-8 text-slate-500 mx-auto" />
+                    <p className="text-xs text-slate-300 font-semibold">No schedule items match your current filter.</p>
+                    <p className="text-[11px] text-slate-500">Try clearing your search query or add a new event using "+ Event".</p>
+                  </div>
+                );
+              }
+
+              const sorted = [...filtered].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
               const nowTime = now.getTime();
               const firstFutureIdx = sorted.findIndex(evt => new Date(evt.start).getTime() > nowTime);
 
@@ -2091,21 +2373,21 @@ export default function CalendarView({
                 <div 
                   key="current_time_list_marker"
                   id="current_time_list_marker" 
-                  className="py-2.5 my-2 flex items-center gap-3 bg-red-500/10 border-y border-red-500/30 px-3.5 rounded-xl z-20 shadow-md"
+                  className="py-2 my-2 flex items-center gap-2.5 bg-red-500/10 border-y border-red-500/30 px-3 rounded-xl z-20 shadow-md"
                 >
-                  <div className="w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/80 shrink-0 flex items-center justify-center animate-pulse">
-                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                  <div className="w-3 h-3 bg-red-500 rounded-full shadow-lg shadow-red-500/80 shrink-0 flex items-center justify-center animate-pulse">
+                    <div className="w-1 h-1 bg-white rounded-full"></div>
                   </div>
                   <div className="h-[2px] bg-red-500 flex-1 shadow-sm shadow-red-500/50"></div>
-                  <span className="text-[11px] font-mono font-bold text-red-400 bg-red-500/20 border border-red-500/40 px-3 py-1 rounded-full shrink-0 flex items-center gap-1.5 shadow-xs">
+                  <span className="text-[10px] font-mono font-bold text-red-400 bg-red-500/20 border border-red-500/40 px-2.5 py-0.5 rounded-full shrink-0 flex items-center gap-1.5 shadow-xs">
                     <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping"></span>
-                    CURRENT TIME • {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    NOW • {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
               );
 
               return (
-                <div className="space-y-2.5">
+                <div className="space-y-3">
                   {sorted.map((evt, idx) => {
                     const s = new Date(evt.start);
                     const e = new Date(evt.end);
@@ -2118,7 +2400,7 @@ export default function CalendarView({
                         <div 
                           id={`event_card_list_${evt.id}`}
                           onClick={() => handleTriggerEditEvent(evt)}
-                          className={`p-3 border rounded-xl flex items-center justify-between gap-3 transition cursor-pointer ${
+                          className={`p-3.5 sm:p-4 border rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition cursor-pointer ${
                             isCurrent
                               ? "bg-indigo-500/15 border-red-500/50 shadow-lg shadow-red-500/10 ring-1 ring-red-500/30"
                               : evt.completed
@@ -2126,44 +2408,150 @@ export default function CalendarView({
                               : "bg-white/5 border-white/10 hover:bg-white/10"
                           }`}
                         >
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
                             <span 
-                              className="w-3 h-3 rounded-full shrink-0"
+                              className="w-3.5 h-3.5 rounded-full shrink-0 mt-0.5"
                               style={{ backgroundColor: getEventColorStyles(evt).dotColor }}
                             />
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h4 className={`text-xs font-bold text-white flex items-center gap-1.5 ${evt.completed ? "line-through opacity-75" : ""}`}>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className={`text-xs sm:text-sm font-bold text-white flex items-center gap-1.5 truncate ${evt.completed ? "line-through opacity-75" : ""}`}>
                                   {getEventIcon(evt)}
-                                  <span>{evt.title}</span>
+                                  <span className="truncate">{evt.title}</span>
                                 </h4>
                                 {isCurrent && (
-                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-red-500 text-white animate-pulse flex items-center gap-1">
+                                  <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-red-500 text-white animate-pulse flex items-center gap-1 shrink-0">
                                     <span className="w-1 h-1 rounded-full bg-white"></span>
                                     HAPPENING NOW
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
-                                <span className="font-semibold text-slate-300">{s.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
-                                <span>•</span>
-                                <span>{s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                                {evt.notes && <span className="italic">("{evt.notes}")</span>}
+                              <p className="text-[11px] text-slate-300 flex flex-wrap items-center gap-1.5 mt-1 font-medium">
+                                <span className="font-bold text-slate-200">{s.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
+                                <span className="text-slate-500">•</span>
+                                <span className="font-mono text-indigo-300">{s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - {e.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                               </p>
+                              {evt.notes && (
+                                <p className="text-[10px] text-slate-400 italic mt-1 line-clamp-2">
+                                  "{evt.notes}"
+                                </p>
+                              )}
+                              {evt.completionNote ? (
+                                <p className="text-[10px] text-amber-300 font-semibold italic mt-1.5 flex items-start gap-1 bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
+                                  <Sparkles className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                                  <span>Logged Takeaway: "{evt.completionNote}"</span>
+                                </p>
+                              ) : (
+                                (() => {
+                                  const tiedGoal = goals.find(g => g.id === evt.goalId);
+                                  if (tiedGoal?.lastSessionNote) {
+                                    return (
+                                      <p className="text-[10px] text-amber-300/90 font-medium italic mt-1.5 flex items-start gap-1 bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
+                                        <Sparkles className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                                        <span>Prep Note for Next Session: "{tiedGoal.lastSessionNote}"</span>
+                                      </p>
+                                    );
+                                  }
+                                  return null;
+                                })()
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          {/* Action Buttons Row */}
+                          <div className="flex items-center justify-between sm:justify-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5 w-full sm:w-auto shrink-0">
                             <button
                               type="button"
                               id={`timer_event_btn_list_${evt.id}`}
                               onClick={(e) => handleOpenTimerForEvent(evt, e)}
-                              className="text-[10px] p-2 px-3 leading-none rounded-lg font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/20 flex items-center gap-1 cursor-pointer transition"
+                              className="text-[11px] px-3 py-2 rounded-xl font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 flex items-center gap-1.5 cursor-pointer transition min-h-[38px] flex-1 sm:flex-none justify-center"
                               title="Start Focus Timer"
                             >
-                              <Play className="w-3 h-3 fill-current text-indigo-400" />
-                              <span>Start Timer</span>
+                              <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
+                              <span>Timer</span>
                             </button>
+
+                            {/* Delay/Shift Popover Menu */}
+                            {!evt.completed && evt.type !== "external" && (
+                              <div className="relative">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveShiftMenuId(activeShiftMenuId === evt.id ? null : evt.id);
+                                  }}
+                                  className="text-[11px] px-2.5 py-2 rounded-xl font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 cursor-pointer transition min-h-[38px] flex-1 sm:flex-none justify-center"
+                                  title="Delay or shift this event forward"
+                                >
+                                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>Delay</span>
+                                </button>
+
+                                {activeShiftMenuId === evt.id && (
+                                  <div 
+                                    className="absolute right-0 bottom-full mb-1 w-44 bg-[#121320] border border-white/20 rounded-xl shadow-2xl p-2 z-50 text-left space-y-1"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-0.5">Cascade Shift Forward:</p>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleCascadingDelayEvent(evt, 30 * 60 * 1000, "30m");
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2 py-1 hover:bg-white/10 rounded text-xs text-white font-medium flex items-center justify-between cursor-pointer"
+                                    >
+                                      <span>+30 Minutes</span>
+                                      <span className="text-[10px] text-amber-300 font-bold">⏩</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleCascadingDelayEvent(evt, 60 * 60 * 1000, "1h");
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2 py-1 hover:bg-white/10 rounded text-xs text-white font-medium flex items-center justify-between cursor-pointer"
+                                    >
+                                      <span>+1 Hour</span>
+                                      <span className="text-[10px] text-amber-300 font-bold">⏩</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleCascadingDelayEvent(evt, 24 * 60 * 60 * 1000, "1d");
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2 py-1 hover:bg-amber-500/20 rounded text-xs text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                                    >
+                                      <span>+1 Day</span>
+                                      <span className="text-[10px] text-amber-300 font-bold">📅</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleCascadingDelayEvent(evt, 2 * 24 * 60 * 60 * 1000, "2d");
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2 py-1 hover:bg-amber-500/20 rounded text-xs text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                                    >
+                                      <span>+2 Days</span>
+                                      <span className="text-[10px] text-amber-300 font-bold">📅</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleCascadingDelayEvent(evt, 7 * 24 * 60 * 60 * 1000, "1w");
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2 py-1 hover:bg-amber-500/20 rounded text-xs text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                                    >
+                                      <span>+1 Week</span>
+                                      <span className="text-[10px] text-amber-300 font-bold">🗓️</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
 
                             <button
                               id={`complete_event_btn_list_${evt.id}`}
@@ -2171,13 +2559,13 @@ export default function CalendarView({
                                 e.stopPropagation();
                                 onToggleCompleteEvent(evt.id);
                               }}
-                              className={`text-[10px] p-2 px-3 leading-none rounded-lg font-bold cursor-pointer transition ${
+                              className={`text-[11px] px-3 py-2 rounded-xl font-bold cursor-pointer transition min-h-[38px] flex-1 sm:flex-none justify-center ${
                                 evt.completed 
-                                  ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" 
-                                  : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/20"
+                                  ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" 
+                                  : "bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40"
                               }`}
                             >
-                              {evt.completed ? "Completed!" : "Complete"}
+                              {evt.completed ? "Done ✅" : "Complete"}
                             </button>
 
                             {googleAccessToken && evt.type !== "external" && (
@@ -2187,14 +2575,14 @@ export default function CalendarView({
                                   handleExportToGoogleCalendar(evt);
                                 }}
                                 disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
-                                className={`p-2 border rounded-lg transition border-white/10 cursor-pointer ${
+                                className={`p-2 border rounded-xl transition cursor-pointer min-h-[38px] min-w-[38px] flex items-center justify-center ${
                                   exportStatus[evt.id] === "success"
-                                    ? "bg-emerald-500/10 text-emerald-400"
+                                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
                                     : exportStatus[evt.id] === "error"
-                                    ? "bg-red-500/10 text-red-400"
+                                    ? "bg-red-500/10 text-red-400 border-red-500/20"
                                     : exportStatus[evt.id] === "syncing"
-                                    ? "bg-indigo-600/10 text-indigo-400 animate-spin"
-                                    : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 focus:text-indigo-400"
+                                    ? "bg-indigo-600/10 text-indigo-400 animate-spin border-indigo-500/20"
+                                    : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 border-white/10"
                                 }`}
                                 title={
                                   exportStatus[evt.id] === "success"
@@ -2203,9 +2591,9 @@ export default function CalendarView({
                                 }
                               >
                                 {exportStatus[evt.id] === "success" ? (
-                                  <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
+                                  <CheckCircle2 className="w-4 h-4 animate-pulse" />
                                 ) : (
-                                  <CalendarCheck className="w-3.5 h-3.5" />
+                                  <CalendarCheck className="w-4 h-4" />
                                 )}
                               </button>
                             )}
@@ -2216,9 +2604,10 @@ export default function CalendarView({
                                 e.stopPropagation();
                                 onDeleteEvent(evt.id);
                               }}
-                              className="bg-white/5 hover:bg-rose-500/20 text-slate-455 hover:text-rose-455 p-2 rounded-lg transition border border-white/5 cursor-pointer"
+                              className="bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 p-2 rounded-xl transition border border-white/10 cursor-pointer min-h-[38px] min-w-[38px] flex items-center justify-center"
+                              title="Delete event"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
                         </div>
@@ -2650,6 +3039,7 @@ export default function CalendarView({
         goalId={timerGoalId}
         category={timerCategory}
         color={timerColor}
+        previousSessionNote={timerGoalId ? goals.find(g => g.id === timerGoalId)?.lastSessionNote : undefined}
         onCompleteSession={handleCompleteTimerSession}
       />
     </div>

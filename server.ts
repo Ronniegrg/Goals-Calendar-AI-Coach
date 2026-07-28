@@ -468,7 +468,7 @@ Return ONLY valid JSON. No markdown syntax wrapper.`;
 
     const userPrompt = `Goals: ${JSON.stringify(goals)}\nCompleted/Scheduled Events: ${JSON.stringify(events)}`;
     const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.6-flash",
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,

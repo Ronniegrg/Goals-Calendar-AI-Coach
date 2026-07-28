@@ -12,7 +12,10 @@ import {
   WifiOff, 
   Info,
   CheckCircle2,
-  CalendarCheck
+  CalendarCheck,
+  Sun,
+  Moon,
+  Monitor
 } from "lucide-react";
 import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
@@ -93,6 +96,61 @@ export default function App() {
     const val = localStorage.getItem("alert_push_enabled");
     return val !== "false";
   });
+
+  // Auto Dark/Light Theme State Engine
+  const [themeMode, setThemeMode] = useState<"auto" | "dark" | "light">(
+    () => (localStorage.getItem("app_theme_mode") as "auto" | "dark" | "light") || "auto"
+  );
+  const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
+
+  useEffect(() => {
+    const applyTheme = () => {
+      let activeTheme: "dark" | "light" = "dark";
+      if (themeMode === "dark") {
+        activeTheme = "dark";
+      } else if (themeMode === "light") {
+        activeTheme = "light";
+      } else {
+        // Auto Mode: Follow OS media preference
+        const systemPrefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        activeTheme = systemPrefersDark ? "dark" : "light";
+      }
+
+      setResolvedTheme(activeTheme);
+      localStorage.setItem("app_theme_mode", themeMode);
+
+      if (activeTheme === "light") {
+        document.documentElement.classList.add("light-theme");
+        document.documentElement.classList.remove("dark-theme");
+      } else {
+        document.documentElement.classList.remove("light-theme");
+        document.documentElement.classList.add("dark-theme");
+      }
+    };
+
+    applyTheme();
+
+    const mediaQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+    const handleChange = () => {
+      if (themeMode === "auto") {
+        applyTheme();
+      }
+    };
+
+    if (mediaQuery?.addEventListener) {
+      mediaQuery.addEventListener("change", handleChange);
+    } else if (mediaQuery?.addListener) {
+      mediaQuery.addListener(handleChange);
+    }
+
+    return () => {
+      if (mediaQuery?.removeEventListener) {
+        mediaQuery.removeEventListener("change", handleChange);
+      } else if (mediaQuery?.removeListener) {
+        mediaQuery.removeListener(handleChange);
+      }
+    };
+  }, [themeMode]);
 
   // 1. Initial Data load from cloud sync server with localStorage self-healing fallback
   useEffect(() => {
@@ -268,7 +326,7 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [goals]);
 
-  // 3b. Automated Background Scheduling Trigger Engine
+  // 3b. Automated Background Multi-Week Rolling Scheduling Trigger Engine
   const triggerAutoScheduler = (
     currentGoals: Goal[],
     currentEvents: CalendarEvent[],
@@ -280,122 +338,136 @@ export default function App() {
     let scheduledCount = 0;
     const now = new Date();
 
+    // Rolling horizon: 4 weeks (0 = current week, 1 = next week, 2 = week after, 3 = 3 weeks ahead)
     currentGoals.forEach(goal => {
       const goalNameLower = goal.name.toLowerCase();
-      
-      // Match existing events by goalId OR by title matching goal name
-      const currentScheduledEvents = [...currentEvents, ...newScheduledEvents].filter(e => {
-        if (e.goalId === goal.id) return true;
-        if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
-        return false;
-      });
 
-      const neededCount = Math.max(goal.weeklyTarget - currentScheduledEvents.length, 0);
-      if (neededCount === 0) return;
+      for (let weekOffset = 0; weekOffset < 4; weekOffset++) {
+        // Calculate the start (Sunday) and end (Saturday) of weekOffset relative to now
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - now.getDay() + (weekOffset * 7));
+        startOfWeek.setHours(0, 0, 0, 0);
 
-      let successBooked = 0;
+        const endOfWeek = new Date(startOfWeek);
+        endOfWeek.setDate(startOfWeek.getDate() + 6);
+        endOfWeek.setHours(23, 59, 59, 999);
 
-      // Search across up to 14 days starting from today (0) to 14
-      for (let dayOffset = 0; dayOffset <= 14; dayOffset++) {
-        if (successBooked >= neededCount) break;
-
-        const targetDay = new Date(now);
-        targetDay.setDate(now.getDate() + dayOffset);
-        const dayOfWeek = targetDay.getDay();
-
-        const availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek);
-        if (!availDay || !availDay.active) continue;
-
-        const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
-        const targetDayString = targetDay.toDateString();
-        
-        const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
+        // Filter events for this goal in this specific week window
+        const sessionsInWeek = [...currentEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-          return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-        }).length;
+          if (!isThisGoal) return false;
+          const evtDate = new Date(evt.start);
+          return evtDate >= startOfWeek && evtDate <= endOfWeek;
+        });
 
-        if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
+        const neededInWeek = Math.max(goal.weeklyTarget - sessionsInWeek.length, 0);
+        if (neededInWeek === 0) continue;
 
-        let [availStartHour] = availDay.startTime.split(":").map(Number);
-        let [availEndHour] = availDay.endTime.split(":").map(Number);
+        let successBookedInWeek = 0;
 
-        // Determine preferred time bounds
-        let prefStart = availStartHour;
-        let prefEnd = availEndHour;
+        // Try booking across the 7 days of this week
+        for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+          if (successBookedInWeek >= neededInWeek) break;
 
-        if (goal.timePreference === TimePreference.MORNING) {
-          prefStart = Math.max(availStartHour, 8);
-          prefEnd = Math.min(availEndHour, 12);
-        } else if (goal.timePreference === TimePreference.AFTERNOON) {
-          prefStart = Math.max(availStartHour, 12);
-          prefEnd = Math.min(availEndHour, 17);
-        } else if (goal.timePreference === TimePreference.EVENING) {
-          prefStart = Math.max(availStartHour, 17);
-          prefEnd = Math.min(availEndHour, 22);
-        }
+          const targetDay = new Date(startOfWeek);
+          targetDay.setDate(startOfWeek.getDate() + dayOffset);
 
-        const blockDurationHours = goal.durationMinutes / 60;
+          // Skip days before today
+          if (targetDay.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) {
+            continue;
+          }
 
-        // Pass 1: Try preferred window with 30-min steps
-        // Pass 2: Fall back to entire daily availability window with 30-min steps
-        const windowsToTry = [
-          { start: prefStart, end: prefEnd },
-          { start: availStartHour, end: availEndHour }
-        ];
+          const dayOfWeek = targetDay.getDay();
+          const availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek);
+          if (!availDay || !availDay.active) continue;
 
-        let slotBookedOnDay = false;
+          const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
+          const targetDayString = targetDay.toDateString();
 
-        for (const win of windowsToTry) {
-          if (slotBookedOnDay) break;
+          const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
+            const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+            return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+          }).length;
 
-          for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
-            if (successBooked >= neededCount) break;
+          if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
 
-            // Re-verify max per day
-            const currentDayCount = [...currentEvents, ...newScheduledEvents].filter(evt => {
-              const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-              return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-            }).length;
+          let [availStartHour] = availDay.startTime.split(":").map(Number);
+          let [availEndHour] = availDay.endTime.split(":").map(Number);
 
-            if (currentDayCount >= maxSessionsPerDay) break;
+          let prefStart = availStartHour;
+          let prefEnd = availEndHour;
 
-            const slotStart = new Date(targetDay);
-            slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+          if (goal.timePreference === TimePreference.MORNING) {
+            prefStart = Math.max(availStartHour, 8);
+            prefEnd = Math.min(availEndHour, 12);
+          } else if (goal.timePreference === TimePreference.AFTERNOON) {
+            prefStart = Math.max(availStartHour, 12);
+            prefEnd = Math.min(availEndHour, 17);
+          } else if (goal.timePreference === TimePreference.EVENING) {
+            prefStart = Math.max(availStartHour, 17);
+            prefEnd = Math.min(availEndHour, 22);
+          }
 
-            // Skip past slots if scheduling for today
-            if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
-              continue;
-            }
+          const blockDurationHours = goal.durationMinutes / 60;
 
-            const slotEnd = new Date(slotStart);
-            slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+          const windowsToTry = [
+            { start: prefStart, end: prefEnd },
+            { start: availStartHour, end: availEndHour }
+          ];
 
-            const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
-              const evtStart = new Date(evt.start);
-              const evtEnd = new Date(evt.end);
-              return slotStart < evtEnd && slotEnd > evtStart;
-            });
+          let slotBookedOnDay = false;
 
-            if (!overlap) {
-              newScheduledEvents.push({
-                id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-                title: goal.name,
-                type: goal.type === GoalType.WORKOUT ? "workout" :
-                      goal.type === GoalType.STUDY ? "study" :
-                      goal.type === GoalType.JOB_SEARCH ? "job_search" :
-                      goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-                      goal.type === GoalType.ROUTINE ? "routine" :
-                      "personal",
-                start: slotStart.toISOString(),
-                end: slotEnd.toISOString(),
-                goalId: goal.id,
-                completed: false,
-                notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+          for (const win of windowsToTry) {
+            if (slotBookedOnDay) break;
+
+            for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
+              if (successBookedInWeek >= neededInWeek) break;
+
+              const currentDayCount = [...currentEvents, ...newScheduledEvents].filter(evt => {
+                const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+                return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+              }).length;
+
+              if (currentDayCount >= maxSessionsPerDay) break;
+
+              const slotStart = new Date(targetDay);
+              slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+
+              // Skip past time slots if scheduling for today
+              if (slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
+                continue;
+              }
+
+              const slotEnd = new Date(slotStart);
+              slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
+
+              const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
+                const evtStart = new Date(evt.start);
+                const evtEnd = new Date(evt.end);
+                return slotStart < evtEnd && slotEnd > evtStart;
               });
-              successBooked++;
-              scheduledCount++;
-              slotBookedOnDay = true;
-              break;
+
+              if (!overlap) {
+                newScheduledEvents.push({
+                  id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
+                  title: goal.name,
+                  type: goal.type === GoalType.WORKOUT ? "workout" :
+                        goal.type === GoalType.STUDY ? "study" :
+                        goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                        goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                        goal.type === GoalType.ROUTINE ? "routine" :
+                        "personal",
+                  start: slotStart.toISOString(),
+                  end: slotEnd.toISOString(),
+                  goalId: goal.id,
+                  completed: false,
+                  notes: `Auto-scheduled (Week +${weekOffset}) on ${slotStart.toLocaleDateString([], { month: "short", day: "numeric" })} at ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                });
+                successBookedInWeek++;
+                scheduledCount++;
+                slotBookedOnDay = true;
+                break;
+              }
             }
           }
         }
@@ -408,7 +480,7 @@ export default function App() {
       syncToCloud(currentGoals, nextEvents, currentAvailability, notifications, coachMessages);
       triggerSystemNotification(
         "Auto-Scheduler Sync",
-        `⚡ Automated Auto-Scheduler successfully mapped ${scheduledCount} new session blocks completely without interference!`,
+        `⚡ Automated 4-Week Auto-Scheduler successfully mapped ${scheduledCount} future session blocks across upcoming weeks!`,
         "success"
       );
     }
@@ -417,14 +489,33 @@ export default function App() {
   useEffect(() => {
     if (!autoScheduleEnabled || goals.length === 0 || availability.length === 0) return;
 
-    // Check if there are any unallocated goals
-    const hasUnallocated = goals.some(goal => {
+    // Check if any week in the 4-week horizon needs sessions scheduled
+    const now = new Date();
+    const needsScheduling = goals.some(goal => {
       const goalNameLower = goal.name.toLowerCase();
-      const currentScheduled = events.filter(e => e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower))).length;
-      return goal.weeklyTarget > currentScheduled;
+
+      for (let weekOffset = 0; weekOffset < 4; weekOffset++) {
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - now.getDay() + (weekOffset * 7));
+        startOfWeek.setHours(0, 0, 0, 0);
+
+        const endOfWeek = new Date(startOfWeek);
+        endOfWeek.setDate(startOfWeek.getDate() + 6);
+        endOfWeek.setHours(23, 59, 59, 999);
+
+        const countInWeek = events.filter(e => {
+          const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
+          if (!isThisGoal) return false;
+          const d = new Date(e.start);
+          return d >= startOfWeek && d <= endOfWeek;
+        }).length;
+
+        if (countInWeek < goal.weeklyTarget) return true;
+      }
+      return false;
     });
 
-    if (hasUnallocated) {
+    if (needsScheduling) {
       const timer = setTimeout(() => {
         triggerAutoScheduler(goals, events, availability);
       }, 500);
@@ -1128,6 +1219,14 @@ export default function App() {
       );
     }
 
+    if (updatedFields.lastSessionNote && updatedFields.lastSessionNote !== targetGoal.lastSessionNote) {
+      triggerSystemNotification(
+        "📝 Next Session Carryover Saved",
+        `Updated prep note for "${updatedGoal.name}": "${updatedFields.lastSessionNote}"`,
+        "motivation"
+      );
+    }
+
     setGoals(nextGoals);
     setEvents(nextEvents);
     syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
@@ -1291,8 +1390,48 @@ export default function App() {
             <span className="text-xs font-mono font-bold uppercase tracking-widest text-indigo-300">System Core Node</span>
           </div>
 
-          {/* Sync indicator widget */}
-          <div className="flex items-center gap-4 text-xs font-medium" id="sync_status_anchor_indicators">
+          {/* Sync indicator & Auto Theme toggle widget */}
+          <div className="flex items-center gap-2 sm:gap-4 text-xs font-medium" id="sync_status_anchor_indicators">
+            {/* Auto-Toggle Theme Button */}
+            <button
+              type="button"
+              id="app_theme_mode_toggle_btn"
+              onClick={() => {
+                const nextMode = themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
+                setThemeMode(nextMode);
+                triggerSystemNotification(
+                  "🎨 Theme Mode Updated",
+                  `Switched to ${nextMode === "auto" ? "Auto Mode (System Sync)" : nextMode === "dark" ? "Dark Theme" : "Light Theme"}`,
+                  "info"
+                );
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border cursor-pointer transition shadow-xs ${
+                themeMode === "auto"
+                  ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40 hover:bg-indigo-500/30"
+                  : themeMode === "dark"
+                  ? "bg-slate-800/80 text-slate-200 border-slate-700 hover:bg-slate-700"
+                  : "bg-amber-100/90 text-amber-950 border-amber-300 hover:bg-amber-200"
+              }`}
+              title="Click to toggle: Auto (System Sync) -> Dark -> Light"
+            >
+              {themeMode === "auto" ? (
+                <>
+                  <Monitor className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <span>Auto ({resolvedTheme === "dark" ? "🌙 Dark" : "☀️ Light"})</span>
+                </>
+              ) : themeMode === "dark" ? (
+                <>
+                  <Moon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <span>Dark Mode</span>
+                </>
+              ) : (
+                <>
+                  <Sun className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>Light Mode</span>
+                </>
+              )}
+            </button>
+
             <div className="flex items-center gap-1.5 bg-white/5 px-3 py-1 rounded-full border border-white/10">
               <span className="hidden md:inline text-slate-400">Target Profile:</span>
               <span className="font-mono text-indigo-300 font-bold">{userEmail}</span>
@@ -1430,7 +1569,7 @@ export default function App() {
       </div>
 
       {/* CORE DISPLAY WINDOW SECTION */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 flex-1 w-full" id="dash_rendered_main_stage">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 pb-24 md:pb-6 flex-1 w-full" id="dash_rendered_main_stage">
         
         {/* ACTIVE TABS CONTROLLER */}
         {activeTab === "calendar" && (
@@ -1469,6 +1608,7 @@ export default function App() {
             onAddGoal={handleAddGoal}
             onDeleteGoal={handleDeleteGoal}
             onEditGoal={handleEditGoal}
+            onEditEvent={handleEditEvent}
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}

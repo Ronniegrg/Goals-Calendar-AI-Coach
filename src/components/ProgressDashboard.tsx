@@ -145,6 +145,21 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
 
   const streakBadge = getBadgeTier(maxStreak, 3, 5, 7);
 
+  // Category event counts & badges for milestone cards
+  const pythonEvents = completedEvents.filter(e => 
+    e.title.toLowerCase().includes("python") || 
+    e.title.toLowerCase().includes("code") || 
+    e.type === "side_project" ||
+    e.type === "job_search"
+  );
+  const pythonBadge = getBadgeTier(pythonEvents.length, 2, 5, 8);
+
+  const fitnessEvents = completedEvents.filter(e => e.type === "workout");
+  const fitnessBadge = getBadgeTier(fitnessEvents.length, 2, 5, 8);
+
+  const studyEventsAll = completedEvents.filter(e => e.type === "study");
+  const studyBadge = getBadgeTier(studyEventsAll.length, 2, 5, 10);
+
   // Chart A: Target vs Actual bar chart data
   const goalCompareData = goals.map(g => ({
     name: g.name.length > 18 ? g.name.substring(0, 15) + "..." : g.name,

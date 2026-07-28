@@ -25,7 +25,8 @@ interface FocusTimerModalProps {
   goalId?: string;
   category?: string;
   color?: string;
-  onCompleteSession: (eventId?: string, goalId?: string) => void;
+  previousSessionNote?: string;
+  onCompleteSession: (eventId?: string, goalId?: string, note?: string) => void;
 }
 
 export default function FocusTimerModal({
@@ -37,6 +38,7 @@ export default function FocusTimerModal({
   goalId,
   category,
   color = "#6366f1",
+  previousSessionNote,
   onCompleteSession
 }: FocusTimerModalProps) {
   // Timer state
@@ -46,6 +48,7 @@ export default function FocusTimerModal({
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isCompleted, setIsCompleted] = useState<boolean>(false);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [sessionTakeawayNote, setSessionTakeawayNote] = useState<string>("");
 
   // Sync when props change if timer hasn't started
   useEffect(() => {
@@ -160,7 +163,8 @@ export default function FocusTimerModal({
   const handleFinishAndComplete = () => {
     setIsRunning(false);
     playCompletionChime();
-    onCompleteSession(eventId, goalId);
+    onCompleteSession(eventId, goalId, sessionTakeawayNote.trim() || undefined);
+    setSessionTakeawayNote("");
     onClose();
   };
 
@@ -232,6 +236,17 @@ export default function FocusTimerModal({
             </button>
           </div>
         </div>
+
+        {/* Previous Session Carryover Prep Note Banner */}
+        {previousSessionNote && (
+          <div className="mb-3 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200/90 flex items-start gap-2">
+            <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold text-amber-300 block text-[10px] uppercase tracking-wider">Prior Session Takeaway:</span>
+              <p className="italic font-medium text-[11px] leading-snug">"{previousSessionNote}"</p>
+            </div>
+          </div>
+        )}
 
         {/* Circular Countdown Ring */}
         <div className="relative flex flex-col items-center justify-center my-6">
@@ -351,6 +366,21 @@ export default function FocusTimerModal({
               <RotateCcw className="w-4 h-4" />
               <span>Reset</span>
             </button>
+          </div>
+
+          {/* Optional Carryover Note for Next Session */}
+          <div className="bg-[#0c0d16] border border-white/10 rounded-2xl p-2.5">
+            <label className="block text-[10px] font-bold text-amber-300/90 uppercase tracking-wider mb-1 flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-amber-400" />
+              Next Session Carryover Note (Optional):
+            </label>
+            <textarea
+              value={sessionTakeawayNote}
+              onChange={(e) => setSessionTakeawayNote(e.target.value)}
+              placeholder="e.g. Finished Chapter 3; resume Section 4.1 practice problems next session..."
+              rows={2}
+              className="w-full text-xs p-2 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-amber-400 focus:bg-white/10 transition placeholder:text-slate-500"
+            />
           </div>
 
           <button

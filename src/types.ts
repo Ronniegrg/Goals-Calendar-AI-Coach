@@ -38,6 +38,8 @@ export interface Goal {
   createdAt: string;
   subtasks?: SubTask[];
   icon?: string;
+  lastSessionNote?: string;
+  lastSessionNoteDate?: string;
 }
 
 export interface CalendarEvent {
@@ -49,6 +51,7 @@ export interface CalendarEvent {
   goalId?: string; // if tied to a goal
   completed: boolean;
   notes?: string;
+  completionNote?: string;
   icon?: string;
 }
 

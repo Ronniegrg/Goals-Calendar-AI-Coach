@@ -113,6 +113,7 @@ interface GoalTrackerProps {
   onAddGoal: (goal: Omit<Goal, "id" | "completedCount" | "createdAt">) => void;
   onDeleteGoal: (goalId: string) => void;
   onEditGoal: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
+  onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
   onUpdateAvailability: (avail: AvailabilityWindow[]) => void;
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
@@ -127,6 +128,7 @@ export default function GoalTracker({
   onAddGoal,
   onDeleteGoal,
   onEditGoal,
+  onEditEvent,
   onUpdateAvailability,
   onBulkAddEvents,
   onAddNotification,
@@ -147,13 +149,65 @@ export default function GoalTracker({
     setTimerOpen(true);
   };
 
-  const handleCompleteTimerSession = (_eventId?: string, goalId?: string) => {
+  const handleCompleteTimerSession = (_eventId?: string, goalId?: string, note?: string) => {
     if (goalId) {
       const g = goals.find(item => item.id === goalId);
       if (g) {
-        onEditGoal(g.id, { completedCount: g.completedCount + 1 });
+        onEditGoal(g.id, {
+          completedCount: g.completedCount + 1,
+          ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+        });
       }
     }
+  };
+
+  // Delay Goal Agenda: Shifts all uncompleted future events associated with this goal forward by delayDays
+  const handleDelayGoalAgenda = (goal: Goal, delayDays: number) => {
+    const delayMs = delayDays * 24 * 60 * 60 * 1000;
+    const goalNameLower = goal.name.toLowerCase();
+
+    // Find uncompleted events belonging to this goal
+    const goalEvents = events.filter(e => {
+      if (e.completed) return false;
+      if (e.goalId === goal.id) return true;
+      if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
+      return false;
+    });
+
+    if (goalEvents.length === 0) {
+      onAddNotification(
+        "No Pending Sessions",
+        `Goal "${goal.name}" has no upcoming uncompleted sessions scheduled to delay. Use "Run Smart Auto-Scheduler" to populate sessions first.`,
+        "warning"
+      );
+      return;
+    }
+
+    let updatedCount = 0;
+    goalEvents.forEach(evt => {
+      const oldStart = new Date(evt.start).getTime();
+      const oldEnd = new Date(evt.end).getTime();
+      const duration = oldEnd - oldStart;
+
+      const newStart = new Date(oldStart + delayMs).toISOString();
+      const newEnd = new Date(oldStart + delayMs + duration).toISOString();
+
+      if (onEditEvent) {
+        onEditEvent(evt.id, {
+          start: newStart,
+          end: newEnd,
+          notes: `${evt.notes || ''} (Agenda Delayed +${delayDays}d)`.trim()
+        });
+        updatedCount++;
+      }
+    });
+
+    const dayLabel = delayDays === 7 ? "1 week" : `${delayDays} day(s)`;
+    onAddNotification(
+      "⏩ Goal Agenda Shifted",
+      `Shifted ${updatedCount} upcoming session(s) for "${goal.name}" forward by ${dayLabel}! Your schedule has been updated automatically.`,
+      "sync"
+    );
   };
   const [name, setName] = useState("");
   const [type, setType] = useState<GoalType>(GoalType.WORKOUT);
@@ -1044,6 +1098,52 @@ export default function GoalTracker({
                         </button>
                       </form>
                     </div>
+
+                    {/* Next Session Carryover Prep Note Section */}
+                    <div className="pt-2 border-t border-white/5 mt-2 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-amber-400" />
+                          Next Session Carryover Note
+                        </span>
+                        {g.lastSessionNoteDate && (
+                          <span className="text-[9px] text-slate-400 font-mono">
+                            {new Date(g.lastSessionNoteDate).toLocaleDateString([], { month: "short", day: "numeric" })}
+                          </span>
+                        )}
+                      </div>
+                      {g.lastSessionNote ? (
+                        <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[11px] text-amber-200/90 font-medium italic relative group flex items-start justify-between gap-1">
+                          <span className="break-words font-sans">"{g.lastSessionNote}"</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const notePrompt = window.prompt("Edit Carryover Note for Next Session:", g.lastSessionNote || "");
+                              if (notePrompt !== null) {
+                                onEditGoal(g.id, { lastSessionNote: notePrompt.trim(), lastSessionNoteDate: new Date().toISOString() });
+                              }
+                            }}
+                            className="text-[9px] text-amber-300 underline font-bold not-italic hover:text-white cursor-pointer shrink-0"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const notePrompt = window.prompt("Enter Carryover Note / What to work on in the next session:");
+                            if (notePrompt && notePrompt.trim()) {
+                              onEditGoal(g.id, { lastSessionNote: notePrompt.trim(), lastSessionNoteDate: new Date().toISOString() });
+                            }
+                          }}
+                          className="w-full text-left p-1.5 bg-black/20 hover:bg-black/30 border border-white/5 rounded-lg text-[10px] text-slate-400 hover:text-amber-300 transition flex items-center justify-between cursor-pointer"
+                        >
+                          <span>+ Add Carryover / Prep Note</span>
+                          <Plus className="w-3 h-3 text-slate-500" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Micro Progress Track */}
@@ -1059,15 +1159,51 @@ export default function GoalTracker({
                       />
                     </div>
 
-                    <button
-                      type="button"
-                      id={`start_goal_timer_btn_${g.id}`}
-                      onClick={() => handleStartTimer(g)}
-                      className="w-full mt-2 py-2 px-3 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
-                      <span>Start {g.durationMinutes}m Focus Timer</span>
-                    </button>
+                    <div className="flex flex-col gap-2 mt-2">
+                      <button
+                        type="button"
+                        id={`start_goal_timer_btn_${g.id}`}
+                        onClick={() => handleStartTimer(g)}
+                        className="w-full py-2 px-3 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
+                        <span>Start {g.durationMinutes}m Focus Timer</span>
+                      </button>
+
+                      {/* Cascading Goal Agenda Delay Buttons */}
+                      <div className="flex items-center justify-between gap-1 bg-black/20 p-1.5 rounded-lg border border-white/5 text-[10px]">
+                        <span className="text-slate-400 font-semibold flex items-center gap-1">
+                          <RotateCw className="w-3 h-3 text-amber-400" />
+                          Delay Agenda:
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleDelayGoalAgenda(g, 1)}
+                            className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold transition cursor-pointer"
+                            title="Shift all upcoming sessions for this goal forward by 1 day"
+                          >
+                            +1 Day
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelayGoalAgenda(g, 2)}
+                            className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold transition cursor-pointer"
+                            title="Shift all upcoming sessions for this goal forward by 2 days"
+                          >
+                            +2 Days
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelayGoalAgenda(g, 7)}
+                            className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold transition cursor-pointer"
+                            title="Shift all upcoming sessions for this goal forward by 1 week"
+                          >
+                            +1 Week
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
@@ -1085,6 +1221,7 @@ export default function GoalTracker({
             goalId={timerGoal.id}
             category={timerGoal.category}
             color={timerGoal.color}
+            previousSessionNote={timerGoal.lastSessionNote}
             onCompleteSession={handleCompleteTimerSession}
           />
         )}

@@ -40,6 +40,113 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   filter: invert(1) opacity(0.9);
 }
 
+/* Light Theme Complete Style Engine Overrides */
+html.light-theme,
+html.light-theme body,
+html.light-theme #root {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html.light-theme .min-h-screen {
+  background-color: #f8fafc !important;
+  background-image: radial-gradient(circle at 0% 0%, #e0e7ff 0%, transparent 50%), radial-gradient(circle at 100% 100%, #f3e8ff 0%, transparent 50%) !important;
+  color: #0f172a !important;
+}
+
+/* Backgrounds & Panels */
+html.light-theme [class*="bg-[#0a0c14]"],
+html.light-theme [class*="bg-[#0a0b10]"],
+html.light-theme [class*="bg-[#0c0d16]"],
+html.light-theme [class*="bg-[#0f1019]"],
+html.light-theme [class*="bg-[#121320]"],
+html.light-theme [class*="bg-[#18192a]"],
+html.light-theme [class*="bg-[#1a1b2e]"],
+html.light-theme [class*="bg-[#151726]"] {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+}
+
+html.light-theme .glass-panel,
+html.light-theme .glass-panel-heavy {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  color: #0f172a !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light-theme [class*="bg-white/5"],
+html.light-theme [class*="bg-white/10"],
+html.light-theme [class*="bg-white/20"] {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+html.light-theme [class*="bg-black/"],
+html.light-theme [class*="bg-black/20"],
+html.light-theme [class*="bg-black/40"],
+html.light-theme [class*="bg-black/60"] {
+  background-color: rgba(241, 245, 249, 0.9) !important;
+}
+
+/* Text Colors */
+html.light-theme .text-white,
+html.light-theme .text-slate-100,
+html.light-theme .text-slate-200 {
+  color: #0f172a !important;
+}
+
+html.light-theme .text-slate-300,
+html.light-theme .text-slate-400 {
+  color: #334155 !important;
+}
+
+html.light-theme .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Borders */
+html.light-theme [class*="border-white/"] {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Form Controls & Inputs */
+html.light-theme input,
+html.light-theme select,
+html.light-theme textarea {
+  color: #0f172a !important;
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light-theme input::placeholder,
+html.light-theme textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+html.light-theme input[type="time"]::-webkit-calendar-picker-indicator,
+html.light-theme input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: none opacity(0.75) !important;
+}
+
+/* Modals & Dialog Backdrop */
+html.light-theme .fixed.inset-0.bg-black\/70,
+html.light-theme .fixed.inset-0.bg-black\/80,
+html.light-theme .fixed.inset-0.bg-black\/60 {
+  background-color: rgba(15, 23, 42, 0.4) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Scrollbars */
+html.light-theme ::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+html.light-theme ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
 .glass-panel {
   background-color: rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(16px);
