@@ -97,10 +97,14 @@ export default function App() {
     return val !== "false";
   });
 
-  // Auto Dark/Light Theme State Engine
-  const [themeMode, setThemeMode] = useState<"auto" | "dark" | "light">(
-    () => (localStorage.getItem("app_theme_mode") as "auto" | "dark" | "light") || "auto"
-  );
+  // Auto Dark/Light Theme State Engine (Default: Auto Mode)
+  const [themeMode, setThemeMode] = useState<"auto" | "dark" | "light">(() => {
+    const saved = localStorage.getItem("app_theme_mode");
+    if (saved === "dark" || saved === "light" || saved === "auto") {
+      return saved;
+    }
+    return "auto";
+  });
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
 
   useEffect(() => {
@@ -122,9 +126,11 @@ export default function App() {
       if (activeTheme === "light") {
         document.documentElement.classList.add("light-theme");
         document.documentElement.classList.remove("dark-theme");
+        document.documentElement.classList.remove("dark");
       } else {
         document.documentElement.classList.remove("light-theme");
         document.documentElement.classList.add("dark-theme");
+        document.documentElement.classList.add("dark");
       }
     };
 
@@ -1402,7 +1408,7 @@ export default function App() {
                 triggerSystemNotification(
                   "🎨 Theme Mode Updated",
                   `Switched to ${nextMode === "auto" ? "Auto Mode (System Sync)" : nextMode === "dark" ? "Dark Theme" : "Light Theme"}`,
-                  "info"
+                  "sync"
                 );
               }}
               className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border cursor-pointer transition shadow-xs ${
@@ -1463,24 +1469,28 @@ export default function App() {
         {/* Outer Visual layout Hero headings */}
         <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8 relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6 pb-10">
           <div className="space-y-1">
-            <h1 className="font-display font-bold text-3xl tracking-tight sm:text-4xl text-white">
+            <h1 className="font-display font-extrabold text-3xl tracking-tight sm:text-4xl text-slate-950 dark:text-white">
               Goals Calendar & AI Coach
             </h1>
-            <p className="text-slate-300 text-sm max-w-xl font-medium">
+            <p className="text-slate-700 dark:text-slate-300 text-sm max-w-xl font-medium">
               Synchronize physical workouts and intensive learning routines inside the optimal conflict-free periods. Keep your schedule 100% on track.
             </p>
           </div>
 
-          <div className="flex items-center gap-2 bg-white/5 p-1.5 rounded-xl border border-white/10">
+          <div className="flex items-center gap-2 bg-slate-200/80 dark:bg-white/5 p-1.5 rounded-xl border border-slate-300 dark:border-white/10 shadow-xs">
             <button 
               onClick={() => setActiveTab("calendar")}
-              className="text-xs px-3 py-2 rounded-lg font-bold hover:bg-white/10 text-white transition whitespace-nowrap"
+              className={`text-xs px-3 py-2 rounded-lg font-bold transition whitespace-nowrap cursor-pointer ${
+                activeTab === "calendar"
+                  ? "bg-white dark:bg-white/10 text-indigo-700 dark:text-white shadow-xs"
+                  : "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/50 dark:hover:bg-white/10"
+              }`}
             >
               Laptop View
             </button>
-            <span className="text-white/20 select-none">|</span>
-            <div className="hidden sm:flex items-center gap-1 text-xs text-slate-300 px-2.5">
-              <Smartphone className="w-4 h-4 text-indigo-400" />
+            <span className="text-slate-400 dark:text-white/20 select-none">|</span>
+            <div className="hidden sm:flex items-center gap-1 text-xs text-slate-700 dark:text-slate-300 font-medium px-2.5">
+              <Smartphone className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
               <span>Mobile Ready Sync</span>
             </div>
           </div>
@@ -1489,7 +1499,7 @@ export default function App() {
       </div>
 
       {/* DASHBOARD TAB NAVIGATION BAR */}
-      <div className="hidden md:block bg-[#0a0c14]/75 backdrop-blur-md border-b border-white/10 sticky top-0 z-40" id="dash_navigation_row">
+      <div className="hidden md:block bg-white/90 dark:bg-[#0a0c14]/75 backdrop-blur-md border-b border-slate-200 dark:border-white/10 sticky top-0 z-40 shadow-xs" id="dash_navigation_row">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex space-x-1.5 py-3 overflow-x-auto scrollbar-none">
             
@@ -1497,10 +1507,10 @@ export default function App() {
             <button
               id="tab_trigger_calendar"
               onClick={() => setActiveTab("calendar")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 ${
+              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
                 activeTab === "calendar"
                   ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
               }`}
             >
               <CalendarIcon className="w-4 h-4" />
@@ -1510,10 +1520,10 @@ export default function App() {
             <button
               id="tab_trigger_goals"
               onClick={() => setActiveTab("goals")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 ${
+              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
                 activeTab === "goals"
                   ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
               }`}
             >
               <Layers className="w-4 h-4" />
@@ -1523,10 +1533,10 @@ export default function App() {
             <button
               id="tab_trigger_dashboard"
               onClick={() => setActiveTab("dashboard")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 ${
+              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
                 activeTab === "dashboard"
                   ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
               }`}
             >
               <Sparkles className="w-4 h-4" />
@@ -1536,10 +1546,10 @@ export default function App() {
             <button
               id="tab_trigger_coach"
               onClick={() => setActiveTab("coach")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 ${
+              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
                 activeTab === "coach"
                   ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
               }`}
             >
               <Bot className="w-4 h-4" />
@@ -1549,10 +1559,10 @@ export default function App() {
             <button
               id="tab_trigger_notifications"
               onClick={() => setActiveTab("notifications")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 relative ${
+              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 relative cursor-pointer ${
                 activeTab === "notifications"
                   ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
               }`}
             >
               <Bell className="w-4 h-4" />
@@ -1588,6 +1598,7 @@ export default function App() {
             <CalendarView 
               events={events}
               goals={goals}
+              availability={availability}
               onAddEvent={handleAddEvent}
               onToggleCompleteEvent={handleToggleEventComplete}
               onDeleteEvent={handleDeleteEvent}

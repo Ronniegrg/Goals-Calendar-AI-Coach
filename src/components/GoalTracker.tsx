@@ -16,14 +16,29 @@ import {
   RotateCw,
   Smile,
   X,
-  Play
+  Play,
+  AlertTriangle,
+  Filter,
+  ArrowUpDown,
+  ShieldAlert
 } from "lucide-react";
-import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask } from "../types";
+import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal from "./FocusTimerModal";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
+  {
+    name: "Job Applications & Networking",
+    type: GoalType.JOB_SEARCH,
+    category: "Job Applications",
+    weeklyTarget: 5,
+    durationMinutes: 60,
+    timePreference: TimePreference.MORNING,
+    color: "#3b82f6",
+    priority: "critical" as GoalPriority,
+    description: "Submit applications, tailor resumes, and connect with recruiters."
+  },
   {
     name: "Python & AI Engineering Masterclass",
     type: GoalType.STUDY,
@@ -32,7 +47,19 @@ const PRESET_TEMPLATES = [
     durationMinutes: 60,
     timePreference: TimePreference.EVENING,
     color: "#3b82f6",
+    priority: "critical" as GoalPriority,
     description: "Master Python syntax, data structures, async workflows, and AI model integrations."
+  },
+  {
+    name: "Interview Prep & Mocking",
+    type: GoalType.JOB_SEARCH,
+    category: "Career Prep",
+    weeklyTarget: 3,
+    durationMinutes: 90,
+    timePreference: TimePreference.AFTERNOON,
+    color: "#8b5cf6",
+    priority: "critical" as GoalPriority,
+    description: "Practice technical challenges and mock behavioral sessions."
   },
   {
     name: "Couch to 5K Workout",
@@ -42,6 +69,7 @@ const PRESET_TEMPLATES = [
     durationMinutes: 30,
     timePreference: TimePreference.MORNING,
     color: "#f43f5e",
+    priority: "important" as GoalPriority,
     description: "Build stamina with walk-run sequences 3x a week."
   },
   {
@@ -52,27 +80,8 @@ const PRESET_TEMPLATES = [
     durationMinutes: 90,
     timePreference: TimePreference.AFTERNOON,
     color: "#06b6d4",
+    priority: "important" as GoalPriority,
     description: "Deep-dive intensive learning sessions."
-  },
-  {
-    name: "Job Applications & Networking",
-    type: GoalType.JOB_SEARCH,
-    category: "Job Applications",
-    weeklyTarget: 5,
-    durationMinutes: 60,
-    timePreference: TimePreference.MORNING,
-    color: "#3b82f6",
-    description: "Submit applications, tailor resumes, and connect with recruiters."
-  },
-  {
-    name: "Interview Prep & Mocking",
-    type: GoalType.JOB_SEARCH,
-    category: "Career Prep",
-    weeklyTarget: 3,
-    durationMinutes: 90,
-    timePreference: TimePreference.AFTERNOON,
-    color: "#8b5cf6",
-    description: "Practice technical challenges and mock behavioral sessions."
   },
   {
     name: "SaaS Side Project Dev",
@@ -82,6 +91,7 @@ const PRESET_TEMPLATES = [
     durationMinutes: 120,
     timePreference: TimePreference.EVENING,
     color: "#ec4899",
+    priority: "normal" as GoalPriority,
     description: "Design modules, write clean code, and ship features."
   },
   {
@@ -92,6 +102,7 @@ const PRESET_TEMPLATES = [
     durationMinutes: 45,
     timePreference: TimePreference.AFTERNOON,
     color: "#10b981",
+    priority: "normal" as GoalPriority,
     description: "Deep clean spaces, digital decluttering, and organizing."
   },
   {
@@ -102,6 +113,7 @@ const PRESET_TEMPLATES = [
     durationMinutes: 30,
     timePreference: TimePreference.EVENING,
     color: "#f59e0b",
+    priority: "normal" as GoalPriority,
     description: "Immersive reading to broaden professional and life acumen."
   }
 ];
@@ -223,6 +235,11 @@ export default function GoalTracker({
   const [customDurationVal, setCustomDurationVal] = useState("25");
   const [color, setColor] = useState("#f43f5e");
   const [icon, setIcon] = useState("target");
+  const [priority, setPriority] = useState<GoalPriority>("normal");
+
+  // Catalog filter and sort state
+  const [priorityFilter, setPriorityFilter] = useState<"all" | GoalPriority>("all");
+  const [sortByPriority, setSortByPriority] = useState<boolean>(true);
 
   const handleApplyPresetTemplate = (preset: typeof PRESET_TEMPLATES[number]) => {
     setFormError(null);
@@ -238,6 +255,7 @@ export default function GoalTracker({
     setCustomTimeStart("14:00");
     setCustomTimeEnd("16:00");
     setColor(preset.color);
+    setPriority(preset.priority || "normal");
     setIcon(preset.type === GoalType.WORKOUT ? "dumbbell" : preset.type === GoalType.STUDY ? "book" : preset.type === GoalType.JOB_SEARCH ? "briefcase" : preset.type === GoalType.SIDE_PROJECT ? "laptop" : preset.type === GoalType.ROUTINE ? "coffee" : "smile");
     setEditingGoalId(null);
     setShowAddGoal(true);
@@ -293,12 +311,13 @@ export default function GoalTracker({
         customTimeStart: customStartVal,
         customTimeEnd: customEndVal,
         color,
-        icon
+        icon,
+        priority
       });
 
       onAddNotification(
         "Goal Updated Successfully",
-        `Goal "${name}" was updated successfully.`,
+        `Goal "${name}" (${priority.toUpperCase()} priority) was updated successfully.`,
         "success"
       );
     } else {
@@ -319,12 +338,13 @@ export default function GoalTracker({
         customTimeStart: customStartVal,
         customTimeEnd: customEndVal,
         color,
-        icon
+        icon,
+        priority
       });
 
       onAddNotification(
         "Goal Created Successfully",
-        `New goal "${name}" added! Press 'Run Smart Auto-Scheduler' to plot slots.`,
+        `New goal "${name}" (${priority.toUpperCase()} priority) added! Press 'Run Smart Auto-Scheduler' to plot slots.`,
         "success"
       );
     }
@@ -342,6 +362,7 @@ export default function GoalTracker({
     setCustomTimeStart("14:00");
     setCustomTimeEnd("16:00");
     setIcon("target");
+    setPriority("normal");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -361,6 +382,7 @@ export default function GoalTracker({
       setTimePreference(TimePreference.ANY);
       setColor("#f43f5e");
       setIcon("target");
+      setPriority("normal");
       setShowAddGoal(true);
     } else {
       setShowAddGoal((prev) => !prev);
@@ -382,6 +404,7 @@ export default function GoalTracker({
     setCustomDurationVal("25");
     setTimePreference(TimePreference.ANY);
     setIcon("target");
+    setPriority("normal");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -413,6 +436,7 @@ export default function GoalTracker({
     setCustomTimeEnd(g.customTimeEnd || "16:00");
     setColor(g.color);
     setIcon(g.icon || "target");
+    setPriority(g.priority || "normal");
     setShowAddGoal(true);
     
     // Smooth scroll to catalog header form
@@ -449,15 +473,29 @@ export default function GoalTracker({
 
   // --- AUTOMATIC SCHEDULING ALGORITHM ---
   const handleAutoSchedule = () => {
+    // Keep fixed events: completed events, external events, or manually added custom non-auto events
+    const fixedEvents = events.filter(e => e.completed || e.type === "external" || (!e.id.includes("_sch_") && !e.notes?.includes("Intelligently mapped")));
+    
+    // Auto-scheduled event IDs to replace with fresh priority-sorted placements
+    const autoSchedEvtIdsToRemove = events
+      .filter(e => !e.completed && e.type !== "external" && (e.id.includes("_sch_") || e.notes?.includes("Intelligently mapped")))
+      .map(e => e.id);
+
     const newScheduledEvents: CalendarEvent[] = [];
     let scheduledCount = 0;
     const now = new Date();
 
-    goals.forEach(goal => {
+    // Prioritize Critical goals first, then Important, then Normal goals
+    const sortedGoals = [...goals].sort((a, b) => {
+      const pScore = (p?: string) => p === "critical" ? 3 : p === "important" ? 2 : 1;
+      return pScore(b.priority) - pScore(a.priority);
+    });
+
+    sortedGoals.forEach(goal => {
       const goalNameLower = goal.name.toLowerCase();
 
-      // Find existing scheduled events for this goal (by goalId or matching title)
-      const currentScheduledEvents = [...events, ...newScheduledEvents].filter(e => {
+      // Find existing scheduled events for this goal (among fixed and newly scheduled)
+      const currentScheduledEvents = [...fixedEvents, ...newScheduledEvents].filter(e => {
         if (e.goalId === goal.id) return true;
         if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
         return false;
@@ -481,7 +519,7 @@ export default function GoalTracker({
         const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
         const targetDayString = targetDay.toDateString();
 
-        const sessionsOnTargetDay = [...events, ...newScheduledEvents].filter(evt => {
+        const sessionsOnTargetDay = [...fixedEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
         }).length;
@@ -520,7 +558,7 @@ export default function GoalTracker({
           for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
             if (successBooked >= neededCount) break;
 
-            const currentDayCount = [...events, ...newScheduledEvents].filter(evt => {
+            const currentDayCount = [...fixedEvents, ...newScheduledEvents].filter(evt => {
               const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
               return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
             }).length;
@@ -537,7 +575,7 @@ export default function GoalTracker({
             const slotEnd = new Date(slotStart);
             slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
 
-            const overlap = [...events, ...newScheduledEvents].some(evt => {
+            const overlap = [...fixedEvents, ...newScheduledEvents].some(evt => {
               const evtStart = new Date(evt.start);
               const evtEnd = new Date(evt.end);
               return slotStart < evtEnd && slotEnd > evtStart;
@@ -569,11 +607,15 @@ export default function GoalTracker({
       }
     });
 
+    if (autoSchedEvtIdsToRemove.length > 0) {
+      autoSchedEvtIdsToRemove.forEach(id => onDeleteGoal ? onDeleteGoal(id) : null);
+    }
+
     if (newScheduledEvents.length > 0) {
       onBulkAddEvents(newScheduledEvents);
       onAddNotification(
         "Auto-Scheduler Success",
-        `Successfully integrated ${scheduledCount} conflict-free workout and study blocks into your schedule!`,
+        `Reprioritized schedule: ${scheduledCount} session(s) mapped with Critical goals scheduled in prime slots!`,
         "success"
       );
     } else {
@@ -905,6 +947,52 @@ export default function GoalTracker({
                   </div>
                 )}
               </div>
+
+              {/* Goal Priority Selector */}
+              <div className="space-y-1 mt-2">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-between">
+                  <span className="flex items-center gap-1"><AlertTriangle className="w-3 h-3 text-amber-400" /> Goal Priority Rank</span>
+                  <span className="text-[9px] font-normal text-slate-400">Puts Critical & Important goals first</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPriority("critical")}
+                    className={`px-3 py-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      priority === "critical"
+                        ? "bg-rose-500/20 border-rose-500 text-rose-300 ring-2 ring-rose-500/30"
+                        : "bg-black/20 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                    <span>🔴 Critical</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPriority("important")}
+                    className={`px-3 py-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      priority === "important"
+                        ? "bg-amber-500/20 border-amber-500 text-amber-300 ring-2 ring-amber-500/30"
+                        : "bg-black/20 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-amber-400" />
+                    <span>🟠 Important</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPriority("normal")}
+                    className={`px-3 py-2 rounded-lg border text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      priority === "normal"
+                        ? "bg-indigo-500/20 border-indigo-500 text-indigo-300 ring-2 ring-indigo-500/30"
+                        : "bg-black/20 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-slate-400" />
+                    <span>🔵 Normal</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Goal Icon Selector */}
@@ -949,6 +1037,60 @@ export default function GoalTracker({
           </form>
         )}
 
+        {/* Goals Grid Catalog Filtering & Controls */}
+        {goals.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 bg-black/20 p-2.5 rounded-xl border border-white/5 text-xs">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1 mr-1">
+                <Filter className="w-3 h-3 text-indigo-400" /> Filter:
+              </span>
+              <button
+                onClick={() => setPriorityFilter("all")}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                  priorityFilter === "all" ? "bg-indigo-600 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                All ({goals.length})
+              </button>
+              <button
+                onClick={() => setPriorityFilter("critical")}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                  priorityFilter === "critical" ? "bg-rose-500 text-white shadow-sm ring-1 ring-rose-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                Critical ({goals.filter(g => g.priority === "critical").length})
+              </button>
+              <button
+                onClick={() => setPriorityFilter("important")}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                  priorityFilter === "important" ? "bg-amber-500 text-white shadow-sm ring-1 ring-amber-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                Important ({goals.filter(g => g.priority === "important").length})
+              </button>
+              <button
+                onClick={() => setPriorityFilter("normal")}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                  priorityFilter === "normal" ? "bg-slate-700 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                Normal ({goals.filter(g => (g.priority || "normal") === "normal").length})
+              </button>
+            </div>
+
+            <button
+              onClick={() => setSortByPriority(prev => !prev)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 transition cursor-pointer"
+              title="Toggle Priority Sorting"
+            >
+              <ArrowUpDown className="w-3 h-3 text-indigo-400" />
+              <span>{sortByPriority ? "Sorted by Priority (Top First)" : "Standard Order"}</span>
+            </button>
+          </div>
+        )}
+
         {/* Goals Grid Catalog */}
         {goals.length === 0 ? (
           <div className="text-center py-6 text-slate-400 text-xs">
@@ -956,20 +1098,54 @@ export default function GoalTracker({
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {goals.map((g) => {
+            {goals
+              .filter(g => priorityFilter === "all" || (g.priority || "normal") === priorityFilter)
+              .sort((a, b) => {
+                if (sortByPriority) {
+                  const pScore = (p?: string) => p === "critical" ? 3 : p === "important" ? 2 : 1;
+                  const diff = pScore(b.priority) - pScore(a.priority);
+                  if (diff !== 0) return diff;
+                }
+                return 0;
+              })
+              .map((g) => {
               const countPercent = Math.min(Math.round((g.completedCount / g.weeklyTarget) * 100), 100);
+              const gPriority = g.priority || "normal";
               return (
                 <div 
                   key={g.id} 
                   id={`goal_panel_card_${g.id}`}
-                  className="border border-white/10 rounded-xl p-4 bg-white/5 flex flex-col justify-between hover:bg-white/10 hover:border-white/20 transition"
+                  className={`border rounded-xl p-4 flex flex-col justify-between transition relative overflow-hidden ${
+                    gPriority === "critical"
+                      ? "border-rose-500/30 bg-rose-950/10 hover:border-rose-500/50 hover:bg-rose-950/20 shadow-md shadow-rose-950/20"
+                      : gPriority === "important"
+                      ? "border-amber-500/30 bg-amber-950/10 hover:border-amber-500/50 hover:bg-amber-950/20"
+                      : "border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20"
+                  }`}
                 >
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full flex items-center gap-1.5" style={{ backgroundColor: `${g.color}25`, color: g.color }}>
-                        {renderGoalIcon(g.icon, g.type, "w-3 h-3 shrink-0", { color: g.color })}
-                        {g.category}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full flex items-center gap-1.5" style={{ backgroundColor: `${g.color}25`, color: g.color }}>
+                          {renderGoalIcon(g.icon, g.type, "w-3 h-3 shrink-0", { color: g.color })}
+                          {g.category}
+                        </span>
+
+                        {/* Priority Badge */}
+                        <span className={`text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm border ${
+                          gPriority === "critical"
+                            ? "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                            : gPriority === "important"
+                            ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                            : "bg-slate-500/15 text-slate-400 border-white/10"
+                        }`}>
+                          {gPriority === "critical" && <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />}
+                          {gPriority === "important" && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
+                          {gPriority === "normal" && <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />}
+                          {gPriority.toUpperCase()}
+                        </span>
+                      </div>
+
                       <div className="flex items-center gap-1.5">
                         <button
                           id={`edit_goal_btn_${g.id}`}

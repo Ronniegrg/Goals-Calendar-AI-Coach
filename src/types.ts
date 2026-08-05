@@ -17,6 +17,8 @@ export enum TimePreference {
   CUSTOM = "custom" // Custom hours (e.g. 14:00 - 16:30)
 }
 
+export type GoalPriority = "critical" | "important" | "normal";
+
 export interface SubTask {
   id: string;
   title: string;
@@ -40,6 +42,7 @@ export interface Goal {
   icon?: string;
   lastSessionNote?: string;
   lastSessionNoteDate?: string;
+  priority?: GoalPriority;
 }
 
 export interface CalendarEvent {
