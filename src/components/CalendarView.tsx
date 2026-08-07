@@ -115,6 +115,7 @@ export default function CalendarView({
   const [newStartTime, setNewStartTime] = useState("09:00");
   const [newEndTime, setNewEndTime] = useState("10:00");
   const [newNotes, setNewNotes] = useState("");
+  const [newCompletionNote, setNewCompletionNote] = useState("");
   const [newGoalId, setNewGoalId] = useState("");
   const [newCompleted, setNewCompleted] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
@@ -157,18 +158,35 @@ export default function CalendarView({
   };
 
   const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
-    if (eventId) {
-      if (onEditEvent && note) {
-        onEditEvent(eventId, { completed: true, completionNote: note });
-      } else {
-        onToggleCompleteEvent(eventId);
+    let targetEvtId = eventId;
+
+    // If eventId wasn't directly provided, try to find an uncompleted event for this goal today
+    if (!targetEvtId && goalId && events) {
+      const todayStr = new Date().toDateString();
+      const g = goals.find(item => item.id === goalId);
+      const matchingEvt = events.find(e => 
+        !e.completed && 
+        (e.goalId === goalId || (g && e.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
+        new Date(e.start).toDateString() === todayStr
+      );
+      if (matchingEvt) {
+        targetEvtId = matchingEvt.id;
       }
     }
+
+    if (targetEvtId) {
+      if (onEditEvent) {
+        onEditEvent(targetEvtId, { completed: true, ...(note ? { completionNote: note } : {}) });
+      } else {
+        onToggleCompleteEvent(targetEvtId);
+      }
+    }
+
     if (goalId && onEditGoal) {
       const g = goals.find(item => item.id === goalId);
       if (g) {
         onEditGoal(g.id, {
-          completedCount: eventId ? g.completedCount : g.completedCount + 1,
+          ...(!targetEvtId ? { completedCount: g.completedCount + 1 } : {}),
           ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
         });
       }
@@ -270,9 +288,59 @@ export default function CalendarView({
     const currentEnd = new Date(evt.end);
     const newEndMs = Math.max(currentStart.getTime() + 15 * 60 * 1000, currentEnd.getTime() + deltaMinutes * 60 * 1000);
     
-    onEditEvent(evt.id, {
+    const updates: Partial<CalendarEvent> = {
       end: new Date(newEndMs).toISOString()
-    });
+    };
+    if (deltaMinutes > 0 && evt.completed) {
+      updates.completed = false;
+    }
+
+    onEditEvent(evt.id, updates);
+  };
+
+  const getGoalForEvent = (evt: CalendarEvent): Goal | undefined => {
+    if (evt.goalId) {
+      const g = goals.find(item => item.id === evt.goalId);
+      if (g) return g;
+    }
+    if (evt.title) {
+      const lowerTitle = evt.title.toLowerCase();
+      const g = goals.find(item => lowerTitle.includes(item.name.toLowerCase()) || item.name.toLowerCase().includes(lowerTitle));
+      if (g) return g;
+    }
+    return undefined;
+  };
+
+  const getPreferredTimeWindow = (goal: Goal | undefined, fallbackStartHour: number) => {
+    if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+      return { startHour: fallbackStartHour, endHour: Math.min(22, fallbackStartHour + 4) };
+    }
+    if (goal.timePreference === TimePreference.EARLY_MORNING) {
+      return { startHour: 5, endHour: 8 };
+    }
+    if (goal.timePreference === TimePreference.MORNING) {
+      return { startHour: 8, endHour: 12 };
+    }
+    if (goal.timePreference === TimePreference.AFTERNOON) {
+      return { startHour: 12, endHour: 17 };
+    }
+    if (goal.timePreference === TimePreference.EVENING) {
+      return { startHour: 17, endHour: 22 };
+    }
+    if (goal.timePreference === TimePreference.NIGHT) {
+      return { startHour: 21, endHour: 24 };
+    }
+    if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart) {
+      const [h, m] = goal.customTimeStart.split(":").map(Number);
+      const startH = (h || 9) + (m || 0) / 60;
+      let endH = startH + (goal.durationMinutes || 60) / 60;
+      if (goal.customTimeEnd) {
+        const [eh, em] = goal.customTimeEnd.split(":").map(Number);
+        endH = (eh || startH + 1) + (em || 0) / 60;
+      }
+      return { startHour: startH, endHour: Math.max(endH, startH + 0.5) };
+    }
+    return { startHour: fallbackStartHour, endHour: Math.min(22, fallbackStartHour + 4) };
   };
 
   const handleSmartRebalance = () => {
@@ -299,6 +367,10 @@ export default function CalendarView({
       const originalEnd = new Date(evt.end);
       const durationMs = originalEnd.getTime() - originalStart.getTime();
 
+      const goal = getGoalForEvent(evt);
+      const fallbackStartHour = originalStart.getHours() + originalStart.getMinutes() / 60;
+      const { startHour: prefStart, endHour: prefEnd } = getPreferredTimeWindow(goal, fallbackStartHour);
+
       let foundSlot = false;
 
       // Search across next 7 days
@@ -308,50 +380,56 @@ export default function CalendarView({
         const searchDay = new Date(currentTime);
         searchDay.setDate(currentTime.getDate() + dayOffset);
 
-        const startHour = dayOffset === 0 ? Math.max(8, currentTime.getHours() + 1) : 8;
-        const endHour = 22;
+        const windowsToTry = [
+          { startH: dayOffset === 0 ? Math.max(prefStart, currentTime.getHours() + 1) : prefStart, endH: prefEnd },
+          { startH: dayOffset === 0 ? Math.max(8, currentTime.getHours() + 1) : 8, endH: 22 }
+        ];
 
-        for (let hrs = startHour; hrs <= endHour - (durationMs / (3600 * 1000)); hrs += 0.5) {
-          const slotStart = new Date(searchDay);
-          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
+        for (const win of windowsToTry) {
+          if (foundSlot) break;
+          const maxStart = Math.max(win.startH, win.endH - (durationMs / (3600 * 1000)));
+          for (let hrs = win.startH; hrs <= maxStart + 0.01; hrs += 0.5) {
+            const slotStart = new Date(searchDay);
+            slotStart.setHours(Math.floor(hrs), Math.round((hrs % 1) * 60), 0, 0);
 
-          if (slotStart <= currentTime) continue;
+            if (slotStart <= currentTime) continue;
 
-          const slotEnd = new Date(slotStart.getTime() + durationMs);
+            const slotEnd = new Date(slotStart.getTime() + durationMs);
 
-          const hasOverlap = currentEventsList.some(other => {
-            if (other.id === evt.id) return false;
-            const oStart = new Date(other.start);
-            const oEnd = new Date(other.end);
-            return slotStart < oEnd && slotEnd > oStart;
-          });
-
-          if (!hasOverlap) {
-            onEditEvent(evt.id, {
-              start: slotStart.toISOString(),
-              end: slotEnd.toISOString(),
-              notes: `${evt.notes || ''} (Auto Re-balanced)`.trim()
+            const hasOverlap = currentEventsList.some(other => {
+              if (other.id === evt.id) return false;
+              const oStart = new Date(other.start);
+              const oEnd = new Date(other.end);
+              return slotStart < oEnd && slotEnd > oStart;
             });
 
-            const idx = currentEventsList.findIndex(e => e.id === evt.id);
-            if (idx !== -1) {
-              currentEventsList[idx] = {
-                ...currentEventsList[idx],
+            if (!hasOverlap) {
+              onEditEvent(evt.id, {
                 start: slotStart.toISOString(),
-                end: slotEnd.toISOString()
-              };
-            }
+                end: slotEnd.toISOString(),
+                notes: `${evt.notes || ''} (Auto Re-balanced)`.trim()
+              });
 
-            updatedCount++;
-            foundSlot = true;
-            break;
+              const idx = currentEventsList.findIndex(e => e.id === evt.id);
+              if (idx !== -1) {
+                currentEventsList[idx] = {
+                  ...currentEventsList[idx],
+                  start: slotStart.toISOString(),
+                  end: slotEnd.toISOString()
+                };
+              }
+
+              updatedCount++;
+              foundSlot = true;
+              break;
+            }
           }
         }
       }
     });
 
     if (updatedCount > 0) {
-      setRebalanceStatus(`⚡ Successfully re-balanced ${updatedCount} missed session(s) into upcoming conflict-free slots!`);
+      setRebalanceStatus(`⚡ Successfully re-balanced ${updatedCount} missed session(s) into your preferred goal time slots!`);
     } else {
       setRebalanceStatus("⚠️ Could not find open slots for all missed sessions. Try adjusting availability or clearing busy times.");
     }
@@ -366,12 +444,66 @@ export default function CalendarView({
       return;
     }
 
+    const isDayDelay = delayMs >= 24 * 60 * 60 * 1000;
+    const daysOffset = isDayDelay ? Math.round(delayMs / (24 * 60 * 60 * 1000)) : 0;
     const targetStart = new Date(targetEvt.start).getTime();
     const targetEnd = new Date(targetEvt.end).getTime();
     const duration = targetEnd - targetStart;
 
-    const newTargetStart = targetStart + delayMs;
-    const newTargetEnd = newTargetStart + duration;
+    let newTargetStart: number;
+    let newTargetEnd: number;
+
+    if (isDayDelay) {
+      const origS = new Date(targetEvt.start);
+      const targetDate = new Date(origS.getFullYear(), origS.getMonth(), origS.getDate() + daysOffset);
+      const goal = getGoalForEvent(targetEvt);
+      const fallbackStartHour = origS.getHours() + origS.getMinutes() / 60;
+      const { startHour, endHour } = getPreferredTimeWindow(goal, fallbackStartHour);
+
+      const existingOccupied = events
+        .filter(e => e.id !== targetEvt.id && isSameDay(new Date(e.start), targetDate))
+        .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
+
+      const windowsToTry = [
+        { startH: startHour, endH: endHour },
+        { startH: 8, endH: 22 }
+      ];
+
+      let slotFound = false;
+      let candStart = new Date(targetDate);
+      let candEnd = new Date(targetDate);
+
+      for (const win of windowsToTry) {
+        if (slotFound) break;
+        const durHours = duration / (3600 * 1000);
+        const maxStartH = Math.max(win.startH, win.endH - durHours);
+        for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
+          const testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+          testS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+          const testE = new Date(testS.getTime() + duration);
+
+          const overlap = existingOccupied.some(occ => testS < occ.end && testE > occ.start);
+          if (!overlap) {
+            candStart = testS;
+            candEnd = testE;
+            slotFound = true;
+            break;
+          }
+        }
+      }
+
+      if (!slotFound) {
+        candStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+        candStart.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
+        candEnd = new Date(candStart.getTime() + duration);
+      }
+
+      newTargetStart = candStart.getTime();
+      newTargetEnd = candEnd.getTime();
+    } else {
+      newTargetStart = targetStart + delayMs;
+      newTargetEnd = newTargetStart + duration;
+    }
 
     // Shift target event
     onEditEvent(targetEvt.id, {
@@ -421,7 +553,7 @@ export default function CalendarView({
     setTimeout(() => setRebalanceStatus(null), 5000);
   };
 
-  // Delay all remaining sessions today by X minutes
+  // Delay all remaining sessions today by X minutes or days
   const handleDelayRemainingToday = (delayMinutes: number) => {
     const delayMs = delayMinutes * 60 * 1000;
     const nowTime = now.getTime();
@@ -438,24 +570,86 @@ export default function CalendarView({
       return;
     }
 
+    const isDayDelay = delayMinutes >= 24 * 60;
+    const daysOffset = isDayDelay ? Math.round(delayMinutes / (24 * 60)) : 0;
     let count = 0;
-    todayUncompleted.forEach(evt => {
-      const s = new Date(evt.start).getTime();
-      const e = new Date(evt.end).getTime();
-      const dur = e - s;
 
-      const newS = new Date(s + delayMs).toISOString();
-      const newE = new Date(s + delayMs + dur).toISOString();
+    const occupiedByDay: Record<string, { start: Date; end: Date }[]> = {};
+
+    todayUncompleted.forEach(evt => {
+      const origS = new Date(evt.start);
+      const origE = new Date(evt.end);
+      const dur = origE.getTime() - origS.getTime();
+      const fallbackStartHour = origS.getHours() + origS.getMinutes() / 60;
+
+      let newS: Date;
+      let newE: Date;
+
+      if (isDayDelay) {
+        const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysOffset);
+        const dayKey = targetDate.toDateString();
+
+        if (!occupiedByDay[dayKey]) {
+          occupiedByDay[dayKey] = events
+            .filter(e => e.id !== evt.id && isSameDay(new Date(e.start), targetDate))
+            .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
+        }
+
+        const goal = getGoalForEvent(evt);
+        const { startHour, endHour } = getPreferredTimeWindow(goal, fallbackStartHour);
+
+        const windowsToTry = [
+          { startH: startHour, endH: endHour },
+          { startH: 8, endH: 22 }
+        ];
+
+        let slotFound = false;
+        let testS = new Date(targetDate);
+        let testE = new Date(targetDate);
+
+        for (const win of windowsToTry) {
+          if (slotFound) break;
+          const durHours = dur / (3600 * 1000);
+          const maxStartH = Math.max(win.startH, win.endH - durHours);
+          for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
+            const candS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+            candS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+            const candE = new Date(candS.getTime() + dur);
+
+            const hasOverlap = occupiedByDay[dayKey].some(occ => candS < occ.end && candE > occ.start);
+            if (!hasOverlap) {
+              testS = candS;
+              testE = candE;
+              slotFound = true;
+              break;
+            }
+          }
+        }
+
+        if (!slotFound) {
+          testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+          testS.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
+          testE = new Date(testS.getTime() + dur);
+        }
+
+        occupiedByDay[dayKey].push({ start: testS, end: testE });
+        newS = testS;
+        newE = testE;
+      } else {
+        newS = new Date(origS.getTime() + delayMs);
+        newE = new Date(origE.getTime() + delayMs);
+      }
 
       onEditEvent(evt.id, {
-        start: newS,
-        end: newE,
-        notes: `${evt.notes || ''} (Shifted +${delayMinutes}m)`.trim()
+        start: newS.toISOString(),
+        end: newE.toISOString(),
+        notes: `${evt.notes || ''} (Shifted ${isDayDelay ? `+${daysOffset}d` : `+${delayMinutes}m`})`.trim()
       });
       count++;
     });
 
-    setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today forward by +${delayMinutes} minutes!`);
+    const shiftText = isDayDelay ? `${daysOffset} day(s)` : `${delayMinutes} minutes`;
+    setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today forward by +${shiftText} into their preferred goal time slots!`);
     setTimeout(() => setRebalanceStatus(null), 5000);
   };
 
@@ -518,6 +712,37 @@ export default function CalendarView({
     };
   }, [viewMode, currentDate]);
 
+  // Helper to calculate a 100% OPAQUE solid dark card background tinted with goal color (NO BLEED-THROUGH)
+  const getSolidBgFromColor = (color: string, intensityFactor: number = 0.35) => {
+    if (!color) return "#181b2e";
+    let cr = 99, cg = 102, cb = 241; // default indigo
+    if (color.startsWith("#")) {
+      const hex = color.replace("#", "");
+      if (hex.length === 3) {
+        cr = parseInt(hex[0] + hex[0], 16);
+        cg = parseInt(hex[1] + hex[1], 16);
+        cb = parseInt(hex[2] + hex[2], 16);
+      } else if (hex.length >= 6) {
+        cr = parseInt(hex.substring(0, 2), 16);
+        cg = parseInt(hex.substring(2, 4), 16);
+        cb = parseInt(hex.substring(4, 6), 16);
+      }
+    } else if (color.startsWith("rgb")) {
+      const match = color.match(/\d+/g);
+      if (match && match.length >= 3) {
+        cr = parseInt(match[0]);
+        cg = parseInt(match[1]);
+        cb = parseInt(match[2]);
+      }
+    }
+    // Base dark navy canvas values
+    const bgR = 18, bgG = 21, bgB = 38;
+    const r = Math.round(bgR * (1 - intensityFactor) + cr * intensityFactor);
+    const g = Math.round(bgG * (1 - intensityFactor) + cg * intensityFactor);
+    const b = Math.round(bgB * (1 - intensityFactor) + cb * intensityFactor);
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+
   // Resolve custom goal color if event is associated with a goal
   const getEventColorStyles = (evt: CalendarEvent) => {
     const goal = goals.find(g => g.id === evt.goalId);
@@ -526,33 +751,33 @@ export default function CalendarView({
     if (baseColor) {
       return {
         borderLeftColor: baseColor,
-        backgroundColor: "#161828", // 100% solid dark navy base
-        color: "#f8fafc",
-        hoverBg: "#20253f", // 100% solid elevated dark navy base
+        backgroundColor: getSolidBgFromColor(baseColor, 0.35), // 100% solid opaque
+        color: "#ffffff",
+        hoverBg: getSolidBgFromColor(baseColor, 0.55), // 100% solid opaque on hover
         dotColor: baseColor,
         isCustom: true
       };
     }
 
-    // Default Fallbacks based on category/type (All 100% solid opaque dark backgrounds)
-    const fallbackColors: Record<string, { border: string; bg: string; text: string; hoverBg: string; dot: string }> = {
-      workout: { border: "#f43f5e", bg: "#1f141a", text: "#fecdd3", hoverBg: "#2d1825", dot: "#f43f5e" },
-      study: { border: "#06b6d4", bg: "#111d27", text: "#cffafe", hoverBg: "#172a39", dot: "#06b6d4" },
-      job_search: { border: "#3b82f6", bg: "#121b2d", text: "#bfdbfe", hoverBg: "#192745", dot: "#3b82f6" },
-      side_project: { border: "#ec4899", bg: "#211324", text: "#fbcfe8", hoverBg: "#311837", dot: "#ec4899" },
-      routine: { border: "#10b981", bg: "#11201d", text: "#a7f3d0", hoverBg: "#182e29", dot: "#10b981" },
-      personal: { border: "#f59e0b", bg: "#221c13", text: "#fde68a", hoverBg: "#332817", dot: "#f59e0b" },
-      external: { border: "#64748b", bg: "#161922", text: "#cbd5e1", hoverBg: "#202533", dot: "#64748b" }
+    // Default Fallbacks based on category/type
+    const fallbackHex: Record<string, string> = {
+      workout: "#f43f5e",
+      study: "#06b6d4",
+      job_search: "#3b82f6",
+      side_project: "#ec4899",
+      routine: "#10b981",
+      personal: "#f59e0b",
+      external: "#64748b"
     };
 
-    const current = fallbackColors[evt.type] || { border: "#6366f1", bg: "#16192c", text: "#e0e7ff", hoverBg: "#212643", dot: "#6366f1" };
+    const hex = fallbackHex[evt.type] || "#6366f1";
 
     return {
-      borderLeftColor: current.border,
-      backgroundColor: current.bg,
-      color: current.text,
-      hoverBg: current.hoverBg,
-      dotColor: current.dot,
+      borderLeftColor: hex,
+      backgroundColor: getSolidBgFromColor(hex, 0.35),
+      color: "#ffffff",
+      hoverBg: getSolidBgFromColor(hex, 0.55),
+      dotColor: hex,
       isCustom: false
     };
   };
@@ -1074,7 +1299,14 @@ export default function CalendarView({
           end: new Date(endISO).toISOString(),
           completed: newCompleted,
           notes: newNotes,
+          completionNote: newCompletionNote.trim() || undefined,
           goalId: newGoalId || undefined
+        });
+      }
+      if (newGoalId && newCompletionNote.trim() && onEditGoal) {
+        onEditGoal(newGoalId, {
+          lastSessionNote: newCompletionNote.trim(),
+          lastSessionNoteDate: new Date().toISOString()
         });
       }
     } else {
@@ -1085,13 +1317,21 @@ export default function CalendarView({
         end: new Date(endISO).toISOString(),
         completed: newCompleted,
         notes: newNotes,
+        completionNote: newCompletionNote.trim() || undefined,
         goalId: newGoalId || undefined
       });
+      if (newGoalId && newCompletionNote.trim() && onEditGoal) {
+        onEditGoal(newGoalId, {
+          lastSessionNote: newCompletionNote.trim(),
+          lastSessionNoteDate: new Date().toISOString()
+        });
+      }
     }
 
     // Reset Form
     setNewTitle("");
     setNewNotes("");
+    setNewCompletionNote("");
     setNewGoalId("");
     setNewCompleted(false);
     setEditingEventId(null);
@@ -1119,6 +1359,7 @@ export default function CalendarView({
     setNewStartTime(formattedStart);
     setNewEndTime(formattedEnd);
     setNewNotes(evt.notes || "");
+    setNewCompletionNote(evt.completionNote || "");
     setNewGoalId(evt.goalId || "");
     setNewCompleted(evt.completed || false);
     setShowAddModal(true);
@@ -1829,6 +2070,35 @@ export default function CalendarView({
         </div>
       )}
 
+      {/* Goal Colors Quick Legend Strip */}
+      {goals.length > 0 && (
+        <div className="bg-slate-900/90 dark:bg-[#0c0d18] border-b border-white/10 px-4 py-2 flex items-center gap-3 overflow-x-auto no-scrollbar text-xs">
+          <span className="text-[11px] font-extrabold text-slate-300 dark:text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
+            <Target className="w-3.5 h-3.5 text-indigo-400" /> Goal Color Legend:
+          </span>
+          <div className="flex items-center gap-2 min-w-0 flex-1 overflow-x-auto no-scrollbar">
+            {goals.map(g => (
+              <div
+                key={g.id}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-extrabold shrink-0 shadow-xs transition-all hover:scale-105"
+                style={{
+                  backgroundColor: getSolidBgFromColor(g.color, 0.35),
+                  borderColor: getSolidBgFromColor(g.color, 0.6),
+                  color: "#ffffff"
+                }}
+                title={`${g.name} (${g.completedCount}/${g.weeklyTarget} completed this week)`}
+              >
+                <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-1 ring-white/30" style={{ backgroundColor: g.color }} />
+                <span className="truncate max-w-[140px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{g.name}</span>
+                <span className="text-[9.5px] font-mono opacity-90 bg-black/40 px-1.5 py-0.2 rounded border border-white/10">
+                  {g.completedCount}/{g.weeklyTarget}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Main Calendar Render Stage */}
       <div className="flex-1 overflow-y-auto" id="calendar_grid_wrapper" ref={gridScrollRef}>
         
@@ -1986,45 +2256,81 @@ export default function CalendarView({
                     <div className="flex flex-col h-full justify-between">
                       <div>
                         <div className="flex items-center justify-between gap-1">
-                          <h4 className={`text-[10px] font-bold leading-tight flex items-center gap-1 min-w-0 ${evt.completed ? "line-through opacity-60" : ""}`}>
+                          <h4 className={`text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] ${evt.completed ? "line-through opacity-60" : ""}`}>
                             {getEventIcon(evt)}
                             <span className="truncate">{evt.title}</span>
                           </h4>
                           {totalCols > 2 && !isHovered && (
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: colors.borderLeftColor }} />
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: colors.borderLeftColor }} />
                           )}
                         </div>
+
+                        {(() => {
+                          const tiedGoal = goals.find(g => g.id === evt.goalId);
+                          if (!tiedGoal) return null;
+                          // Don't render duplicate badge if title matches goal name
+                          if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
+                          return (
+                            <span
+                              className="text-[8.5px] font-extrabold px-1.5 py-0.5 rounded border border-white/20 truncate max-w-full inline-flex items-center gap-1 mt-0.5 text-white shadow-xs"
+                              style={{ backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.45) }}
+                              title={`Goal: ${tiedGoal.name}`}
+                            >
+                              <Target className="w-2.5 h-2.5 shrink-0" style={{ color: tiedGoal.color }} />
+                              <span className="truncate">{tiedGoal.name}</span>
+                            </span>
+                          );
+                        })()}
+
                         <p 
                           onClick={(e) => handleOpenTimerForEvent(evt, e)}
-                          className="text-[8.5px] opacity-80 hover:opacity-100 text-indigo-300 flex items-center gap-0.5 font-mono mt-0.5 truncate cursor-pointer hover:underline"
+                          className="text-[9px] font-extrabold text-indigo-100 dark:text-indigo-200 hover:text-white flex items-center gap-0.5 font-mono mt-0.5 truncate cursor-pointer hover:underline drop-shadow-[0_1px_1.5px_rgba(0,0,0,0.9)]"
                           title="Click to start Focus Timer for this session"
                         >
-                          <Clock className="w-2.5 h-2.5 shrink-0 text-indigo-400" />
+                          <Clock className="w-2.5 h-2.5 shrink-0 text-indigo-300" />
                           <span>{evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                           <Play className="w-2 h-2 ml-0.5 fill-current text-emerald-400 shrink-0" />
                         </p>
+                        {evt.completionNote && (
+                          <p className="text-[8px] text-amber-300 font-bold italic truncate bg-amber-500/10 px-1 py-0.5 rounded mt-0.5 border border-amber-500/20" title={`Completion Note: ${evt.completionNote}`}>
+                            Note: "{evt.completionNote}"
+                          </p>
+                        )}
                       </div>
 
                       {/* Hover Quick Resize Controls */}
                       {isHovered && (
-                        <div className="flex items-center gap-1 my-1 py-0.5 border-t border-b border-white/10 text-[8.5px]" onClick={(e) => e.stopPropagation()}>
-                          <span className="text-slate-400 font-mono">Length:</span>
-                          <button
-                            type="button"
-                            onClick={(e) => handleAdjustDuration(e, evt, -15)}
-                            className="bg-white/10 hover:bg-white/20 text-white px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
-                            title="Shorten by 15 min"
-                          >
-                            -15m
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleAdjustDuration(e, evt, 30)}
-                            className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
-                            title="Extend by 30 min"
-                          >
-                            +30m
-                          </button>
+                        <div className="w-full my-1 p-1 rounded-lg bg-black/70 border border-white/20 shadow-xs" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-between text-[8px] font-mono text-slate-300 font-extrabold px-0.5 mb-0.5">
+                            <span>Duration</span>
+                            <span className="text-indigo-200">{Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)}m</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 w-full">
+                            <button
+                              type="button"
+                              onClick={(e) => handleAdjustDuration(e, evt, -15)}
+                              className="bg-white/15 hover:bg-white/30 text-white py-0.5 px-0.5 rounded text-[8.5px] font-black font-mono transition text-center cursor-pointer truncate shadow-2xs"
+                              title="Shorten by 15 mins"
+                            >
+                              -15m
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleAdjustDuration(e, evt, 15)}
+                              className="bg-indigo-500/50 hover:bg-indigo-500/75 text-white border border-indigo-300/40 py-0.5 px-0.5 rounded text-[8.5px] font-black font-mono transition text-center cursor-pointer truncate shadow-2xs"
+                              title="Extend by 15 mins"
+                            >
+                              +15m
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleAdjustDuration(e, evt, 30)}
+                              className="bg-indigo-500/50 hover:bg-indigo-500/75 text-white border border-indigo-300/40 py-0.5 px-0.5 rounded text-[8.5px] font-black font-mono transition text-center cursor-pointer truncate shadow-2xs"
+                              title="Extend by 30 mins"
+                            >
+                              +30m
+                            </button>
+                          </div>
                         </div>
                       )}
 
@@ -2202,35 +2508,70 @@ export default function CalendarView({
                               }}
                             >
                               <div className="flex justify-between items-start mb-1.5 gap-2">
-                                <h4 className={`text-xs font-bold flex items-center gap-1.5 ${evt.completed ? "line-through opacity-50" : ""}`}>
-                                  {getEventIcon(evt)}
-                                  <span>{evt.title}</span>
-                                </h4>
-                                <span className="text-[9px] font-mono opacity-80">
+                                <div className="space-y-1">
+                                  <h4 className={`text-xs sm:text-sm font-extrabold flex items-center gap-1.5 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] ${evt.completed ? "line-through opacity-50" : ""}`}>
+                                    {getEventIcon(evt)}
+                                    <span>{evt.title}</span>
+                                  </h4>
+                                  {(() => {
+                                    const tiedGoal = goals.find(g => g.id === evt.goalId);
+                                    if (!tiedGoal) return null;
+                                    if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
+                                    return (
+                                      <span
+                                        className="text-[10px] font-extrabold px-2 py-0.5 rounded-md border border-white/20 text-white shadow-xs inline-flex items-center gap-1"
+                                        style={{ backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.45) }}
+                                      >
+                                        <Target className="w-3 h-3 text-white" />
+                                        {tiedGoal.name}
+                                      </span>
+                                    );
+                                  })()}
+                                </div>
+                                <span className="text-[10px] font-mono font-black text-white/90 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] bg-black/30 px-2 py-0.5 rounded-md border border-white/10">
                                   {new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                 </span>
                               </div>
                               {evt.notes && <p className="text-[10px] opacity-75 mb-2 italic">"{evt.notes}"</p>}
+                              {evt.completionNote && (
+                                <p className="text-[10px] text-amber-300 font-bold italic mb-2 flex items-start gap-1 bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
+                                  <Sparkles className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                                  <span>Logged Takeaway: "{evt.completionNote}"</span>
+                                </p>
+                              )}
 
                               {/* Quick Resize controls in Day view */}
-                              <div className="flex items-center gap-1.5 my-1.5 py-1 border-t border-b border-white/10 text-[10px]" onClick={(e) => e.stopPropagation()}>
-                                <span className="text-slate-400 font-mono">Size:</span>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleAdjustDuration(e, evt, -15)}
-                                  className="bg-white/10 hover:bg-white/20 text-white px-2 py-0.5 rounded font-bold transition cursor-pointer"
-                                  title="Shorten by 15 mins"
-                                >
-                                  -15m
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleAdjustDuration(e, evt, 30)}
-                                  className="bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 px-2 py-0.5 rounded font-bold transition cursor-pointer"
-                                  title="Extend by 30 mins"
-                                >
-                                  +30m
-                                </button>
+                              <div className="my-1.5 p-1.5 rounded-lg bg-black/40 border border-white/10" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-between text-[9px] font-mono text-slate-300 font-extrabold mb-1">
+                                  <span>Quick Duration:</span>
+                                  <span className="text-indigo-300">{Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)}m</span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-1 w-full">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleAdjustDuration(e, evt, -15)}
+                                    className="bg-white/15 hover:bg-white/30 text-white py-0.5 px-1 rounded text-[9px] font-extrabold font-mono transition text-center cursor-pointer shadow-2xs"
+                                    title="Shorten by 15 mins"
+                                  >
+                                    -15m
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleAdjustDuration(e, evt, 15)}
+                                    className="bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30 py-0.5 px-1 rounded text-[9px] font-extrabold font-mono transition text-center cursor-pointer shadow-2xs"
+                                    title="Extend by 15 mins"
+                                  >
+                                    +15m
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleAdjustDuration(e, evt, 30)}
+                                    className="bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30 py-0.5 px-1 rounded text-[9px] font-extrabold font-mono transition text-center cursor-pointer shadow-2xs"
+                                    title="Extend by 30 mins"
+                                  >
+                                    +30m
+                                  </button>
+                                </div>
                               </div>
                               <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 gap-1">
                                 <button
@@ -2455,10 +2796,28 @@ export default function CalendarView({
                             />
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
-                                <h4 className={`text-xs sm:text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5 truncate ${evt.completed ? "line-through opacity-75" : ""}`}>
+                                <h4 className={`text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5 truncate ${evt.completed ? "line-through opacity-75" : ""}`}>
                                   {getEventIcon(evt)}
                                   <span className="truncate">{evt.title}</span>
                                 </h4>
+                                {(() => {
+                                  const tiedGoal = goals.find(g => g.id === evt.goalId);
+                                  if (!tiedGoal) return null;
+                                  if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
+                                  return (
+                                    <span
+                                      className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-md border flex items-center gap-1 shrink-0 shadow-xs"
+                                      style={{
+                                        backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.35),
+                                        borderColor: getSolidBgFromColor(tiedGoal.color, 0.6),
+                                        color: "#ffffff"
+                                      }}
+                                    >
+                                      <Target className="w-3 h-3 text-white" />
+                                      <span>{tiedGoal.name}</span>
+                                    </span>
+                                  );
+                                })()}
                                 {(() => {
                                   const tiedGoal = goals.find(g => g.id === evt.goalId);
                                   if (tiedGoal?.priority === "critical") {
@@ -2552,6 +2911,17 @@ export default function CalendarView({
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-0.5">Cascade Shift Forward:</p>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleCascadingDelayEvent(evt, 15 * 60 * 1000, "15m");
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2 py-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
+                                    >
+                                      <span>+15 Minutes</span>
+                                      <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
+                                    </button>
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -3026,6 +3396,23 @@ export default function CalendarView({
                 </label>
               </div>
 
+              {newCompleted && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-1">
+                  <label className="block text-[10px] font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    Where did you finish? (Session Completion Note)
+                  </label>
+                  <textarea
+                    id="event_completion_note_textarea"
+                    placeholder="e.g. Completed Chapter 3 up to page 45; resume page 46 next time..."
+                    value={newCompletionNote}
+                    onChange={(e) => setNewCompletionNote(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:border-amber-400 focus:bg-white/10 transition placeholder:text-slate-500"
+                    rows={2}
+                  />
+                </div>
+              )}
+
               <div className="flex items-center justify-end gap-2 pt-4 border-t border-white/10">
                 <button
                   type="button"
@@ -3035,6 +3422,7 @@ export default function CalendarView({
                     setEditingEventId(null);
                     setNewTitle("");
                     setNewNotes("");
+                    setNewCompletionNote("");
                     setNewGoalId("");
                     setNewCompleted(false);
                   }}
@@ -3108,6 +3496,20 @@ export default function CalendarView({
         color={timerColor}
         previousSessionNote={timerGoalId ? goals.find(g => g.id === timerGoalId)?.lastSessionNote : undefined}
         onCompleteSession={handleCompleteTimerSession}
+        onExtendEventDuration={(evtId, deltaMins) => {
+          if (!onEditEvent) return;
+          const evt = events.find(e => e.id === evtId);
+          if (!evt) return;
+          const currentEnd = new Date(evt.end);
+          const newEnd = new Date(currentEnd.getTime() + deltaMins * 60 * 1000);
+          const updates: Partial<CalendarEvent> = {
+            end: newEnd.toISOString()
+          };
+          if (deltaMins > 0 && evt.completed) {
+            updates.completed = false;
+          }
+          onEditEvent(evtId, updates);
+        }}
       />
     </div>
   );

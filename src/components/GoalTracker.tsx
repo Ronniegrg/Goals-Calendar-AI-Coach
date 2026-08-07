@@ -162,20 +162,70 @@ export default function GoalTracker({
   };
 
   const handleCompleteTimerSession = (_eventId?: string, goalId?: string, note?: string) => {
+    let targetEvtId = _eventId;
+
+    if (!targetEvtId && goalId && events) {
+      const todayStr = new Date().toDateString();
+      const g = goals.find(item => item.id === goalId);
+      const matchingEvt = events.find(e => 
+        !e.completed && 
+        (e.goalId === goalId || (g && e.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
+        new Date(e.start).toDateString() === todayStr
+      );
+      if (matchingEvt) {
+        targetEvtId = matchingEvt.id;
+      }
+    }
+
+    if (targetEvtId && onEditEvent) {
+      onEditEvent(targetEvtId, { completed: true, ...(note ? { completionNote: note } : {}) });
+    }
+
     if (goalId) {
       const g = goals.find(item => item.id === goalId);
       if (g) {
         onEditGoal(g.id, {
-          completedCount: g.completedCount + 1,
+          ...(!targetEvtId ? { completedCount: g.completedCount + 1 } : {}),
           ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
         });
       }
     }
   };
 
+  const getPreferredTimeWindowForGoal = (goal: Goal | undefined, fallbackStartHour: number) => {
+    if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+      return { startHour: fallbackStartHour, endHour: Math.min(22, fallbackStartHour + 4) };
+    }
+    if (goal.timePreference === TimePreference.EARLY_MORNING) {
+      return { startHour: 5, endHour: 8 };
+    }
+    if (goal.timePreference === TimePreference.MORNING) {
+      return { startHour: 8, endHour: 12 };
+    }
+    if (goal.timePreference === TimePreference.AFTERNOON) {
+      return { startHour: 12, endHour: 17 };
+    }
+    if (goal.timePreference === TimePreference.EVENING) {
+      return { startHour: 17, endHour: 22 };
+    }
+    if (goal.timePreference === TimePreference.NIGHT) {
+      return { startHour: 21, endHour: 24 };
+    }
+    if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart) {
+      const [h, m] = goal.customTimeStart.split(":").map(Number);
+      const startH = (h || 9) + (m || 0) / 60;
+      let endH = startH + (goal.durationMinutes || 60) / 60;
+      if (goal.customTimeEnd) {
+        const [eh, em] = goal.customTimeEnd.split(":").map(Number);
+        endH = (eh || startH + 1) + (em || 0) / 60;
+      }
+      return { startHour: startH, endHour: Math.max(endH, startH + 0.5) };
+    }
+    return { startHour: fallbackStartHour, endHour: Math.min(22, fallbackStartHour + 4) };
+  };
+
   // Delay Goal Agenda: Shifts all uncompleted future events associated with this goal forward by delayDays
   const handleDelayGoalAgenda = (goal: Goal, delayDays: number) => {
-    const delayMs = delayDays * 24 * 60 * 60 * 1000;
     const goalNameLower = goal.name.toLowerCase();
 
     // Find uncompleted events belonging to this goal
@@ -196,18 +246,65 @@ export default function GoalTracker({
     }
 
     let updatedCount = 0;
-    goalEvents.forEach(evt => {
-      const oldStart = new Date(evt.start).getTime();
-      const oldEnd = new Date(evt.end).getTime();
-      const duration = oldEnd - oldStart;
+    const occupiedByDay: Record<string, { start: Date; end: Date }[]> = {};
 
-      const newStart = new Date(oldStart + delayMs).toISOString();
-      const newEnd = new Date(oldStart + delayMs + duration).toISOString();
+    goalEvents.forEach(evt => {
+      const oldStart = new Date(evt.start);
+      const oldEnd = new Date(evt.end);
+      const duration = oldEnd.getTime() - oldStart.getTime();
+
+      const targetDate = new Date(oldStart.getFullYear(), oldStart.getMonth(), oldStart.getDate() + delayDays);
+      const dayKey = targetDate.toDateString();
+
+      if (!occupiedByDay[dayKey]) {
+        occupiedByDay[dayKey] = events
+          .filter(e => e.id !== evt.id && new Date(e.start).toDateString() === dayKey)
+          .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
+      }
+
+      const fallbackStartHour = oldStart.getHours() + oldStart.getMinutes() / 60;
+      const { startHour, endHour } = getPreferredTimeWindowForGoal(goal, fallbackStartHour);
+
+      const windowsToTry = [
+        { startH: startHour, endH: endHour },
+        { startH: 8, endH: 22 }
+      ];
+
+      let slotFound = false;
+      let candStart = new Date(targetDate);
+      let candEnd = new Date(targetDate);
+
+      for (const win of windowsToTry) {
+        if (slotFound) break;
+        const durHours = duration / (3600 * 1000);
+        const maxStartH = Math.max(win.startH, win.endH - durHours);
+        for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
+          const testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+          testS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+          const testE = new Date(testS.getTime() + duration);
+
+          const overlap = occupiedByDay[dayKey].some(occ => testS < occ.end && testE > occ.start);
+          if (!overlap) {
+            candStart = testS;
+            candEnd = testE;
+            slotFound = true;
+            break;
+          }
+        }
+      }
+
+      if (!slotFound) {
+        candStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+        candStart.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
+        candEnd = new Date(candStart.getTime() + duration);
+      }
+
+      occupiedByDay[dayKey].push({ start: candStart, end: candEnd });
 
       if (onEditEvent) {
         onEditEvent(evt.id, {
-          start: newStart,
-          end: newEnd,
+          start: candStart.toISOString(),
+          end: candEnd.toISOString(),
           notes: `${evt.notes || ''} (Agenda Delayed +${delayDays}d)`.trim()
         });
         updatedCount++;
@@ -217,7 +314,7 @@ export default function GoalTracker({
     const dayLabel = delayDays === 7 ? "1 week" : `${delayDays} day(s)`;
     onAddNotification(
       "⏩ Goal Agenda Shifted",
-      `Shifted ${updatedCount} upcoming session(s) for "${goal.name}" forward by ${dayLabel}! Your schedule has been updated automatically.`,
+      `Shifted ${updatedCount} upcoming session(s) for "${goal.name}" forward by ${dayLabel} into preferred goal time slots!`,
       "sync"
     );
   };

@@ -27,6 +27,7 @@ interface FocusTimerModalProps {
   color?: string;
   previousSessionNote?: string;
   onCompleteSession: (eventId?: string, goalId?: string, note?: string) => void;
+  onExtendEventDuration?: (eventId: string, deltaMins: number) => void;
 }
 
 export default function FocusTimerModal({
@@ -39,10 +40,15 @@ export default function FocusTimerModal({
   category,
   color = "#6366f1",
   previousSessionNote,
-  onCompleteSession
+  onCompleteSession,
+  onExtendEventDuration
 }: FocusTimerModalProps) {
   // Timer state
   const totalDurationSecRef = useRef<number>(Math.max(1, initialDurationMinutes) * 60);
+  const targetEndTimeRef = useRef<number | null>(null);
+  const prevIsOpenRef = useRef<boolean>(false);
+  const hasAutoCompletedRef = useRef<boolean>(false);
+
   const [totalSec, setTotalSec] = useState<number>(Math.max(1, initialDurationMinutes) * 60);
   const [timeRemaining, setTimeRemaining] = useState<number>(Math.max(1, initialDurationMinutes) * 60);
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -50,16 +56,20 @@ export default function FocusTimerModal({
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [sessionTakeawayNote, setSessionTakeawayNote] = useState<string>("");
 
-  // Sync when props change if timer hasn't started
+  // Initialize timer ONLY when modal opens fresh
   useEffect(() => {
-    if (!isRunning && timeRemaining === totalSec) {
-      const newSec = Math.max(1, initialDurationMinutes) * 60;
-      setTotalSec(newSec);
-      setTimeRemaining(newSec);
-      totalDurationSecRef.current = newSec;
+    if (isOpen && !prevIsOpenRef.current) {
+      const initialSec = Math.max(1, initialDurationMinutes) * 60;
+      setTotalSec(initialSec);
+      setTimeRemaining(initialSec);
+      totalDurationSecRef.current = initialSec;
+      setIsRunning(false);
       setIsCompleted(false);
+      hasAutoCompletedRef.current = false;
+      targetEndTimeRef.current = null;
     }
-  }, [initialDurationMinutes, isOpen]);
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, initialDurationMinutes]);
 
   // Audio completion chime generator
   const playCompletionChime = () => {
@@ -90,29 +100,35 @@ export default function FocusTimerModal({
     }
   };
 
-  // Timer Tick Interval
+  // Timer Tick Interval - Uses wall-clock timestamp calculations for exact background precision
   useEffect(() => {
     let interval: any = null;
-    if (isRunning && timeRemaining > 0) {
+    if (isRunning) {
+      if (!targetEndTimeRef.current || targetEndTimeRef.current <= Date.now()) {
+        targetEndTimeRef.current = Date.now() + timeRemaining * 1000;
+      }
+
       interval = setInterval(() => {
-        setTimeRemaining((prev) => {
-          if (prev <= 1) {
-            setIsRunning(false);
-            setIsCompleted(true);
-            playCompletionChime();
-            return 0;
+        const now = Date.now();
+        const diffSec = Math.max(0, Math.round((targetEndTimeRef.current! - now) / 1000));
+        
+        setTimeRemaining(diffSec);
+
+        if (diffSec <= 0) {
+          setIsRunning(false);
+          setIsCompleted(true);
+          playCompletionChime();
+          if (!hasAutoCompletedRef.current) {
+            hasAutoCompletedRef.current = true;
+            onCompleteSession(eventId, goalId, sessionTakeawayNote.trim() || undefined);
           }
-          return prev - 1;
-        });
+        }
       }, 1000);
-    } else if (timeRemaining === 0 && isRunning) {
-      setIsRunning(false);
-      setIsCompleted(true);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isRunning, timeRemaining, soundEnabled]);
+  }, [isRunning, soundEnabled, eventId, goalId, sessionTakeawayNote, onCompleteSession]);
 
   if (!isOpen) return null;
 
@@ -131,39 +147,72 @@ export default function FocusTimerModal({
   // Adjust duration by +/- minutes
   const handleAdjustMinutes = (deltaMins: number) => {
     const deltaSec = deltaMins * 60;
+    
     setTimeRemaining((prev) => {
       const nextTime = Math.max(10, prev + deltaSec);
-      // adjust totalSec proportionally if nextTime exceeds current totalSec
-      if (nextTime > totalSec) {
-        setTotalSec(nextTime);
+      if (isRunning) {
+        targetEndTimeRef.current = Date.now() + nextTime * 1000;
       }
       return nextTime;
     });
-    if (isCompleted) setIsCompleted(false);
+
+    setTotalSec((prev) => Math.max(10, prev + deltaSec));
+    setIsCompleted(false);
+    hasAutoCompletedRef.current = false;
+
+    // Automatically resume/start timer when adding time
+    if (deltaMins > 0) {
+      setIsRunning(true);
+    }
+
+    // Sync extended time to the calendar event
+    if (eventId && onExtendEventDuration) {
+      onExtendEventDuration(eventId, deltaMins);
+    }
   };
 
   const handleStart = () => {
-    if (timeRemaining <= 0) {
+    let currentRemaining = timeRemaining;
+    if (currentRemaining <= 0) {
+      currentRemaining = totalSec;
       setTimeRemaining(totalSec);
     }
+    targetEndTimeRef.current = Date.now() + currentRemaining * 1000;
     setIsRunning(true);
     setIsCompleted(false);
+    hasAutoCompletedRef.current = false;
   };
 
   const handlePause = () => {
     setIsRunning(false);
+    targetEndTimeRef.current = null;
   };
 
   const handleReset = () => {
     setIsRunning(false);
     setIsCompleted(false);
+    hasAutoCompletedRef.current = false;
     setTimeRemaining(totalSec);
+    targetEndTimeRef.current = null;
+  };
+
+  const handleCloseModal = () => {
+    if (sessionTakeawayNote.trim()) {
+      onCompleteSession(eventId, goalId, sessionTakeawayNote.trim());
+    }
+    setSessionTakeawayNote("");
+    onClose();
   };
 
   const handleFinishAndComplete = () => {
     setIsRunning(false);
     playCompletionChime();
-    onCompleteSession(eventId, goalId, sessionTakeawayNote.trim() || undefined);
+    if (!hasAutoCompletedRef.current) {
+      hasAutoCompletedRef.current = true;
+      onCompleteSession(eventId, goalId, sessionTakeawayNote.trim() || undefined);
+    } else if (sessionTakeawayNote.trim()) {
+      onCompleteSession(eventId, goalId, sessionTakeawayNote.trim());
+    }
     setSessionTakeawayNote("");
     onClose();
   };
@@ -229,7 +278,7 @@ export default function FocusTimerModal({
             </button>
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseModal}
               className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition cursor-pointer"
             >
               <X className="w-5 h-5" />
@@ -300,34 +349,62 @@ export default function FocusTimerModal({
             </span>
           </div>
 
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-7 gap-1 sm:gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleAdjustMinutes(-15)}
+              className="py-1.5 px-0.5 sm:px-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-[10px] sm:text-xs font-bold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer"
+              title="Reduce by 15 mins"
+            >
+              <Minus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-rose-400 shrink-0" /> 15m
+            </button>
             <button
               type="button"
               onClick={() => handleAdjustMinutes(-5)}
-              className="py-1.5 px-2 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-xs font-bold font-mono transition flex items-center justify-center gap-1 cursor-pointer"
+              className="py-1.5 px-0.5 sm:px-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-[10px] sm:text-xs font-bold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer"
+              title="Reduce by 5 mins"
             >
-              <Minus className="w-3 h-3 text-rose-400" /> 5m
+              <Minus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-rose-400 shrink-0" /> 5m
             </button>
             <button
               type="button"
               onClick={() => handleAdjustMinutes(-1)}
-              className="py-1.5 px-2 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-xs font-bold font-mono transition flex items-center justify-center gap-1 cursor-pointer"
+              className="py-1.5 px-0.5 sm:px-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-[10px] sm:text-xs font-bold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer"
+              title="Reduce by 1 min"
             >
-              <Minus className="w-3 h-3 text-rose-400" /> 1m
+              <Minus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-rose-400 shrink-0" /> 1m
             </button>
             <button
               type="button"
               onClick={() => handleAdjustMinutes(1)}
-              className="py-1.5 px-2 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-xs font-bold font-mono transition flex items-center justify-center gap-1 cursor-pointer"
+              className="py-1.5 px-0.5 sm:px-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-[10px] sm:text-xs font-bold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer"
+              title="Add 1 min"
             >
-              <Plus className="w-3 h-3 text-emerald-400" /> 1m
+              <Plus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-400 shrink-0" /> 1m
             </button>
             <button
               type="button"
               onClick={() => handleAdjustMinutes(5)}
-              className="py-1.5 px-2 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-xs font-bold font-mono transition flex items-center justify-center gap-1 cursor-pointer"
+              className="py-1.5 px-0.5 sm:px-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-[10px] sm:text-xs font-bold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer"
+              title="Add 5 mins"
             >
-              <Plus className="w-3 h-3 text-emerald-400" /> 5m
+              <Plus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-400 shrink-0" /> 5m
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAdjustMinutes(15)}
+              className="py-1.5 px-0.5 sm:px-1 bg-indigo-500/25 hover:bg-indigo-500/40 border border-indigo-400/40 text-indigo-200 hover:text-white rounded-xl text-[10px] sm:text-xs font-extrabold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer shadow-sm shadow-indigo-500/20 ring-1 ring-indigo-400/30"
+              title="Add 15 mins (Quick Extend)"
+            >
+              <Plus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-indigo-300 shrink-0" /> 15m
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAdjustMinutes(30)}
+              className="py-1.5 px-0.5 sm:px-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-xl text-[10px] sm:text-xs font-bold font-mono transition flex items-center justify-center gap-0.5 cursor-pointer"
+              title="Add 30 mins"
+            >
+              <Plus className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-400 shrink-0" /> 30m
             </button>
           </div>
         </div>

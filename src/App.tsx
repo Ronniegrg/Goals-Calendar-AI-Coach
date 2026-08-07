@@ -338,142 +338,145 @@ export default function App() {
     currentEvents: CalendarEvent[],
     currentAvailability: AvailabilityWindow[]
   ) => {
-    if (currentGoals.length === 0 || currentAvailability.length === 0) return;
+    if (currentGoals.length === 0) return;
 
     const newScheduledEvents: CalendarEvent[] = [];
     let scheduledCount = 0;
     const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    // Rolling horizon: 4 weeks (0 = current week, 1 = next week, 2 = week after, 3 = 3 weeks ahead)
     currentGoals.forEach(goal => {
       const goalNameLower = goal.name.toLowerCase();
+      const isDailyGoal = goal.weeklyTarget >= 7;
+      const maxSessionsPerDay = isDailyGoal ? 1 : (goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1);
+      const blockDurationHours = (goal.durationMinutes || 60) / 60;
 
-      for (let weekOffset = 0; weekOffset < 4; weekOffset++) {
-        // Calculate the start (Sunday) and end (Saturday) of weekOffset relative to now
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay() + (weekOffset * 7));
-        startOfWeek.setHours(0, 0, 0, 0);
+      // 4-week rolling horizon (28 days starting from today)
+      for (let dayOffset = 0; dayOffset < 28; dayOffset++) {
+        const targetDay = new Date(todayStart);
+        targetDay.setDate(todayStart.getDate() + dayOffset);
+        const targetDayString = targetDay.toDateString();
+        const weekOffset = Math.floor(dayOffset / 7);
 
+        // Calculate week start & end for non-daily weekly target limits
+        const startOfWeek = new Date(todayStart);
+        startOfWeek.setDate(todayStart.getDate() - todayStart.getDay() + (weekOffset * 7));
         const endOfWeek = new Date(startOfWeek);
         endOfWeek.setDate(startOfWeek.getDate() + 6);
         endOfWeek.setHours(23, 59, 59, 999);
 
-        // Filter events for this goal in this specific week window
+        // Check sessions in this week
         const sessionsInWeek = [...currentEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           if (!isThisGoal) return false;
           const evtDate = new Date(evt.start);
           return evtDate >= startOfWeek && evtDate <= endOfWeek;
-        });
+        }).length;
 
-        const neededInWeek = Math.max(goal.weeklyTarget - sessionsInWeek.length, 0);
-        if (neededInWeek === 0) continue;
+        // For non-daily goals, skip if week quota already met
+        if (!isDailyGoal && sessionsInWeek >= goal.weeklyTarget) {
+          continue;
+        }
 
-        let successBookedInWeek = 0;
+        // Check sessions on targetDay
+        const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
+          const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+          return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+        }).length;
 
-        // Try booking across the 7 days of this week
-        for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
-          if (successBookedInWeek >= neededInWeek) break;
+        if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
 
-          const targetDay = new Date(startOfWeek);
-          targetDay.setDate(startOfWeek.getDate() + dayOffset);
+        const dayOfWeek = targetDay.getDay();
+        let availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek && a.active);
+        if (!availDay) {
+          // Fallback to active standard window for weekend/unspecified active day
+          availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
+        }
 
-          // Skip days before today
-          if (targetDay.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) {
-            continue;
-          }
+        let [availStartHour] = availDay.startTime.split(":").map(Number);
+        let [availEndHour] = availDay.endTime.split(":").map(Number);
 
-          const dayOfWeek = targetDay.getDay();
-          const availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek);
-          if (!availDay || !availDay.active) continue;
+        let prefStart = availStartHour;
+        let prefEnd = availEndHour;
 
-          const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
-          const targetDayString = targetDay.toDateString();
+        if (goal.timePreference === TimePreference.EARLY_MORNING) {
+          prefStart = Math.max(availStartHour, 5);
+          prefEnd = Math.min(availEndHour, 8);
+        } else if (goal.timePreference === TimePreference.MORNING) {
+          prefStart = Math.max(availStartHour, 8);
+          prefEnd = Math.min(availEndHour, 12);
+        } else if (goal.timePreference === TimePreference.AFTERNOON) {
+          prefStart = Math.max(availStartHour, 12);
+          prefEnd = Math.min(availEndHour, 17);
+        } else if (goal.timePreference === TimePreference.EVENING) {
+          prefStart = Math.max(availStartHour, 17);
+          prefEnd = Math.min(availEndHour, 22);
+        } else if (goal.timePreference === TimePreference.NIGHT) {
+          prefStart = Math.max(availStartHour, 21);
+          prefEnd = Math.min(availEndHour, 24);
+        } else if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart && goal.customTimeEnd) {
+          const [sH, sM] = goal.customTimeStart.split(":").map(Number);
+          const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
+          prefStart = Math.max(availStartHour, (sH || 0) + (sM || 0) / 60);
+          prefEnd = Math.min(availEndHour, (eH || 0) + (eM || 0) / 60);
+        }
 
-          const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
-            const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-            return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-          }).length;
+        if (prefStart >= prefEnd) {
+          prefStart = availStartHour;
+          prefEnd = availEndHour;
+        }
 
-          if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
+        const isToday = dayOffset === 0;
+        const nowHourDecimal = isToday ? now.getHours() + (now.getMinutes() / 60) + 0.25 : 0;
 
-          let [availStartHour] = availDay.startTime.split(":").map(Number);
-          let [availEndHour] = availDay.endTime.split(":").map(Number);
+        const windowsToTry = [
+          { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
+          { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
+          { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
+        ];
 
-          let prefStart = availStartHour;
-          let prefEnd = availEndHour;
+        let slotBooked = false;
 
-          if (goal.timePreference === TimePreference.MORNING) {
-            prefStart = Math.max(availStartHour, 8);
-            prefEnd = Math.min(availEndHour, 12);
-          } else if (goal.timePreference === TimePreference.AFTERNOON) {
-            prefStart = Math.max(availStartHour, 12);
-            prefEnd = Math.min(availEndHour, 17);
-          } else if (goal.timePreference === TimePreference.EVENING) {
-            prefStart = Math.max(availStartHour, 17);
-            prefEnd = Math.min(availEndHour, 22);
-          }
+        for (const win of windowsToTry) {
+          if (slotBooked) break;
+          if (win.start >= win.end) continue;
 
-          const blockDurationHours = goal.durationMinutes / 60;
+          for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
+            const slotStart = new Date(targetDay);
+            slotStart.setHours(Math.floor(hrs), Math.round((hrs % 1) * 60), 0, 0);
 
-          const windowsToTry = [
-            { start: prefStart, end: prefEnd },
-            { start: availStartHour, end: availEndHour }
-          ];
+            if (isToday && slotStart.getTime() <= now.getTime() + 10 * 60 * 1000) {
+              continue;
+            }
 
-          let slotBookedOnDay = false;
+            const slotEnd = new Date(slotStart.getTime() + (goal.durationMinutes || 60) * 60 * 1000);
 
-          for (const win of windowsToTry) {
-            if (slotBookedOnDay) break;
+            const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
+              const evtStart = new Date(evt.start);
+              const evtEnd = new Date(evt.end);
+              return slotStart < evtEnd && slotEnd > evtStart;
+            });
 
-            for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
-              if (successBookedInWeek >= neededInWeek) break;
-
-              const currentDayCount = [...currentEvents, ...newScheduledEvents].filter(evt => {
-                const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-                return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-              }).length;
-
-              if (currentDayCount >= maxSessionsPerDay) break;
-
-              const slotStart = new Date(targetDay);
-              slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
-
-              // Skip past time slots if scheduling for today
-              if (slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
-                continue;
-              }
-
-              const slotEnd = new Date(slotStart);
-              slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
-
-              const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
-                const evtStart = new Date(evt.start);
-                const evtEnd = new Date(evt.end);
-                return slotStart < evtEnd && slotEnd > evtStart;
+            if (!overlap) {
+              newScheduledEvents.push({
+                id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
+                title: goal.name,
+                type: goal.type === GoalType.WORKOUT ? "workout" :
+                      goal.type === GoalType.STUDY ? "study" :
+                      goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                      goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                      goal.type === GoalType.ROUTINE ? "routine" :
+                      "personal",
+                start: slotStart.toISOString(),
+                end: slotEnd.toISOString(),
+                goalId: goal.id,
+                completed: false,
+                icon: goal.icon,
+                notes: `Auto-scheduled daily block on ${slotStart.toLocaleDateString([], { month: "short", day: "numeric", weekday: "short" })} at ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
               });
-
-              if (!overlap) {
-                newScheduledEvents.push({
-                  id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-                  title: goal.name,
-                  type: goal.type === GoalType.WORKOUT ? "workout" :
-                        goal.type === GoalType.STUDY ? "study" :
-                        goal.type === GoalType.JOB_SEARCH ? "job_search" :
-                        goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-                        goal.type === GoalType.ROUTINE ? "routine" :
-                        "personal",
-                  start: slotStart.toISOString(),
-                  end: slotEnd.toISOString(),
-                  goalId: goal.id,
-                  completed: false,
-                  notes: `Auto-scheduled (Week +${weekOffset}) on ${slotStart.toLocaleDateString([], { month: "short", day: "numeric" })} at ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                });
-                successBookedInWeek++;
-                scheduledCount++;
-                slotBookedOnDay = true;
-                break;
-              }
+              scheduledCount++;
+              slotBooked = true;
+              break;
             }
           }
         }
@@ -486,37 +489,53 @@ export default function App() {
       syncToCloud(currentGoals, nextEvents, currentAvailability, notifications, coachMessages);
       triggerSystemNotification(
         "Auto-Scheduler Sync",
-        `⚡ Automated 4-Week Auto-Scheduler successfully mapped ${scheduledCount} future session blocks across upcoming weeks!`,
+        `⚡ Automated Auto-Scheduler successfully mapped ${scheduledCount} missing daily/weekly session blocks (including Today & Saturday)!`,
         "success"
       );
     }
   };
 
   useEffect(() => {
-    if (!autoScheduleEnabled || goals.length === 0 || availability.length === 0) return;
+    if (!autoScheduleEnabled || goals.length === 0) return;
 
-    // Check if any week in the 4-week horizon needs sessions scheduled
     const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
     const needsScheduling = goals.some(goal => {
       const goalNameLower = goal.name.toLowerCase();
+      const isDailyGoal = goal.weeklyTarget >= 7;
 
-      for (let weekOffset = 0; weekOffset < 4; weekOffset++) {
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay() + (weekOffset * 7));
-        startOfWeek.setHours(0, 0, 0, 0);
+      for (let dayOffset = 0; dayOffset < 28; dayOffset++) {
+        const targetDay = new Date(todayStart);
+        targetDay.setDate(todayStart.getDate() + dayOffset);
+        const targetDayString = targetDay.toDateString();
 
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6);
-        endOfWeek.setHours(23, 59, 59, 999);
-
-        const countInWeek = events.filter(e => {
+        const countOnDay = events.filter(e => {
           const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
-          if (!isThisGoal) return false;
-          const d = new Date(e.start);
-          return d >= startOfWeek && d <= endOfWeek;
+          return isThisGoal && new Date(e.start).toDateString() === targetDayString;
         }).length;
 
-        if (countInWeek < goal.weeklyTarget) return true;
+        if (isDailyGoal && countOnDay === 0) {
+          return true;
+        }
+
+        if (!isDailyGoal) {
+          const weekOffset = Math.floor(dayOffset / 7);
+          const startOfWeek = new Date(todayStart);
+          startOfWeek.setDate(todayStart.getDate() - todayStart.getDay() + (weekOffset * 7));
+          const endOfWeek = new Date(startOfWeek);
+          endOfWeek.setDate(startOfWeek.getDate() + 6);
+          endOfWeek.setHours(23, 59, 59, 999);
+
+          const countInWeek = events.filter(e => {
+            const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
+            if (!isThisGoal) return false;
+            const d = new Date(e.start);
+            return d >= startOfWeek && d <= endOfWeek;
+          }).length;
+
+          if (countInWeek < goal.weeklyTarget) return true;
+        }
       }
       return false;
     });
@@ -524,7 +543,7 @@ export default function App() {
     if (needsScheduling) {
       const timer = setTimeout(() => {
         triggerAutoScheduler(goals, events, availability);
-      }, 500);
+      }, 300);
       return () => clearTimeout(timer);
     }
   }, [goals, events, availability, autoScheduleEnabled]);
@@ -885,10 +904,12 @@ export default function App() {
       targetDay.setDate(now.getDate() + dayOffset);
       const dayOfWeek = targetDay.getDay();
 
-      const availDay = availList.find(a => a.dayOfWeek === dayOfWeek);
-      if (!availDay || !availDay.active) continue;
+      let availDay = availList.find(a => a.dayOfWeek === dayOfWeek && a.active);
+      if (!availDay) {
+        availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
+      }
 
-      const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
+      const maxSessionsPerDay = goal.weeklyTarget >= 7 ? 1 : (goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1);
       const targetDayString = targetDay.toDateString();
 
       const sessionsOnTargetDay = [...existingEvents, ...newEvents].filter(evt => {
@@ -934,16 +955,20 @@ export default function App() {
       }
 
       const blockDurationHours = (goal.durationMinutes || 60) / 60;
+      const isToday = dayOffset === 0;
+      const nowHourDecimal = isToday ? now.getHours() + (now.getMinutes() / 60) + 0.25 : 0;
 
       const windowsToTry = [
-        { start: prefStart, end: prefEnd },
-        { start: availStartHour, end: availEndHour }
+        { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
+        { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
+        { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
       ];
 
       let slotBookedOnDay = false;
 
       for (const win of windowsToTry) {
         if (slotBookedOnDay) break;
+        if (win.start >= win.end) continue;
 
         for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
           if (successBooked >= neededCount) break;
