@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
-import FocusTimerModal from "./FocusTimerModal";
+import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -128,6 +128,7 @@ interface GoalTrackerProps {
   onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
   onUpdateAvailability: (avail: AvailabilityWindow[]) => void;
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
+  onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
   autoScheduleEnabled?: boolean;
   onToggleAutoSchedule?: (val: boolean) => void;
@@ -141,6 +142,7 @@ export default function GoalTracker({
   onDeleteGoal,
   onEditGoal,
   onEditEvent,
+  onBulkEditEvents,
   onUpdateAvailability,
   onBulkAddEvents,
   onAddNotification,
@@ -157,8 +159,14 @@ export default function GoalTracker({
   const [timerGoal, setTimerGoal] = useState<Goal | null>(null);
 
   const handleStartTimer = (g: Goal) => {
-    setTimerGoal(g);
-    setTimerOpen(true);
+    triggerFocusTimer({
+      title: g.name,
+      duration: g.durationMinutes || 60,
+      goalId: g.id,
+      category: g.category || g.type,
+      color: g.color || "#6366f1",
+      previousSessionNote: g.lastSessionNote
+    });
   };
 
   const handleCompleteTimerSession = (_eventId?: string, goalId?: string, note?: string) => {
@@ -247,6 +255,7 @@ export default function GoalTracker({
 
     let updatedCount = 0;
     const occupiedByDay: Record<string, { start: Date; end: Date }[]> = {};
+    const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
 
     goalEvents.forEach(evt => {
       const oldStart = new Date(evt.start);
@@ -301,15 +310,22 @@ export default function GoalTracker({
 
       occupiedByDay[dayKey].push({ start: candStart, end: candEnd });
 
-      if (onEditEvent) {
-        onEditEvent(evt.id, {
+      updates.push({
+        id: evt.id,
+        fields: {
           start: candStart.toISOString(),
           end: candEnd.toISOString(),
           notes: `${evt.notes || ''} (Agenda Delayed +${delayDays}d)`.trim()
-        });
-        updatedCount++;
-      }
+        }
+      });
+      updatedCount++;
     });
+
+    if (onBulkEditEvents) {
+      onBulkEditEvents(updates);
+    } else if (onEditEvent) {
+      updates.forEach(u => onEditEvent(u.id, u.fields));
+    }
 
     const dayLabel = delayDays === 7 ? "1 week" : `${delayDays} day(s)`;
     onAddNotification(
@@ -1484,20 +1500,7 @@ export default function GoalTracker({
           </div>
         )}
 
-        {/* Render Focus Timer Modal */}
-        {timerGoal && (
-          <FocusTimerModal
-            isOpen={timerOpen}
-            onClose={() => setTimerOpen(false)}
-            sessionTitle={timerGoal.name}
-            initialDurationMinutes={timerGoal.durationMinutes}
-            goalId={timerGoal.id}
-            category={timerGoal.category}
-            color={timerGoal.color}
-            previousSessionNote={timerGoal.lastSessionNote}
-            onCompleteSession={handleCompleteTimerSession}
-          />
-        )}
+
       </div>
 
       {/* SECTION 3: TIMELINE TIMESTAMPS AVAILABILITY MANAGER */}

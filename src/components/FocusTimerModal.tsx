@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Play, 
   Pause, 
-  Square, 
   RotateCcw, 
   Plus, 
   Minus, 
@@ -11,16 +10,46 @@ import {
   Sparkles, 
   Clock, 
   Flame, 
-  BellRing,
   Volume2,
-  VolumeX
+  VolumeX,
+  Minimize2,
+  Maximize2
 } from "lucide-react";
 
-interface FocusTimerModalProps {
+export interface ActiveTimerData {
+  title: string;
+  totalSec: number;
+  timeRemaining: number;
+  targetEndTime: number | null; // Wall-clock timestamp in ms
+  isRunning: boolean;
+  isCompleted: boolean;
+  eventId?: string;
+  goalId?: string;
+  category?: string;
+  color: string;
+  previousSessionNote?: string;
+  sessionTakeawayNote: string;
+  isMinimized: boolean;
   isOpen: boolean;
-  onClose: () => void;
-  sessionTitle: string;
-  initialDurationMinutes: number;
+}
+
+export function triggerFocusTimer(params: {
+  title: string;
+  duration: number; // in minutes
+  eventId?: string;
+  goalId?: string;
+  category?: string;
+  color?: string;
+  previousSessionNote?: string;
+}) {
+  window.dispatchEvent(new CustomEvent("open_focus_timer", { detail: params }));
+}
+
+interface FocusTimerModalProps {
+  isOpen?: boolean;
+  onClose?: () => void;
+  sessionTitle?: string;
+  initialDurationMinutes?: number;
   eventId?: string;
   goalId?: string;
   category?: string;
@@ -30,46 +59,129 @@ interface FocusTimerModalProps {
   onExtendEventDuration?: (eventId: string, deltaMins: number) => void;
 }
 
+const STORAGE_KEY = "active_focus_timer_v2";
+
 export default function FocusTimerModal({
-  isOpen,
-  onClose,
-  sessionTitle,
-  initialDurationMinutes,
-  eventId,
-  goalId,
-  category,
-  color = "#6366f1",
-  previousSessionNote,
+  isOpen: propIsOpen,
+  onClose: propOnClose,
+  sessionTitle: propSessionTitle,
+  initialDurationMinutes: propInitialDurationMinutes,
+  eventId: propEventId,
+  goalId: propGoalId,
+  category: propCategory,
+  color: propColor = "#6366f1",
+  previousSessionNote: propPreviousSessionNote,
   onCompleteSession,
   onExtendEventDuration
 }: FocusTimerModalProps) {
-  // Timer state
-  const totalDurationSecRef = useRef<number>(Math.max(1, initialDurationMinutes) * 60);
-  const targetEndTimeRef = useRef<number | null>(null);
-  const prevIsOpenRef = useRef<boolean>(false);
-  const hasAutoCompletedRef = useRef<boolean>(false);
-
-  const [totalSec, setTotalSec] = useState<number>(Math.max(1, initialDurationMinutes) * 60);
-  const [timeRemaining, setTimeRemaining] = useState<number>(Math.max(1, initialDurationMinutes) * 60);
-  const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [isCompleted, setIsCompleted] = useState<boolean>(false);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
-  const [sessionTakeawayNote, setSessionTakeawayNote] = useState<string>("");
-
-  // Initialize timer ONLY when modal opens fresh
-  useEffect(() => {
-    if (isOpen && !prevIsOpenRef.current) {
-      const initialSec = Math.max(1, initialDurationMinutes) * 60;
-      setTotalSec(initialSec);
-      setTimeRemaining(initialSec);
-      totalDurationSecRef.current = initialSec;
-      setIsRunning(false);
-      setIsCompleted(false);
-      hasAutoCompletedRef.current = false;
-      targetEndTimeRef.current = null;
+  const [timerState, setTimerState] = useState<ActiveTimerData | null>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed: ActiveTimerData = JSON.parse(saved);
+        if (parsed.isRunning && parsed.targetEndTime) {
+          const remaining = Math.max(0, Math.round((parsed.targetEndTime - Date.now()) / 1000));
+          if (remaining <= 0) {
+            return {
+              ...parsed,
+              timeRemaining: 0,
+              isRunning: false,
+              isCompleted: true,
+              isOpen: true,
+              isMinimized: false
+            };
+          }
+          return {
+            ...parsed,
+            timeRemaining: remaining
+          };
+        }
+        return parsed;
+      }
+    } catch {
+      // ignore JSON parse errors
     }
-    prevIsOpenRef.current = isOpen;
-  }, [isOpen, initialDurationMinutes]);
+    return null;
+  });
+
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const onCompleteRef = useRef(onCompleteSession);
+  onCompleteRef.current = onCompleteSession;
+
+  const onExtendRef = useRef(onExtendEventDuration);
+  onExtendRef.current = onExtendEventDuration;
+
+  // Sync props if provided explicitly by parent
+  useEffect(() => {
+    if (propIsOpen && propSessionTitle && propInitialDurationMinutes) {
+      const initialSec = Math.max(1, propInitialDurationMinutes) * 60;
+      const now = Date.now();
+      const newTimer: ActiveTimerData = {
+        title: propSessionTitle,
+        totalSec: initialSec,
+        timeRemaining: initialSec,
+        targetEndTime: now + initialSec * 1000,
+        isRunning: true, // Auto start on opening
+        isCompleted: false,
+        eventId: propEventId,
+        goalId: propGoalId,
+        category: propCategory,
+        color: propColor,
+        previousSessionNote: propPreviousSessionNote,
+        sessionTakeawayNote: "",
+        isMinimized: false,
+        isOpen: true
+      };
+      setTimerState(newTimer);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
+    }
+  }, [propIsOpen, propSessionTitle, propInitialDurationMinutes, propEventId, propGoalId, propCategory, propColor, propPreviousSessionNote]);
+
+  // Global custom event listener
+  useEffect(() => {
+    const handleOpenTimerEvent = (e: any) => {
+      const detail = e.detail;
+      if (!detail) return;
+      const initialSec = Math.max(1, detail.duration || 60) * 60;
+      const now = Date.now();
+      const newTimer: ActiveTimerData = {
+        title: detail.title || "Focus Session",
+        totalSec: initialSec,
+        timeRemaining: initialSec,
+        targetEndTime: now + initialSec * 1000,
+        isRunning: true,
+        isCompleted: false,
+        eventId: detail.eventId,
+        goalId: detail.goalId,
+        category: detail.category,
+        color: detail.color || "#6366f1",
+        previousSessionNote: detail.previousSessionNote,
+        sessionTakeawayNote: "",
+        isMinimized: false,
+        isOpen: true
+      };
+      setTimerState(newTimer);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
+    };
+
+    window.addEventListener("open_focus_timer" as any, handleOpenTimerEvent);
+    return () => {
+      window.removeEventListener("open_focus_timer" as any, handleOpenTimerEvent);
+    };
+  }, []);
+
+  // Save to localStorage helper
+  const updateTimerState = (updater: (prev: ActiveTimerData | null) => ActiveTimerData | null) => {
+    setTimerState((prev) => {
+      const next = updater(prev);
+      if (next) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      } else {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+      return next;
+    });
+  };
 
   // Audio completion chime generator
   const playCompletionChime = () => {
@@ -79,7 +191,6 @@ export default function FocusTimerModal({
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
       
-      // Multi-note pleasant chord (C5, E5, G5, C6)
       const notes = [523.25, 659.25, 783.99, 1046.50];
       notes.forEach((freq, idx) => {
         const osc = ctx.createOscillator();
@@ -100,37 +211,43 @@ export default function FocusTimerModal({
     }
   };
 
-  // Timer Tick Interval - Uses wall-clock timestamp calculations for exact background precision
+  // Timer Tick Interval - Uses wall-clock timestamp calculations
   useEffect(() => {
-    let interval: any = null;
-    if (isRunning) {
-      if (!targetEndTimeRef.current || targetEndTimeRef.current <= Date.now()) {
-        targetEndTimeRef.current = Date.now() + timeRemaining * 1000;
-      }
+    if (!timerState?.isRunning) return;
 
-      interval = setInterval(() => {
+    const interval = setInterval(() => {
+      setTimerState((prev) => {
+        if (!prev || !prev.isRunning || !prev.targetEndTime) return prev;
+
         const now = Date.now();
-        const diffSec = Math.max(0, Math.round((targetEndTimeRef.current! - now) / 1000));
-        
-        setTimeRemaining(diffSec);
+        const diffSec = Math.max(0, Math.round((prev.targetEndTime - now) / 1000));
 
         if (diffSec <= 0) {
-          setIsRunning(false);
-          setIsCompleted(true);
           playCompletionChime();
-          if (!hasAutoCompletedRef.current) {
-            hasAutoCompletedRef.current = true;
-            onCompleteSession(eventId, goalId, sessionTakeawayNote.trim() || undefined);
-          }
+          onCompleteRef.current(prev.eventId, prev.goalId, prev.sessionTakeawayNote.trim() || undefined);
+          
+          const completedState: ActiveTimerData = {
+            ...prev,
+            timeRemaining: 0,
+            isRunning: false,
+            isCompleted: true,
+            isOpen: true,
+            isMinimized: false
+          };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(completedState));
+          return completedState;
         }
-      }, 1000);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isRunning, soundEnabled, eventId, goalId, sessionTakeawayNote, onCompleteSession]);
 
-  if (!isOpen) return null;
+        const updatedState = { ...prev, timeRemaining: diffSec };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedState));
+        return updatedState;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [timerState?.isRunning, soundEnabled]);
+
+  if (!timerState) return null;
 
   // Format time display (HH:MM:SS or MM:SS)
   const formatTime = (seconds: number) => {
@@ -144,81 +261,204 @@ export default function FocusTimerModal({
     return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
-  // Adjust duration by +/- minutes
   const handleAdjustMinutes = (deltaMins: number) => {
-    const deltaSec = deltaMins * 60;
-    
-    setTimeRemaining((prev) => {
-      const nextTime = Math.max(10, prev + deltaSec);
-      if (isRunning) {
-        targetEndTimeRef.current = Date.now() + nextTime * 1000;
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      const deltaSec = deltaMins * 60;
+      const nextRemaining = Math.max(10, prev.timeRemaining + deltaSec);
+      const nextTotal = Math.max(10, prev.totalSec + deltaSec);
+      const isRunningNow = deltaMins > 0 ? true : prev.isRunning;
+      const nextTargetEnd = isRunningNow ? Date.now() + nextRemaining * 1000 : null;
+
+      if (prev.eventId && onExtendRef.current) {
+        onExtendRef.current(prev.eventId, deltaMins);
       }
-      return nextTime;
+
+      return {
+        ...prev,
+        totalSec: nextTotal,
+        timeRemaining: nextRemaining,
+        targetEndTime: nextTargetEnd,
+        isRunning: isRunningNow,
+        isCompleted: false
+      };
     });
-
-    setTotalSec((prev) => Math.max(10, prev + deltaSec));
-    setIsCompleted(false);
-    hasAutoCompletedRef.current = false;
-
-    // Automatically resume/start timer when adding time
-    if (deltaMins > 0) {
-      setIsRunning(true);
-    }
-
-    // Sync extended time to the calendar event
-    if (eventId && onExtendEventDuration) {
-      onExtendEventDuration(eventId, deltaMins);
-    }
   };
 
   const handleStart = () => {
-    let currentRemaining = timeRemaining;
-    if (currentRemaining <= 0) {
-      currentRemaining = totalSec;
-      setTimeRemaining(totalSec);
-    }
-    targetEndTimeRef.current = Date.now() + currentRemaining * 1000;
-    setIsRunning(true);
-    setIsCompleted(false);
-    hasAutoCompletedRef.current = false;
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      let remaining = prev.timeRemaining;
+      if (remaining <= 0) {
+        remaining = prev.totalSec;
+      }
+      return {
+        ...prev,
+        timeRemaining: remaining,
+        targetEndTime: Date.now() + remaining * 1000,
+        isRunning: true,
+        isCompleted: false
+      };
+    });
   };
 
   const handlePause = () => {
-    setIsRunning(false);
-    targetEndTimeRef.current = null;
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        isRunning: false,
+        targetEndTime: null
+      };
+    });
   };
 
   const handleReset = () => {
-    setIsRunning(false);
-    setIsCompleted(false);
-    hasAutoCompletedRef.current = false;
-    setTimeRemaining(totalSec);
-    targetEndTimeRef.current = null;
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        timeRemaining: prev.totalSec,
+        isRunning: false,
+        isCompleted: false,
+        targetEndTime: null
+      };
+    });
   };
 
-  const handleCloseModal = () => {
-    if (sessionTakeawayNote.trim()) {
-      onCompleteSession(eventId, goalId, sessionTakeawayNote.trim());
+  const handleMinimize = () => {
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        isMinimized: true,
+        isOpen: false
+      };
+    });
+    if (propOnClose) propOnClose();
+  };
+
+  const handleExpand = () => {
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        isMinimized: false,
+        isOpen: true
+      };
+    });
+  };
+
+  const handleClose = () => {
+    if (timerState.isRunning) {
+      // If running, minimize instead of destroying timer so user doesn't lose progress!
+      handleMinimize();
+      return;
     }
-    setSessionTakeawayNote("");
-    onClose();
+    if (timerState.sessionTakeawayNote.trim()) {
+      onCompleteRef.current(timerState.eventId, timerState.goalId, timerState.sessionTakeawayNote.trim());
+    }
+    updateTimerState(() => null);
+    if (propOnClose) propOnClose();
   };
 
   const handleFinishAndComplete = () => {
-    setIsRunning(false);
+    onCompleteRef.current(timerState.eventId, timerState.goalId, timerState.sessionTakeawayNote.trim() || undefined);
     playCompletionChime();
-    if (!hasAutoCompletedRef.current) {
-      hasAutoCompletedRef.current = true;
-      onCompleteSession(eventId, goalId, sessionTakeawayNote.trim() || undefined);
-    } else if (sessionTakeawayNote.trim()) {
-      onCompleteSession(eventId, goalId, sessionTakeawayNote.trim());
-    }
-    setSessionTakeawayNote("");
-    onClose();
+    updateTimerState(() => null);
+    if (propOnClose) propOnClose();
   };
 
+  // Render Floating Mini-Timer Bar when minimized OR when modal closed while running
+  if (timerState.isMinimized || (!timerState.isOpen && timerState.isRunning)) {
+    return (
+      <div 
+        id="floating_focus_timer_bar"
+        className="fixed bottom-16 sm:bottom-6 right-4 sm:right-6 z-50 bg-[#0f111a]/95 border border-indigo-500/40 rounded-2xl p-3 shadow-2xl backdrop-blur-xl flex items-center gap-3 animate-fade-in ring-1 ring-indigo-500/20"
+      >
+        <div className="flex items-center gap-2 cursor-pointer" onClick={handleExpand}>
+          <span className="relative flex h-3 w-3">
+            {timerState.isRunning && (
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            )}
+            <span className="relative inline-flex rounded-full h-3 w-3" style={{ backgroundColor: timerState.color }}></span>
+          </span>
+          <div className="min-w-0 max-w-[130px] sm:max-w-[170px]">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-indigo-300 truncate font-mono">
+              {timerState.category || "Focus Session"}
+            </p>
+            <h4 className="text-xs font-bold text-white truncate drop-shadow-xs">
+              {timerState.title}
+            </h4>
+          </div>
+        </div>
+
+        {/* Live Clock Display */}
+        <div 
+          onClick={handleExpand}
+          className="bg-black/60 border border-white/10 px-2.5 py-1 rounded-xl font-mono text-xs sm:text-sm font-black text-white flex items-center gap-1.5 cursor-pointer shadow-inner"
+        >
+          <Clock className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <span>{formatTime(timerState.timeRemaining)}</span>
+        </div>
+
+        {/* Action Controls */}
+        <div className="flex items-center gap-1">
+          {timerState.isRunning ? (
+            <button
+              type="button"
+              onClick={handlePause}
+              className="p-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-lg border border-amber-500/30 cursor-pointer transition"
+              title="Pause Timer"
+            >
+              <Pause className="w-3.5 h-3.5 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleStart}
+              className="p-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg border border-emerald-500/30 cursor-pointer transition"
+              title="Resume Timer"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => handleAdjustMinutes(15)}
+            className="px-1.5 py-1 bg-indigo-500/20 hover:bg-indigo-500/35 text-indigo-300 text-[10px] font-bold rounded-lg border border-indigo-400/30 cursor-pointer transition font-mono"
+            title="Extend by 15 mins"
+          >
+            +15m
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExpand}
+            className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg border border-white/10 cursor-pointer transition"
+            title="Expand Full Timer"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleFinishAndComplete}
+            className="p-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer transition"
+            title="Finish & Log Progress"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!timerState.isOpen) return null;
+
   // Calculate circular SVG progress percentage
-  const progressPercent = totalSec > 0 ? ((totalSec - timeRemaining) / totalSec) * 100 : 0;
+  const progressPercent = timerState.totalSec > 0 ? ((timerState.totalSec - timerState.timeRemaining) / timerState.totalSec) * 100 : 0;
   const radius = 100;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (progressPercent / 100) * circumference;
@@ -229,7 +469,7 @@ export default function FocusTimerModal({
         {/* Glow accent matching color */}
         <div 
           className="absolute -top-24 -left-24 w-64 h-64 rounded-full blur-3xl opacity-20 pointer-events-none"
-          style={{ backgroundColor: color }}
+          style={{ backgroundColor: timerState.color }}
         />
 
         {/* Modal Header */}
@@ -237,33 +477,33 @@ export default function FocusTimerModal({
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-white/10 text-slate-300 font-mono">
-                {category || "Focus Session"}
+                {timerState.category || "Focus Session"}
               </span>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 ${
-                isRunning 
+                timerState.isRunning 
                   ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse" 
-                  : isCompleted 
+                  : timerState.isCompleted 
                   ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
                   : "bg-slate-800 text-slate-400"
               }`}>
-                {isRunning ? (
+                {timerState.isRunning ? (
                   <>
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                     IN PROGRESS
                   </>
-                ) : isCompleted ? (
+                ) : timerState.isCompleted ? (
                   <>
                     <Sparkles className="w-3 h-3 text-amber-300" />
                     COMPLETED!
                   </>
                 ) : (
-                  "READY"
+                  "PAUSED"
                 )}
               </span>
             </div>
             <h3 className="text-lg font-bold text-white leading-tight flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-              <span className="truncate max-w-[260px]">{sessionTitle}</span>
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: timerState.color }} />
+              <span className="truncate max-w-[240px]">{timerState.title}</span>
             </h3>
           </div>
 
@@ -278,8 +518,17 @@ export default function FocusTimerModal({
             </button>
             <button
               type="button"
-              onClick={handleCloseModal}
+              onClick={handleMinimize}
               className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition cursor-pointer"
+              title="Minimize to bottom bar"
+            >
+              <Minimize2 className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition cursor-pointer"
+              title="Close Modal"
             >
               <X className="w-5 h-5" />
             </button>
@@ -287,12 +536,12 @@ export default function FocusTimerModal({
         </div>
 
         {/* Previous Session Carryover Prep Note Banner */}
-        {previousSessionNote && (
+        {timerState.previousSessionNote && (
           <div className="mb-3 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200/90 flex items-start gap-2">
             <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
               <span className="font-bold text-amber-300 block text-[10px] uppercase tracking-wider">Prior Session Takeaway:</span>
-              <p className="italic font-medium text-[11px] leading-snug">"{previousSessionNote}"</p>
+              <p className="italic font-medium text-[11px] leading-snug">"{timerState.previousSessionNote}"</p>
             </div>
           </div>
         )}
@@ -315,7 +564,7 @@ export default function FocusTimerModal({
               cx="128"
               cy="128"
               r={radius}
-              stroke={color}
+              stroke={timerState.color}
               strokeWidth="10"
               strokeDasharray={circumference}
               strokeDashoffset={strokeDashoffset}
@@ -328,16 +577,16 @@ export default function FocusTimerModal({
           {/* Center Digital Clock Display */}
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
             <span className="text-4xl sm:text-5xl font-extrabold text-white font-mono tracking-tight drop-shadow-md">
-              {formatTime(timeRemaining)}
+              {formatTime(timerState.timeRemaining)}
             </span>
             <span className="text-xs text-slate-400 font-mono mt-1 flex items-center gap-1">
               <Clock className="w-3 h-3 text-slate-400" />
-              Initial: {Math.round(totalSec / 60)} mins
+              Target: {Math.round(timerState.totalSec / 60)} mins
             </span>
           </div>
         </div>
 
-        {/* Quick Time Adjustment Buttons (+5m, -5m, +15m, -15m) */}
+        {/* Quick Time Adjustment Buttons */}
         <div className="bg-[#0c0d16] border border-white/10 rounded-2xl p-3 mb-6">
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-2">
             <span className="flex items-center gap-1">
@@ -345,7 +594,7 @@ export default function FocusTimerModal({
               Adjust Time On The Fly
             </span>
             <span className="font-mono text-indigo-300">
-              {timeRemaining > 0 ? `${Math.ceil(timeRemaining / 60)}m left` : "0m"}
+              {timerState.timeRemaining > 0 ? `${Math.ceil(timerState.timeRemaining / 60)}m left` : "0m"}
             </span>
           </div>
 
@@ -409,10 +658,10 @@ export default function FocusTimerModal({
           </div>
         </div>
 
-        {/* Control Action Buttons (Start, Pause, Reset, Finish) */}
+        {/* Control Action Buttons */}
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-3">
-            {!isRunning ? (
+            {!timerState.isRunning ? (
               <button
                 type="button"
                 id="timer_start_btn"
@@ -420,7 +669,7 @@ export default function FocusTimerModal({
                 className="py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-500/20 transition flex items-center justify-center gap-2 cursor-pointer active:scale-95"
               >
                 <Play className="w-5 h-5 fill-current" />
-                <span>{timeRemaining < totalSec && timeRemaining > 0 ? "Resume" : "Start Session"}</span>
+                <span>{timerState.timeRemaining < timerState.totalSec && timerState.timeRemaining > 0 ? "Resume" : "Start Session"}</span>
               </button>
             ) : (
               <button
@@ -452,8 +701,11 @@ export default function FocusTimerModal({
               Next Session Carryover Note (Optional):
             </label>
             <textarea
-              value={sessionTakeawayNote}
-              onChange={(e) => setSessionTakeawayNote(e.target.value)}
+              value={timerState.sessionTakeawayNote}
+              onChange={(e) => {
+                const text = e.target.value;
+                updateTimerState((prev) => prev ? { ...prev, sessionTakeawayNote: text } : null);
+              }}
               placeholder="e.g. Finished Chapter 3; resume Section 4.1 practice problems next session..."
               rows={2}
               className="w-full text-xs p-2 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-amber-400 focus:bg-white/10 transition placeholder:text-slate-500"

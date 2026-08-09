@@ -40,7 +40,7 @@ import {
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
-import FocusTimerModal from "./FocusTimerModal";
+import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
 
 const DEFAULT_AVAILABILITY: AvailabilityWindow[] = [
   { dayOfWeek: 0, startTime: "09:00", endTime: "21:00", active: true },
@@ -64,6 +64,7 @@ interface CalendarViewProps {
   onEditGoal?: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
   onDeleteGoal?: (goalId: string) => void;
   onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
+  onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
 }
 
 export default function CalendarView({
@@ -77,7 +78,8 @@ export default function CalendarView({
   onAddGoal,
   onEditGoal,
   onDeleteGoal,
-  onEditEvent
+  onEditEvent,
+  onBulkEditEvents
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -137,24 +139,28 @@ export default function CalendarView({
     
     const associatedGoal = goals.find(g => g.id === evt.goalId);
     
-    setTimerTitle(evt.title);
-    setTimerDuration(durationMins);
-    setTimerEventId(evt.id);
-    setTimerGoalId(evt.goalId);
-    setTimerCategory(associatedGoal?.category || evt.type);
-    setTimerColor(associatedGoal?.color || (evt.type === "study" ? "#3b82f6" : evt.type === "workout" ? "#f43f5e" : "#10b981"));
-    setTimerOpen(true);
+    triggerFocusTimer({
+      title: evt.title,
+      duration: durationMins,
+      eventId: evt.id,
+      goalId: evt.goalId,
+      category: associatedGoal?.category || evt.type,
+      color: associatedGoal?.color || (evt.type === "study" ? "#3b82f6" : evt.type === "workout" ? "#f43f5e" : "#10b981"),
+      previousSessionNote: associatedGoal?.lastSessionNote
+    });
   };
 
   const handleOpenTimerForGoal = (goal: Goal, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setTimerTitle(goal.name);
-    setTimerDuration(goal.durationMinutes || 60);
-    setTimerEventId(undefined);
-    setTimerGoalId(goal.id);
-    setTimerCategory(goal.category || goal.type);
-    setTimerColor(goal.color || "#6366f1");
-    setTimerOpen(true);
+    triggerFocusTimer({
+      title: goal.name,
+      duration: goal.durationMinutes || 60,
+      eventId: undefined,
+      goalId: goal.id,
+      category: goal.category || goal.type,
+      color: goal.color || "#6366f1",
+      previousSessionNote: goal.lastSessionNote
+    });
   };
 
   const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
@@ -200,6 +206,16 @@ export default function CalendarView({
   const [showDelayTodayMenu, setShowDelayTodayMenu] = useState(false);
   const [activeShiftMenuId, setActiveShiftMenuId] = useState<string | null>(null);
   const [icsInput, setIcsInput] = useState("");
+
+  // Dismiss dropdowns when clicking outside
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setActiveShiftMenuId(null);
+      setShowDelayTodayMenu(false);
+    };
+    window.addEventListener("click", handleGlobalClick);
+    return () => window.removeEventListener("click", handleGlobalClick);
+  }, []);
 
   // Google Calendar Integration State
   const [googleAccessToken, setGoogleAccessToken] = useState(() => localStorage.getItem("gcal_access_token") || "");
@@ -444,6 +460,7 @@ export default function CalendarView({
       return;
     }
 
+    const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
     const isDayDelay = delayMs >= 24 * 60 * 60 * 1000;
     const daysOffset = isDayDelay ? Math.round(delayMs / (24 * 60 * 60 * 1000)) : 0;
     const targetStart = new Date(targetEvt.start).getTime();
@@ -506,10 +523,13 @@ export default function CalendarView({
     }
 
     // Shift target event
-    onEditEvent(targetEvt.id, {
-      start: new Date(newTargetStart).toISOString(),
-      end: new Date(newTargetEnd).toISOString(),
-      notes: `${targetEvt.notes || ''} (Delayed +${delayLabel})`.trim()
+    updates.push({
+      id: targetEvt.id,
+      fields: {
+        start: new Date(newTargetStart).toISOString(),
+        end: new Date(newTargetEnd).toISOString(),
+        notes: `${targetEvt.notes || ''} (Delayed +${delayLabel})`.trim()
+      }
     });
 
     // Find subsequent uncompleted non-external events starting at or after target's original start
@@ -532,10 +552,13 @@ export default function CalendarView({
         const newSubStart = currentOccupiedEnd + 15 * 60 * 1000; // 15 mins buffer
         const newSubEnd = newSubStart + subDur;
 
-        onEditEvent(subEvt.id, {
-          start: new Date(newSubStart).toISOString(),
-          end: new Date(newSubEnd).toISOString(),
-          notes: `${subEvt.notes || ''} (Cascading Ripple Shift)`.trim()
+        updates.push({
+          id: subEvt.id,
+          fields: {
+            start: new Date(newSubStart).toISOString(),
+            end: new Date(newSubEnd).toISOString(),
+            notes: `${subEvt.notes || ''} (Cascading Ripple Shift)`.trim()
+          }
         });
 
         currentOccupiedEnd = newSubEnd;
@@ -544,6 +567,12 @@ export default function CalendarView({
         currentOccupiedEnd = Math.max(currentOccupiedEnd, subEnd);
       }
     });
+
+    if (onBulkEditEvents) {
+      onBulkEditEvents(updates);
+    } else if (onEditEvent) {
+      updates.forEach(u => onEditEvent(u.id, u.fields));
+    }
 
     const msg = rippleCount > 0 
       ? `⚡ Shifted "${targetEvt.title}" (+${delayLabel}) & rippled ${rippleCount} downstream session(s) forward!`
@@ -570,6 +599,7 @@ export default function CalendarView({
       return;
     }
 
+    const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
     const isDayDelay = delayMinutes >= 24 * 60;
     const daysOffset = isDayDelay ? Math.round(delayMinutes / (24 * 60)) : 0;
     let count = 0;
@@ -640,13 +670,22 @@ export default function CalendarView({
         newE = new Date(origE.getTime() + delayMs);
       }
 
-      onEditEvent(evt.id, {
-        start: newS.toISOString(),
-        end: newE.toISOString(),
-        notes: `${evt.notes || ''} (Shifted ${isDayDelay ? `+${daysOffset}d` : `+${delayMinutes}m`})`.trim()
+      updates.push({
+        id: evt.id,
+        fields: {
+          start: newS.toISOString(),
+          end: newE.toISOString(),
+          notes: `${evt.notes || ''} (Shifted ${isDayDelay ? `+${daysOffset}d` : `+${delayMinutes}m`})`.trim()
+        }
       });
       count++;
     });
+
+    if (onBulkEditEvents) {
+      onBulkEditEvents(updates);
+    } else if (onEditEvent) {
+      updates.forEach(u => onEditEvent(u.id, u.fields));
+    }
 
     const shiftText = isDayDelay ? `${daysOffset} day(s)` : `${delayMinutes} minutes`;
     setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today forward by +${shiftText} into their preferred goal time slots!`);
@@ -2894,6 +2933,7 @@ export default function CalendarView({
                               <div className="relative">
                                 <button
                                   type="button"
+                                  id={`delay_event_btn_list_${evt.id}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setActiveShiftMenuId(activeShiftMenuId === evt.id ? null : evt.id);
@@ -2907,72 +2947,78 @@ export default function CalendarView({
 
                                 {activeShiftMenuId === evt.id && (
                                   <div 
-                                    className="absolute right-0 bottom-full mb-1 w-44 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-50 text-left space-y-1"
+                                    className="absolute right-0 top-full sm:bottom-full sm:top-auto mt-1 sm:mt-0 sm:mb-1 w-48 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left space-y-1"
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-0.5">Cascade Shift Forward:</p>
                                     <button
                                       type="button"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         handleCascadingDelayEvent(evt, 15 * 60 * 1000, "15m");
                                         setActiveShiftMenuId(null);
                                       }}
-                                      className="w-full text-left px-2 py-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
                                     >
                                       <span>+15 Minutes</span>
                                       <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         handleCascadingDelayEvent(evt, 30 * 60 * 1000, "30m");
                                         setActiveShiftMenuId(null);
                                       }}
-                                      className="w-full text-left px-2 py-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
                                     >
                                       <span>+30 Minutes</span>
                                       <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         handleCascadingDelayEvent(evt, 60 * 60 * 1000, "1h");
                                         setActiveShiftMenuId(null);
                                       }}
-                                      className="w-full text-left px-2 py-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
                                     >
                                       <span>+1 Hour</span>
                                       <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         handleCascadingDelayEvent(evt, 24 * 60 * 60 * 1000, "1d");
                                         setActiveShiftMenuId(null);
                                       }}
-                                      className="w-full text-left px-2 py-1 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded-lg text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
                                     >
                                       <span>+1 Day</span>
                                       <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">📅</span>
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         handleCascadingDelayEvent(evt, 2 * 24 * 60 * 60 * 1000, "2d");
                                         setActiveShiftMenuId(null);
                                       }}
-                                      className="w-full text-left px-2 py-1 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded-lg text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
                                     >
                                       <span>+2 Days</span>
                                       <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">📅</span>
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         handleCascadingDelayEvent(evt, 7 * 24 * 60 * 60 * 1000, "1w");
                                         setActiveShiftMenuId(null);
                                       }}
-                                      className="w-full text-left px-2 py-1 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded-lg text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
                                     >
                                       <span>+1 Week</span>
                                       <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">🗓️</span>
@@ -3484,33 +3530,6 @@ export default function CalendarView({
         </div>
       )}
 
-      {/* Focus Session Countdown Timer Modal */}
-      <FocusTimerModal
-        isOpen={timerOpen}
-        onClose={() => setTimerOpen(false)}
-        sessionTitle={timerTitle}
-        initialDurationMinutes={timerDuration}
-        eventId={timerEventId}
-        goalId={timerGoalId}
-        category={timerCategory}
-        color={timerColor}
-        previousSessionNote={timerGoalId ? goals.find(g => g.id === timerGoalId)?.lastSessionNote : undefined}
-        onCompleteSession={handleCompleteTimerSession}
-        onExtendEventDuration={(evtId, deltaMins) => {
-          if (!onEditEvent) return;
-          const evt = events.find(e => e.id === evtId);
-          if (!evt) return;
-          const currentEnd = new Date(evt.end);
-          const newEnd = new Date(currentEnd.getTime() + deltaMins * 60 * 1000);
-          const updates: Partial<CalendarEvent> = {
-            end: newEnd.toISOString()
-          };
-          if (deltaMins > 0 && evt.completed) {
-            updates.completed = false;
-          }
-          onEditEvent(evtId, updates);
-        }}
-      />
     </div>
   );
 }

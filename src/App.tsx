@@ -22,6 +22,7 @@ import GoalTracker from "./components/GoalTracker";
 import ProgressDashboard from "./components/ProgressDashboard";
 import AICoach from "./components/AICoach";
 import NotificationsPanel from "./components/NotificationsPanel";
+import FocusTimerModal from "./components/FocusTimerModal";
 import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
 
 export default function App() {
@@ -853,35 +854,114 @@ export default function App() {
 
   // CC. Edit existing calendar event attributes
   const handleEditEvent = (id: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => {
-    let nextGoals = [...goals];
-    const nextEvents = events.map(evt => {
-      if (evt.id === id) {
-        if (updatedFields.completed !== undefined && evt.completed !== updatedFields.completed && evt.goalId) {
-          const toggleVal = updatedFields.completed;
-          nextGoals = goals.map(g => {
-            if (g.id === evt.goalId) {
-              const countChange = toggleVal ? 1 : -1;
-              return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
+    let syncTargetEvents: CalendarEvent[] = [];
+    let syncTargetGoals: Goal[] = [];
+
+    setEvents(prevEvents => {
+      let nextGoals = [...goals];
+      const nextEvents = prevEvents.map(evt => {
+        if (evt.id === id) {
+          if (updatedFields.completed !== undefined && evt.completed !== updatedFields.completed && evt.goalId) {
+            const toggleVal = updatedFields.completed;
+            nextGoals = nextGoals.map(g => {
+              if (g.id === evt.goalId) {
+                const countChange = toggleVal ? 1 : -1;
+                return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
+              }
+              return g;
+            });
+            
+            if (toggleVal) {
+              triggerSystemNotification(
+                "Session Achieved!",
+                `Success: "${updatedFields.title || evt.title}" marked as done!`,
+                "success"
+              );
             }
-            return g;
-          });
-          
-          if (toggleVal) {
-            triggerSystemNotification(
-              "Session Achieved!",
-              `Success: "${updatedFields.title || evt.title}" marked as done!`,
-              "success"
-            );
           }
+          return { ...evt, ...updatedFields } as CalendarEvent;
         }
-        return { ...evt, ...updatedFields } as CalendarEvent;
-      }
-      return evt;
+        return evt;
+      });
+
+      setGoals(nextGoals);
+      syncTargetEvents = nextEvents;
+      syncTargetGoals = nextGoals;
+      return nextEvents;
     });
 
-    setEvents(nextEvents);
-    setGoals(nextGoals);
-    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+    setTimeout(() => {
+      if (syncTargetEvents.length > 0) {
+        syncToCloud(syncTargetGoals, syncTargetEvents, availability, notifications, coachMessages);
+      }
+    }, 50);
+  };
+
+  // CC-2. Atomic Bulk Edit for multiple calendar events (Cascading Delays / Smart Rebalancing)
+  const handleBulkEditEvents = (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => {
+    if (!updates || updates.length === 0) return;
+    const updateMap = new Map(updates.map(u => [u.id, u.fields]));
+
+    let syncTargetEvents: CalendarEvent[] = [];
+    setEvents(prevEvents => {
+      const nextEvents = prevEvents.map(evt => {
+        const fields = updateMap.get(evt.id);
+        if (fields) {
+          return { ...evt, ...fields } as CalendarEvent;
+        }
+        return evt;
+      });
+
+      syncTargetEvents = nextEvents;
+      return nextEvents;
+    });
+
+    setTimeout(() => {
+      if (syncTargetEvents.length > 0) {
+        syncToCloud(goals, syncTargetEvents, availability, notifications, coachMessages);
+      }
+    }, 50);
+  };
+
+  // Timer Session Completion & Extension Handlers
+  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
+    let targetEvtId = eventId;
+
+    if (!targetEvtId && goalId && events) {
+      const todayStr = new Date().toDateString();
+      const g = goals.find(item => item.id === goalId);
+      const matchingEvt = events.find(e => 
+        !e.completed && 
+        (e.goalId === goalId || (g && e.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
+        new Date(e.start).toDateString() === todayStr
+      );
+      if (matchingEvt) {
+        targetEvtId = matchingEvt.id;
+      }
+    }
+
+    if (targetEvtId) {
+      handleEditEvent(targetEvtId, { completed: true, ...(note ? { completionNote: note } : {}) });
+    }
+
+    if (goalId) {
+      const g = goals.find(item => item.id === goalId);
+      if (g) {
+        handleEditGoal(g.id, {
+          ...(!targetEvtId ? { completedCount: g.completedCount + 1 } : {}),
+          ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+        });
+      }
+    }
+  };
+
+  const handleExtendEventDuration = (eventId: string, deltaMins: number) => {
+    const evt = events.find(e => e.id === eventId);
+    if (evt) {
+      const currentEnd = new Date(evt.end);
+      currentEnd.setMinutes(currentEnd.getMinutes() + deltaMins);
+      handleEditEvent(eventId, { end: currentEnd.toISOString() });
+    }
   };
 
   // Helper to generate dynamic calendar event sessions for a goal
@@ -1632,6 +1712,7 @@ export default function App() {
               onEditGoal={handleEditGoal}
               onDeleteGoal={handleDeleteGoal}
               onEditEvent={handleEditEvent}
+              onBulkEditEvents={handleBulkEditEvents}
             />
           </div>
         )}
@@ -1645,6 +1726,7 @@ export default function App() {
             onDeleteGoal={handleDeleteGoal}
             onEditGoal={handleEditGoal}
             onEditEvent={handleEditEvent}
+            onBulkEditEvents={handleBulkEditEvents}
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}
@@ -1808,6 +1890,11 @@ export default function App() {
 
       </div>
 
+      {/* Persistent Global Focus Session Countdown Timer Modal & Floating Mini Bar */}
+      <FocusTimerModal
+        onCompleteSession={handleCompleteTimerSession}
+        onExtendEventDuration={handleExtendEventDuration}
+      />
     </div>
   );
 }
