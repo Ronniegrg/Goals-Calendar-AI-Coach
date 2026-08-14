@@ -1604,9 +1604,10 @@ export default function GoalTracker({
                               id={`start_goal_timer_btn_${g.id}`}
                               onClick={() => handleStartTimer(g)}
                               className="w-full py-2 px-2.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                              title={`Open focus timer for ${g.name} (${g.durationMinutes || 60}m)`}
                             >
-                              <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
-                              <span>Start Timer</span>
+                              <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                              <span>Focus Timer</span>
                             </button>
 
                             <button

@@ -115,13 +115,12 @@ export default function FocusTimerModal({
   useEffect(() => {
     if (propIsOpen && propSessionTitle && propInitialDurationMinutes) {
       const initialSec = Math.max(1, propInitialDurationMinutes) * 60;
-      const now = Date.now();
       const newTimer: ActiveTimerData = {
         title: propSessionTitle,
         totalSec: initialSec,
         timeRemaining: initialSec,
-        targetEndTime: now + initialSec * 1000,
-        isRunning: true, // Auto start on opening
+        targetEndTime: null,
+        isRunning: false, // Do not auto-start; wait for user to press Start
         isCompleted: false,
         eventId: propEventId,
         goalId: propGoalId,
@@ -143,13 +142,12 @@ export default function FocusTimerModal({
       const detail = e.detail;
       if (!detail) return;
       const initialSec = Math.max(1, detail.duration || 60) * 60;
-      const now = Date.now();
       const newTimer: ActiveTimerData = {
         title: detail.title || "Focus Session",
         totalSec: initialSec,
         timeRemaining: initialSec,
-        targetEndTime: now + initialSec * 1000,
-        isRunning: true,
+        targetEndTime: null,
+        isRunning: false, // Do not auto-start; wait for user to press Start
         isCompleted: false,
         eventId: detail.eventId,
         goalId: detail.goalId,
@@ -285,7 +283,7 @@ export default function FocusTimerModal({
       const deltaSec = deltaMins * 60;
       const nextRemaining = Math.max(10, prev.timeRemaining + deltaSec);
       const nextTotal = Math.max(10, prev.totalSec + deltaSec);
-      const isRunningNow = deltaMins > 0 ? true : prev.isRunning;
+      const isRunningNow = prev.isRunning;
       const nextTargetEnd = isRunningNow ? Date.now() + nextRemaining * 1000 : null;
 
       return {
@@ -498,6 +496,8 @@ export default function FocusTimerModal({
                   ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse" 
                   : timerState.isCompleted 
                   ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                  : timerState.timeRemaining === timerState.totalSec
+                  ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
                   : "bg-slate-800 text-slate-400"
               }`}>
                 {timerState.isRunning ? (
@@ -509,6 +509,11 @@ export default function FocusTimerModal({
                   <>
                     <Sparkles className="w-3 h-3 text-amber-300" />
                     COMPLETED!
+                  </>
+                ) : timerState.timeRemaining === timerState.totalSec ? (
+                  <>
+                    <Clock className="w-3 h-3 text-indigo-400" />
+                    READY TO START
                   </>
                 ) : (
                   "PAUSED"
