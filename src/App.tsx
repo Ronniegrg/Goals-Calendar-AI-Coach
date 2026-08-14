@@ -333,6 +333,40 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [goals]);
 
+  // Helper to check if an event falls inside its goal's preferred time window
+  const isEventInGoalTimePrefWindow = (evt: CalendarEvent, goal: Goal): boolean => {
+    if (!goal.timePreference || goal.timePreference === TimePreference.ANY) return true;
+    const evtDate = new Date(evt.start);
+    const hour = evtDate.getHours() + (evtDate.getMinutes() / 60);
+
+    if (goal.timePreference === TimePreference.EARLY_MORNING) {
+      return hour >= 5 && hour < 8.5;
+    }
+    if (goal.timePreference === TimePreference.MORNING) {
+      return hour >= 8 && hour < 12.5;
+    }
+    if (goal.timePreference === TimePreference.AFTERNOON) {
+      return hour >= 12 && hour < 17;
+    }
+    if (goal.timePreference === TimePreference.EVENING) {
+      return hour >= 17 && hour < 22;
+    }
+    if (goal.timePreference === TimePreference.NIGHT) {
+      return hour >= 21 || hour < 2;
+    }
+    if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart) {
+      const [sH, sM] = goal.customTimeStart.split(":").map(Number);
+      const startH = (sH || 0) + (sM || 0) / 60;
+      let endH = startH + (goal.durationMinutes || 60) / 60;
+      if (goal.customTimeEnd) {
+        const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
+        endH = (eH || startH + 1) + (eM || 0) / 60;
+      }
+      return hour >= startH - 0.25 && hour < endH;
+    }
+    return true;
+  };
+
   // 3b. Automated Background Multi-Week Rolling Scheduling Trigger Engine
   const triggerAutoScheduler = (
     currentGoals: Goal[],
@@ -341,12 +375,36 @@ export default function App() {
   ) => {
     if (currentGoals.length === 0) return;
 
+    const now = new Date();
+    // Filter out goals currently on hold
+    const activeGoals = currentGoals.filter(goal => {
+      if (!goal.isPaused) return true;
+      if (!goal.pauseUntil) return false;
+      return new Date(goal.pauseUntil) < now;
+    });
+
+    if (activeGoals.length === 0) return;
+
+    // Prioritize Critical goals (3) > Important goals (2) > Normal goals (1)
+    const getPriorityScore = (p?: string) => (p === "critical" ? 3 : p === "important" ? 2 : 1);
+    const sortedGoals = [...activeGoals].sort((a, b) => getPriorityScore(b.priority) - getPriorityScore(a.priority));
+
+    // Purge any uncompleted auto-scheduled events that violate their goal's strict time preference
+    let purgedCount = 0;
+    const validEvents = currentEvents.filter(evt => {
+      if (evt.completed || evt.type === "external") return true;
+      const parentGoal = currentGoals.find(g => g.id === evt.goalId || (evt.title && g.name && evt.title.toLowerCase().includes(g.name.toLowerCase())));
+      if (!parentGoal) return true;
+      const isValid = isEventInGoalTimePrefWindow(evt, parentGoal);
+      if (!isValid) purgedCount++;
+      return isValid;
+    });
+
     const newScheduledEvents: CalendarEvent[] = [];
     let scheduledCount = 0;
-    const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    currentGoals.forEach(goal => {
+    sortedGoals.forEach(goal => {
       const goalNameLower = goal.name.toLowerCase();
       const isDailyGoal = goal.weeklyTarget >= 7;
       const maxSessionsPerDay = isDailyGoal ? 1 : (goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1);
@@ -367,7 +425,7 @@ export default function App() {
         endOfWeek.setHours(23, 59, 59, 999);
 
         // Check sessions in this week
-        const sessionsInWeek = [...currentEvents, ...newScheduledEvents].filter(evt => {
+        const sessionsInWeek = [...validEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           if (!isThisGoal) return false;
           const evtDate = new Date(evt.start);
@@ -380,7 +438,7 @@ export default function App() {
         }
 
         // Check sessions on targetDay
-        const sessionsOnTargetDay = [...currentEvents, ...newScheduledEvents].filter(evt => {
+        const sessionsOnTargetDay = [...validEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
         }).length;
@@ -390,7 +448,6 @@ export default function App() {
         const dayOfWeek = targetDay.getDay();
         let availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek && a.active);
         if (!availDay) {
-          // Fallback to active standard window for weekend/unspecified active day
           availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
         }
 
@@ -402,24 +459,24 @@ export default function App() {
 
         if (goal.timePreference === TimePreference.EARLY_MORNING) {
           prefStart = Math.max(availStartHour, 5);
-          prefEnd = Math.min(availEndHour, 8);
+          prefEnd = Math.min(availEndHour, 8.5);
         } else if (goal.timePreference === TimePreference.MORNING) {
           prefStart = Math.max(availStartHour, 8);
-          prefEnd = Math.min(availEndHour, 12);
+          prefEnd = Math.min(availEndHour, 12.5);
         } else if (goal.timePreference === TimePreference.AFTERNOON) {
           prefStart = Math.max(availStartHour, 12);
           prefEnd = Math.min(availEndHour, 17);
         } else if (goal.timePreference === TimePreference.EVENING) {
           prefStart = Math.max(availStartHour, 17);
-          prefEnd = Math.min(availEndHour, 22);
+          prefEnd = Math.max(availEndHour, 22);
         } else if (goal.timePreference === TimePreference.NIGHT) {
           prefStart = Math.max(availStartHour, 21);
-          prefEnd = Math.min(availEndHour, 24);
+          prefEnd = 24;
         } else if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart && goal.customTimeEnd) {
           const [sH, sM] = goal.customTimeStart.split(":").map(Number);
           const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
-          prefStart = Math.max(availStartHour, (sH || 0) + (sM || 0) / 60);
-          prefEnd = Math.min(availEndHour, (eH || 0) + (eM || 0) / 60);
+          prefStart = (sH || 0) + (sM || 0) / 60;
+          prefEnd = (eH || 0) + (eM || 0) / 60;
         }
 
         if (prefStart >= prefEnd) {
@@ -430,11 +487,17 @@ export default function App() {
         const isToday = dayOffset === 0;
         const nowHourDecimal = isToday ? now.getHours() + (now.getMinutes() / 60) + 0.25 : 0;
 
-        const windowsToTry = [
-          { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
-          { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
-          { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
-        ];
+        let windowsToTry: { start: number; end: number }[] = [];
+        if (!goal.timePreference || goal.timePreference === TimePreference.ANY) {
+          windowsToTry = [
+            { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
+            { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
+          ];
+        } else {
+          windowsToTry = [
+            { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd }
+          ];
+        }
 
         let slotBooked = false;
 
@@ -452,7 +515,7 @@ export default function App() {
 
             const slotEnd = new Date(slotStart.getTime() + (goal.durationMinutes || 60) * 60 * 1000);
 
-            const overlap = [...currentEvents, ...newScheduledEvents].some(evt => {
+            const overlap = [...validEvents, ...newScheduledEvents].some(evt => {
               const evtStart = new Date(evt.start);
               const evtEnd = new Date(evt.end);
               return slotStart < evtEnd && slotEnd > evtStart;
@@ -473,7 +536,7 @@ export default function App() {
                 goalId: goal.id,
                 completed: false,
                 icon: goal.icon,
-                notes: `Auto-scheduled daily block on ${slotStart.toLocaleDateString([], { month: "short", day: "numeric", weekday: "short" })} at ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                notes: `Auto-scheduled session for ${goal.name} (${goal.timePreference || "preferred"} time window)`
               });
               scheduledCount++;
               slotBooked = true;
@@ -484,15 +547,17 @@ export default function App() {
       }
     });
 
-    if (newScheduledEvents.length > 0) {
-      const nextEvents = [...newScheduledEvents, ...currentEvents];
+    if (newScheduledEvents.length > 0 || purgedCount > 0) {
+      const nextEvents = [...newScheduledEvents, ...validEvents];
       setEvents(nextEvents);
       syncToCloud(currentGoals, nextEvents, currentAvailability, notifications, coachMessages);
-      triggerSystemNotification(
-        "Auto-Scheduler Sync",
-        `⚡ Automated Auto-Scheduler successfully mapped ${scheduledCount} missing daily/weekly session blocks (including Today & Saturday)!`,
-        "success"
-      );
+      if (newScheduledEvents.length > 0) {
+        triggerSystemNotification(
+          "Auto-Scheduler Sync",
+          `⚡ Auto-Scheduler mapped ${scheduledCount} session(s) strictly aligned with your time window preferences!`,
+          "success"
+        );
+      }
     }
   };
 
@@ -503,6 +568,12 @@ export default function App() {
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
     const needsScheduling = goals.some(goal => {
+      // Skip goals on hold
+      if (goal.isPaused) {
+        if (!goal.pauseUntil) return false;
+        if (new Date(goal.pauseUntil) >= now) return false;
+      }
+
       const goalNameLower = goal.name.toLowerCase();
       const isDailyGoal = goal.weeklyTarget >= 7;
 
@@ -513,7 +584,8 @@ export default function App() {
 
         const countOnDay = events.filter(e => {
           const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
-          return isThisGoal && new Date(e.start).toDateString() === targetDayString;
+          if (!isThisGoal) return false;
+          return new Date(e.start).toDateString() === targetDayString && isEventInGoalTimePrefWindow(e, goal);
         }).length;
 
         if (isDailyGoal && countOnDay === 0) {
@@ -532,7 +604,7 @@ export default function App() {
             const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
             if (!isThisGoal) return false;
             const d = new Date(e.start);
-            return d >= startOfWeek && d <= endOfWeek;
+            return d >= startOfWeek && d <= endOfWeek && isEventInGoalTimePrefWindow(e, goal);
           }).length;
 
           if (countInWeek < goal.weeklyTarget) return true;
@@ -548,6 +620,33 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [goals, events, availability, autoScheduleEnabled]);
+
+  // 3c. Auto-Resume Goals whose Pause/Hold duration has expired
+  useEffect(() => {
+    if (!goals || goals.length === 0) return;
+    const now = new Date();
+    let updated = false;
+    const nextGoals = goals.map(g => {
+      if (g.isPaused && g.pauseUntil) {
+        const resumeDate = new Date(g.pauseUntil);
+        if (!isNaN(resumeDate.getTime()) && resumeDate <= now) {
+          updated = true;
+          triggerSystemNotification(
+            "Goal Hold Period Ended!",
+            `🎉 Your hold period for "${g.name}" has completed! Goal is active again and auto-scheduler will place focus blocks.`,
+            "success"
+          );
+          return { ...g, isPaused: false, pauseReason: undefined, pauseUntil: undefined, pausedAt: undefined };
+        }
+      }
+      return g;
+    });
+
+    if (updated) {
+      setGoals(nextGoals);
+      syncToCloud(nextGoals, events, availability, notifications, coachMessages);
+    }
+  }, [goals]);
 
   // 4. Handle incoming action parameters (from Google Calendar description quick links)
   useEffect(() => {
@@ -798,40 +897,61 @@ export default function App() {
 
   // B. Toggle complete state on events
   const handleToggleEventComplete = (id: string) => {
-    let nextGoals = [...goals];
-    const nextEvents = events.map(evt => {
-      if (evt.id === id) {
-        const toggleVal = !evt.completed;
-        
-        // Update tied goals completion totals
-        if (evt.goalId) {
-          nextGoals = goals.map(g => {
-            if (g.id === evt.goalId) {
-              const countChange = toggleVal ? 1 : -1;
-              return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
-            }
-            return g;
-          });
-        }
+    let syncTargetEvents: CalendarEvent[] = [];
+    let syncTargetGoals: Goal[] = [];
 
-        // Push congrats notification
-        if (toggleVal) {
-          const typeLabel = evt.type === "workout" ? "Physical session completed!" : "Intellectual study block aced!";
-          triggerSystemNotification(
-            "Session Achieved!",
-            `Success: "${evt.title}" marked as done. ${typeLabel}`,
-            "success"
-          );
-        }
+    setEvents(prevEvents => {
+      const targetEvt = prevEvents.find(e => e.id === id);
+      if (!targetEvt) return prevEvents;
 
-        return { ...evt, completed: toggleVal };
+      const toggleVal = !targetEvt.completed;
+
+      // Find tied goal by goalId OR by title matching
+      const targetGoal = goals.find(g => 
+        (targetEvt.goalId && g.id === targetEvt.goalId) || 
+        (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase()))
+      );
+
+      let nextGoals = [...goals];
+      if (targetGoal) {
+        nextGoals = goals.map(g => {
+          if (g.id === targetGoal.id) {
+            const countChange = toggleVal ? 1 : -1;
+            return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
+          }
+          return g;
+        });
       }
-      return evt;
+
+      const nextEvents = prevEvents.map(evt => {
+        if (evt.id === id) {
+          return { 
+            ...evt, 
+            completed: toggleVal,
+            goalId: targetGoal ? targetGoal.id : evt.goalId 
+          };
+        }
+        return evt;
+      });
+
+      if (toggleVal) {
+        const typeLabel = targetEvt.type === "workout" ? "Physical session completed!" : "Intellectual focus block aced!";
+        triggerSystemNotification(
+          "Session Achieved!",
+          `Success: "${targetEvt.title}" marked as done. ${typeLabel}`,
+          "success"
+        );
+      }
+
+      setGoals(nextGoals);
+      syncTargetEvents = nextEvents;
+      syncTargetGoals = nextGoals;
+      return nextEvents;
     });
 
-    setEvents(nextEvents);
-    setGoals(nextGoals);
-    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+    setTimeout(() => {
+      syncToCloud(syncTargetGoals, syncTargetEvents, availability, notifications, coachMessages);
+    }, 50);
   };
 
   // C. Delete existing event
@@ -840,11 +960,18 @@ export default function App() {
     let nextGoals = [...goals];
 
     // Decrement completed aggregates if deleting an already completed event
-    if (targetEvt && targetEvt.completed && targetEvt.goalId) {
-      nextGoals = goals.map(g => 
-        g.id === targetEvt.goalId ? { ...g, completedCount: Math.max(g.completedCount - 1, 0) } : g
+    if (targetEvt && targetEvt.completed) {
+      const targetGoal = goals.find(g => 
+        (targetEvt.goalId && g.id === targetEvt.goalId) ||
+        (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase()))
       );
-      setGoals(nextGoals);
+
+      if (targetGoal) {
+        nextGoals = goals.map(g => 
+          g.id === targetGoal.id ? { ...g, completedCount: Math.max(g.completedCount - 1, 0) } : g
+        );
+        setGoals(nextGoals);
+      }
     }
 
     const nextEvents = events.filter(e => e.id !== id);
@@ -858,27 +985,38 @@ export default function App() {
     let syncTargetGoals: Goal[] = [];
 
     setEvents(prevEvents => {
+      const targetEvt = prevEvents.find(e => e.id === id);
       let nextGoals = [...goals];
+
+      if (targetEvt && updatedFields.completed !== undefined && targetEvt.completed !== updatedFields.completed) {
+        const toggleVal = updatedFields.completed;
+        const targetGoal = goals.find(g => 
+          (targetEvt.goalId && g.id === targetEvt.goalId) || 
+          (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase())) ||
+          (updatedFields.title && g.name && updatedFields.title.toLowerCase().includes(g.name.toLowerCase()))
+        );
+
+        if (targetGoal) {
+          nextGoals = goals.map(g => {
+            if (g.id === targetGoal.id) {
+              const countChange = toggleVal ? 1 : -1;
+              return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
+            }
+            return g;
+          });
+        }
+
+        if (toggleVal) {
+          triggerSystemNotification(
+            "Session Achieved!",
+            `Success: "${updatedFields.title || targetEvt.title}" marked as done!`,
+            "success"
+          );
+        }
+      }
+
       const nextEvents = prevEvents.map(evt => {
         if (evt.id === id) {
-          if (updatedFields.completed !== undefined && evt.completed !== updatedFields.completed && evt.goalId) {
-            const toggleVal = updatedFields.completed;
-            nextGoals = nextGoals.map(g => {
-              if (g.id === evt.goalId) {
-                const countChange = toggleVal ? 1 : -1;
-                return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
-              }
-              return g;
-            });
-            
-            if (toggleVal) {
-              triggerSystemNotification(
-                "Session Achieved!",
-                `Success: "${updatedFields.title || evt.title}" marked as done!`,
-                "success"
-              );
-            }
-          }
           return { ...evt, ...updatedFields } as CalendarEvent;
         }
         return evt;
@@ -925,34 +1063,103 @@ export default function App() {
 
   // Timer Session Completion & Extension Handlers
   const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
-    let targetEvtId = eventId;
+    let syncTargetEvents: CalendarEvent[] = [];
+    let syncTargetGoals: Goal[] = [];
 
-    if (!targetEvtId && goalId && events) {
-      const todayStr = new Date().toDateString();
-      const g = goals.find(item => item.id === goalId);
-      const matchingEvt = events.find(e => 
-        !e.completed && 
-        (e.goalId === goalId || (g && e.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
-        new Date(e.start).toDateString() === todayStr
-      );
-      if (matchingEvt) {
-        targetEvtId = matchingEvt.id;
+    setEvents(prevEvents => {
+      let targetGoal = goalId ? goals.find(item => item.id === goalId) : undefined;
+      let targetEvt: CalendarEvent | undefined;
+
+      if (eventId) {
+        targetEvt = prevEvents.find(e => e.id === eventId);
       }
-    }
 
-    if (targetEvtId) {
-      handleEditEvent(targetEvtId, { completed: true, ...(note ? { completionNote: note } : {}) });
-    }
+      const todayStr = new Date().toDateString();
 
-    if (goalId) {
-      const g = goals.find(item => item.id === goalId);
-      if (g) {
-        handleEditGoal(g.id, {
-          ...(!targetEvtId ? { completedCount: g.completedCount + 1 } : {}),
-          ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+      if (!targetEvt && targetGoal) {
+        targetEvt = prevEvents.find(e => 
+          !e.completed && 
+          (e.goalId === targetGoal!.id || (e.title && targetGoal!.name && e.title.toLowerCase().includes(targetGoal!.name.toLowerCase()))) &&
+          new Date(e.start).toDateString() === todayStr
+        );
+      }
+
+      if (!targetGoal && targetEvt) {
+        targetGoal = goals.find(g => 
+          (targetEvt!.goalId && g.id === targetEvt!.goalId) ||
+          (targetEvt!.title && g.name && targetEvt!.title.toLowerCase().includes(g.name.toLowerCase()))
+        );
+      }
+
+      let nextEvents = [...prevEvents];
+      let nextGoals = [...goals];
+      let shouldIncrementGoalCount = false;
+
+      if (targetEvt) {
+        const wasCompleted = targetEvt.completed;
+        nextEvents = prevEvents.map(evt => {
+          if (evt.id === targetEvt!.id) {
+            return {
+              ...evt,
+              completed: true,
+              goalId: targetGoal ? targetGoal.id : evt.goalId,
+              ...(note ? { completionNote: note } : {})
+            };
+          }
+          return evt;
+        });
+
+        if (!wasCompleted) {
+          shouldIncrementGoalCount = true;
+        }
+      } else if (targetGoal) {
+        // Create new completed event record for today
+        const now = new Date();
+        const end = new Date(now.getTime() + (targetGoal.durationMinutes || 30) * 60000);
+        const newEvt: CalendarEvent = {
+          id: `e_${Date.now()}`,
+          title: targetGoal.name,
+          start: now.toISOString(),
+          end: end.toISOString(),
+          type: targetGoal.type || "study",
+          completed: true,
+          goalId: targetGoal.id,
+          completionNote: note
+        };
+        nextEvents = [newEvt, ...prevEvents];
+        shouldIncrementGoalCount = true;
+      }
+
+      if (targetGoal) {
+        nextGoals = nextGoals.map(g => {
+          if (g.id === targetGoal!.id) {
+            return {
+              ...g,
+              completedCount: shouldIncrementGoalCount ? g.completedCount + 1 : g.completedCount,
+              ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+            };
+          }
+          return g;
         });
       }
-    }
+
+      setGoals(nextGoals);
+
+      const displayTitle = targetGoal ? targetGoal.name : (targetEvt ? targetEvt.title : "Focus Session");
+      triggerSystemNotification(
+        "Goal Session Logged!",
+        `Success: Goal "${displayTitle}" session marked as completed!`,
+        "success"
+      );
+
+      syncTargetEvents = nextEvents;
+      syncTargetGoals = nextGoals;
+      return nextEvents;
+    });
+
+    setTimeout(() => {
+      syncToCloud(syncTargetGoals, syncTargetEvents, availability, notifications, coachMessages);
+    }, 50);
   };
 
   const handleExtendEventDuration = (eventId: string, deltaMins: number) => {
@@ -962,6 +1169,39 @@ export default function App() {
       currentEnd.setMinutes(currentEnd.getMinutes() + deltaMins);
       handleEditEvent(eventId, { end: currentEnd.toISOString() });
     }
+  };
+
+  // Handle Reset & Clean Regenerate Calendar
+  const handleResetAndRegenerateCalendar = (options?: { clearMode?: "uncompleted_goals" | "all_events"; keepExternal?: boolean }) => {
+    const mode = options?.clearMode || "uncompleted_goals";
+    const keepExternal = options?.keepExternal !== false;
+
+    let remainingEvents: CalendarEvent[] = [];
+
+    if (mode === "uncompleted_goals") {
+      remainingEvents = events.filter(evt => {
+        if (keepExternal && evt.type === "external") return true;
+        if (evt.completed) return true; // keep completed session history
+        return false; // wipe uncompleted sessions to allow clean regenerate
+      });
+    } else {
+      remainingEvents = events.filter(evt => {
+        if (keepExternal && evt.type === "external") return true;
+        return false;
+      });
+    }
+
+    setEvents(remainingEvents);
+    syncToCloud(goals, remainingEvents, availability, notifications, coachMessages);
+
+    setTimeout(() => {
+      triggerAutoScheduler(goals, remainingEvents, availability);
+      triggerSystemNotification(
+        "Calendar Regenerated",
+        "⚡ Calendar schedule was cleanly reset and regenerated based on your active goals & availability!",
+        "success"
+      );
+    }, 150);
   };
 
   // Helper to generate dynamic calendar event sessions for a goal
@@ -1007,26 +1247,24 @@ export default function App() {
 
       if (goal.timePreference === TimePreference.EARLY_MORNING) {
         prefStart = Math.max(availStartHour, 5);
-        prefEnd = Math.min(availEndHour, 8);
+        prefEnd = Math.min(availEndHour, 8.5);
       } else if (goal.timePreference === TimePreference.MORNING) {
         prefStart = Math.max(availStartHour, 8);
-        prefEnd = Math.min(availEndHour, 12);
+        prefEnd = Math.min(availEndHour, 12.5);
       } else if (goal.timePreference === TimePreference.AFTERNOON) {
         prefStart = Math.max(availStartHour, 12);
         prefEnd = Math.min(availEndHour, 17);
       } else if (goal.timePreference === TimePreference.EVENING) {
         prefStart = Math.max(availStartHour, 17);
-        prefEnd = Math.min(availEndHour, 21);
+        prefEnd = Math.max(availEndHour, 22);
       } else if (goal.timePreference === TimePreference.NIGHT) {
         prefStart = Math.max(availStartHour, 21);
-        prefEnd = Math.min(availEndHour, 24);
+        prefEnd = 24;
       } else if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart && goal.customTimeEnd) {
         const [sH, sM] = goal.customTimeStart.split(":").map(Number);
         const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
-        const sDec = (sH || 0) + (sM || 0) / 60;
-        const eDec = (eH || 0) + (eM || 0) / 60;
-        prefStart = Math.max(availStartHour, sDec);
-        prefEnd = Math.min(availEndHour, eDec);
+        prefStart = (sH || 0) + (sM || 0) / 60;
+        prefEnd = (eH || 0) + (eM || 0) / 60;
       }
 
       if (prefStart >= prefEnd) {
@@ -1038,11 +1276,17 @@ export default function App() {
       const isToday = dayOffset === 0;
       const nowHourDecimal = isToday ? now.getHours() + (now.getMinutes() / 60) + 0.25 : 0;
 
-      const windowsToTry = [
-        { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
-        { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
-        { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
-      ];
+      let windowsToTry: { start: number; end: number }[] = [];
+      if (!goal.timePreference || goal.timePreference === TimePreference.ANY) {
+        windowsToTry = [
+          { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
+          { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
+        ];
+      } else {
+        windowsToTry = [
+          { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd }
+        ];
+      }
 
       let slotBookedOnDay = false;
 
@@ -1204,26 +1448,24 @@ export default function App() {
 
           if (timePref === TimePreference.EARLY_MORNING) {
             prefStart = Math.max(availStartHour, 5);
-            prefEnd = Math.min(availEndHour, 8);
+            prefEnd = Math.min(availEndHour, 8.5);
           } else if (timePref === TimePreference.MORNING) {
             prefStart = Math.max(availStartHour, 8);
-            prefEnd = Math.min(availEndHour, 12);
+            prefEnd = Math.min(availEndHour, 12.5);
           } else if (timePref === TimePreference.AFTERNOON) {
             prefStart = Math.max(availStartHour, 12);
             prefEnd = Math.min(availEndHour, 17);
           } else if (timePref === TimePreference.EVENING) {
             prefStart = Math.max(availStartHour, 17);
-            prefEnd = Math.min(availEndHour, 21);
+            prefEnd = Math.max(availEndHour, 22);
           } else if (timePref === TimePreference.NIGHT) {
             prefStart = Math.max(availStartHour, 21);
-            prefEnd = Math.min(availEndHour, 24);
+            prefEnd = 24;
           } else if (timePref === TimePreference.CUSTOM && updatedGoal.customTimeStart && updatedGoal.customTimeEnd) {
             const [sH, sM] = updatedGoal.customTimeStart.split(":").map(Number);
             const [eH, eM] = updatedGoal.customTimeEnd.split(":").map(Number);
-            const sDec = (sH || 0) + (sM || 0) / 60;
-            const eDec = (eH || 0) + (eM || 0) / 60;
-            prefStart = Math.max(availStartHour, sDec);
-            prefEnd = Math.min(availEndHour, eDec);
+            prefStart = (sH || 0) + (sM || 0) / 60;
+            prefEnd = (eH || 0) + (eM || 0) / 60;
           }
 
           if (prefStart >= prefEnd) {
@@ -1234,10 +1476,17 @@ export default function App() {
           const durMins = updatedGoal.durationMinutes || 60;
           const durHours = durMins / 60;
 
-          const windowsToTry = [
-            { start: prefStart, end: prefEnd },
-            { start: availStartHour, end: availEndHour }
-          ];
+          let windowsToTry: { start: number; end: number }[] = [];
+          if (!timePref || timePref === TimePreference.ANY) {
+            windowsToTry = [
+              { start: availStartHour, end: availEndHour },
+              { start: 8, end: 22 }
+            ];
+          } else {
+            windowsToTry = [
+              { start: prefStart, end: prefEnd }
+            ];
+          }
 
           let slotFound = false;
 
@@ -1341,6 +1590,78 @@ export default function App() {
     setGoals(nextGoals);
     setEvents(nextEvents);
     syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+  };
+
+  // EE-2. Pause / Hold Goal (Freeze Mode)
+  const handlePauseGoal = (
+    goalId: string, 
+    pauseReason: string, 
+    pauseUntil?: string, 
+    clearFutureEvents: boolean = true
+  ) => {
+    const targetGoal = goals.find(g => g.id === goalId);
+    if (!targetGoal) return;
+
+    const nowIso = new Date().toISOString();
+    const updatedGoal: Goal = {
+      ...targetGoal,
+      isPaused: true,
+      pauseReason,
+      pauseUntil: pauseUntil || undefined,
+      pausedAt: nowIso
+    };
+
+    const nextGoals = goals.map(g => g.id === goalId ? updatedGoal : g);
+
+    let nextEvents = events;
+    if (clearFutureEvents) {
+      const now = new Date();
+      nextEvents = events.filter(e => {
+        if (e.completed) return true;
+        const isThisGoal = e.goalId === goalId || (e.title && targetGoal.name && e.title.toLowerCase().includes(targetGoal.name.toLowerCase()));
+        if (!isThisGoal) return true;
+        return new Date(e.start) < now;
+      });
+      setEvents(nextEvents);
+    }
+
+    setGoals(nextGoals);
+    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+
+    const untilText = pauseUntil 
+      ? `until ${new Date(pauseUntil).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}` 
+      : "indefinitely";
+    
+    triggerSystemNotification(
+      "Goal Placed On Hold",
+      `⏸️ "${targetGoal.name}" is now on hold ${untilText}. Streak shield active!`,
+      "warning"
+    );
+  };
+
+  // EE-3. Resume Goal from Hold
+  const handleResumeGoal = (goalId: string) => {
+    const targetGoal = goals.find(g => g.id === goalId);
+    if (!targetGoal) return;
+
+    const updatedGoal: Goal = {
+      ...targetGoal,
+      isPaused: false,
+      pauseReason: undefined,
+      pauseUntil: undefined,
+      pausedAt: undefined
+    };
+
+    const nextGoals = goals.map(g => g.id === goalId ? updatedGoal : g);
+
+    setGoals(nextGoals);
+    syncToCloud(nextGoals, events, availability, notifications, coachMessages);
+
+    triggerSystemNotification(
+      "Goal Resumed!",
+      `▶️ "${targetGoal.name}" is active again! Auto-scheduler will now map sessions.`,
+      "success"
+    );
   };
 
   // F. Push solver bulk scheduled blocks
@@ -1713,6 +2034,7 @@ export default function App() {
               onDeleteGoal={handleDeleteGoal}
               onEditEvent={handleEditEvent}
               onBulkEditEvents={handleBulkEditEvents}
+              onResetAndRegenerateCalendar={handleResetAndRegenerateCalendar}
             />
           </div>
         )}
@@ -1735,6 +2057,9 @@ export default function App() {
               setAutoScheduleEnabled(val);
               localStorage.setItem("auto_schedule_enabled", val ? "true" : "false");
             }}
+            onCompleteSession={handleCompleteTimerSession}
+            onPauseGoal={handlePauseGoal}
+            onResumeGoal={handleResumeGoal}
           />
         )}
 

@@ -20,7 +20,12 @@ import {
   AlertTriangle,
   Filter,
   ArrowUpDown,
-  ShieldAlert
+  ShieldAlert,
+  CheckCircle2,
+  Pause,
+  PauseCircle,
+  ShieldCheck,
+  CalendarOff
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -115,6 +120,17 @@ const PRESET_TEMPLATES = [
     color: "#f59e0b",
     priority: "normal" as GoalPriority,
     description: "Immersive reading to broaden professional and life acumen."
+  },
+  {
+    name: "Cybersecurity & Network Defense",
+    type: GoalType.STUDY,
+    category: "Cybersecurity",
+    weeklyTarget: 4,
+    durationMinutes: 60,
+    timePreference: TimePreference.EVENING,
+    color: "#eab308",
+    priority: "important" as GoalPriority,
+    description: "Ethical hacking, threat analysis, SIEM lab practice, and Security+ certification prep."
   }
 ];
 
@@ -132,6 +148,9 @@ interface GoalTrackerProps {
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
   autoScheduleEnabled?: boolean;
   onToggleAutoSchedule?: (val: boolean) => void;
+  onCompleteSession?: (eventId?: string, goalId?: string, note?: string) => void;
+  onPauseGoal?: (goalId: string, pauseReason: string, pauseUntil?: string, clearFutureEvents?: boolean) => void;
+  onResumeGoal?: (goalId: string) => void;
 }
 
 export default function GoalTracker({
@@ -147,16 +166,44 @@ export default function GoalTracker({
   onBulkAddEvents,
   onAddNotification,
   autoScheduleEnabled = true,
-  onToggleAutoSchedule
+  onToggleAutoSchedule,
+  onCompleteSession,
+  onPauseGoal,
+  onResumeGoal
 }: GoalTrackerProps) {
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Goal Hold / Freeze Modal State
+  const [pauseModalGoal, setPauseModalGoal] = useState<Goal | null>(null);
+  const [pausePreset, setPausePreset] = useState<"1_week" | "2_weeks" | "1_month" | "2_months" | "indefinite" | "custom">("1_week");
+  const [pauseReason, setPauseReason] = useState<string>("exam_week");
+  const [customPauseUntil, setCustomPauseUntil] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    return d.toISOString().split("T")[0];
+  });
+  const [clearFutureEvents, setClearFutureEvents] = useState<boolean>(true);
+
+  // Status Filter in Catalog ("all" | "active" | "on_hold")
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "on_hold">("all");
+
   // Focus Timer Modal State
   const [timerOpen, setTimerOpen] = useState(false);
   const [timerGoal, setTimerGoal] = useState<Goal | null>(null);
+
+  const getPauseReasonLabel = (reason?: string) => {
+    switch (reason) {
+      case "exam_week": return "📝 Exam Week";
+      case "school_term": return "🎒 School Term";
+      case "vacation": return "✈️ Vacation / Travel";
+      case "project_crunch": return "💼 Project Crunch";
+      case "personal": return "🌿 Personal Break";
+      default: return reason ? `🏷️ ${reason}` : "⏸️ On Hold";
+    }
+  };
 
   const handleStartTimer = (g: Goal) => {
     triggerFocusTimer({
@@ -586,12 +633,22 @@ export default function GoalTracker({
 
   // --- AUTOMATIC SCHEDULING ALGORITHM ---
   const handleAutoSchedule = () => {
+    const isAutoSchedEvent = (e: CalendarEvent) =>
+      !e.completed &&
+      e.type !== "external" &&
+      (
+        e.id.startsWith("sch_") ||
+        e.id.includes("_sch_") ||
+        e.id.includes("sch_") ||
+        (e.notes && (e.notes.toLowerCase().includes("auto-scheduled") || e.notes.toLowerCase().includes("intelligently mapped")))
+      );
+
     // Keep fixed events: completed events, external events, or manually added custom non-auto events
-    const fixedEvents = events.filter(e => e.completed || e.type === "external" || (!e.id.includes("_sch_") && !e.notes?.includes("Intelligently mapped")));
+    const fixedEvents = events.filter(e => !isAutoSchedEvent(e));
     
     // Auto-scheduled event IDs to replace with fresh priority-sorted placements
     const autoSchedEvtIdsToRemove = events
-      .filter(e => !e.completed && e.type !== "external" && (e.id.includes("_sch_") || e.notes?.includes("Intelligently mapped")))
+      .filter(e => isAutoSchedEvent(e))
       .map(e => e.id);
 
     const newScheduledEvents: CalendarEvent[] = [];
@@ -645,23 +702,36 @@ export default function GoalTracker({
         let prefStart = availStartHour;
         let prefEnd = availEndHour;
 
-        if (goal.timePreference === TimePreference.MORNING) {
+        if (goal.timePreference === TimePreference.EARLY_MORNING) {
+          prefStart = Math.max(availStartHour, 5);
+          prefEnd = Math.min(availEndHour, 8.5);
+        } else if (goal.timePreference === TimePreference.MORNING) {
           prefStart = Math.max(availStartHour, 8);
-          prefEnd = Math.min(availEndHour, 12);
+          prefEnd = Math.min(availEndHour, 12.5);
         } else if (goal.timePreference === TimePreference.AFTERNOON) {
           prefStart = Math.max(availStartHour, 12);
           prefEnd = Math.min(availEndHour, 17);
         } else if (goal.timePreference === TimePreference.EVENING) {
           prefStart = Math.max(availStartHour, 17);
-          prefEnd = Math.min(availEndHour, 22);
+          prefEnd = Math.max(availEndHour, 22);
+        } else if (goal.timePreference === TimePreference.NIGHT) {
+          prefStart = Math.max(availStartHour, 21);
+          prefEnd = 24;
         }
 
         const blockDurationHours = goal.durationMinutes / 60;
 
-        const windowsToTry = [
-          { start: prefStart, end: prefEnd },
-          { start: availStartHour, end: availEndHour }
-        ];
+        let windowsToTry: { start: number; end: number }[] = [];
+        if (!goal.timePreference || goal.timePreference === TimePreference.ANY) {
+          windowsToTry = [
+            { start: prefStart, end: prefEnd },
+            { start: availStartHour, end: availEndHour }
+          ];
+        } else {
+          windowsToTry = [
+            { start: prefStart, end: prefEnd }
+          ];
+        }
 
         let slotBookedOnDay = false;
 
@@ -1153,44 +1223,79 @@ export default function GoalTracker({
         {/* Goals Grid Catalog Filtering & Controls */}
         {goals.length > 0 && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 bg-black/20 p-2.5 rounded-xl border border-white/5 text-xs">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1 mr-1">
-                <Filter className="w-3 h-3 text-indigo-400" /> Filter:
-              </span>
-              <button
-                onClick={() => setPriorityFilter("all")}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer ${
-                  priorityFilter === "all" ? "bg-indigo-600 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                All ({goals.length})
-              </button>
-              <button
-                onClick={() => setPriorityFilter("critical")}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
-                  priorityFilter === "critical" ? "bg-rose-500 text-white shadow-sm ring-1 ring-rose-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
-                Critical ({goals.filter(g => g.priority === "critical").length})
-              </button>
-              <button
-                onClick={() => setPriorityFilter("important")}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
-                  priorityFilter === "important" ? "bg-amber-500 text-white shadow-sm ring-1 ring-amber-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                Important ({goals.filter(g => g.priority === "important").length})
-              </button>
-              <button
-                onClick={() => setPriorityFilter("normal")}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
-                  priorityFilter === "normal" ? "bg-slate-700 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                Normal ({goals.filter(g => (g.priority || "normal") === "normal").length})
-              </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Status Filter Tabs */}
+              <div className="flex items-center gap-1 border-r border-white/10 pr-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1 mr-1">
+                  Status:
+                </span>
+                <button
+                  onClick={() => setStatusFilter("all")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                    statusFilter === "all" ? "bg-indigo-600 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  All ({goals.length})
+                </button>
+                <button
+                  onClick={() => setStatusFilter("active")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                    statusFilter === "active" ? "bg-emerald-600 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  Active ({goals.filter(g => !g.isPaused).length})
+                </button>
+                <button
+                  onClick={() => setStatusFilter("on_hold")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                    statusFilter === "on_hold" ? "bg-amber-600 text-white shadow-sm ring-1 ring-amber-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  <Pause className="w-2.5 h-2.5" />
+                  On Hold ({goals.filter(g => g.isPaused).length})
+                </button>
+              </div>
+
+              {/* Priority Filters */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1 mr-1">
+                  <Filter className="w-3 h-3 text-indigo-400" /> Priority:
+                </span>
+                <button
+                  onClick={() => setPriorityFilter("all")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                    priorityFilter === "all" ? "bg-indigo-600 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  All ({goals.length})
+                </button>
+                <button
+                  onClick={() => setPriorityFilter("critical")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                    priorityFilter === "critical" ? "bg-rose-500 text-white shadow-sm ring-1 ring-rose-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                  Critical ({goals.filter(g => g.priority === "critical").length})
+                </button>
+                <button
+                  onClick={() => setPriorityFilter("important")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                    priorityFilter === "important" ? "bg-amber-500 text-white shadow-sm ring-1 ring-amber-400" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  Important ({goals.filter(g => g.priority === "important").length})
+                </button>
+                <button
+                  onClick={() => setPriorityFilter("normal")}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                    priorityFilter === "normal" ? "bg-slate-700 text-white shadow-sm" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  Normal ({goals.filter(g => (g.priority || "normal") === "normal").length})
+                </button>
+              </div>
             </div>
 
             <button
@@ -1212,6 +1317,11 @@ export default function GoalTracker({
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {goals
+              .filter(g => {
+                if (statusFilter === "active") return !g.isPaused;
+                if (statusFilter === "on_hold") return g.isPaused;
+                return true;
+              })
               .filter(g => priorityFilter === "all" || (g.priority || "normal") === priorityFilter)
               .sort((a, b) => {
                 if (sortByPriority) {
@@ -1229,7 +1339,9 @@ export default function GoalTracker({
                   key={g.id} 
                   id={`goal_panel_card_${g.id}`}
                   className={`border rounded-xl p-4 flex flex-col justify-between transition relative overflow-hidden ${
-                    gPriority === "critical"
+                    g.isPaused
+                      ? "border-amber-500/40 bg-amber-950/20 hover:border-amber-500/60"
+                      : gPriority === "critical"
                       ? "border-rose-500/30 bg-rose-950/10 hover:border-rose-500/50 hover:bg-rose-950/20 shadow-md shadow-rose-950/20"
                       : gPriority === "important"
                       ? "border-amber-500/30 bg-amber-950/10 hover:border-amber-500/50 hover:bg-amber-950/20"
@@ -1237,6 +1349,22 @@ export default function GoalTracker({
                   }`}
                 >
                   <div className="space-y-1.5">
+                    {/* On-Hold Status Banner */}
+                    {g.isPaused && (
+                      <div className="bg-amber-500/15 border border-amber-500/30 text-amber-200 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                          <Pause className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-pulse" />
+                          <span className="font-bold text-amber-300">ON HOLD</span>
+                          <span className="text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-200 truncate">
+                            {getPauseReasonLabel(g.pauseReason)}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-amber-300 font-mono shrink-0">
+                          {g.pauseUntil ? `Resumes ${new Date(g.pauseUntil).toLocaleDateString([], { month: "short", day: "numeric" })}` : "Indefinite"}
+                        </span>
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full flex items-center gap-1.5" style={{ backgroundColor: `${g.color}25`, color: g.color }}>
@@ -1449,49 +1577,99 @@ export default function GoalTracker({
                     </div>
 
                     <div className="flex flex-col gap-2 mt-2">
-                      <button
-                        type="button"
-                        id={`start_goal_timer_btn_${g.id}`}
-                        onClick={() => handleStartTimer(g)}
-                        className="w-full py-2 px-3 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
-                        <span>Start {g.durationMinutes}m Focus Timer</span>
-                      </button>
-
-                      {/* Cascading Goal Agenda Delay Buttons */}
-                      <div className="flex items-center justify-between gap-1 bg-black/20 p-1.5 rounded-lg border border-white/5 text-[10px]">
-                        <span className="text-slate-400 font-semibold flex items-center gap-1">
-                          <RotateCw className="w-3 h-3 text-amber-400" />
-                          Delay Agenda:
-                        </span>
-                        <div className="flex items-center gap-1">
+                      {g.isPaused ? (
+                        <div className="space-y-2">
                           <button
                             type="button"
-                            onClick={() => handleDelayGoalAgenda(g, 1)}
-                            className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold transition cursor-pointer"
-                            title="Shift all upcoming sessions for this goal forward by 1 day"
+                            id={`resume_goal_btn_${g.id}`}
+                            onClick={() => onResumeGoal && onResumeGoal(g.id)}
+                            className="w-full py-2 px-3 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md active:scale-95"
                           >
-                            +1 Day
+                            <Play className="w-3.5 h-3.5 fill-current text-emerald-400" />
+                            <span>Resume Goal Early</span>
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelayGoalAgenda(g, 2)}
-                            className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold transition cursor-pointer"
-                            title="Shift all upcoming sessions for this goal forward by 2 days"
-                          >
-                            +2 Days
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelayGoalAgenda(g, 7)}
-                            className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold transition cursor-pointer"
-                            title="Shift all upcoming sessions for this goal forward by 1 week"
-                          >
-                            +1 Week
-                          </button>
+                          <div className="flex items-center justify-between gap-1 bg-indigo-500/10 p-1.5 rounded-lg border border-indigo-500/20 text-[10px] text-indigo-300">
+                            <span className="font-semibold flex items-center gap-1">
+                              <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+                              Streak Shield Active
+                            </span>
+                            <span className="text-[9px] text-slate-400">Streak frozen during hold</span>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              id={`start_goal_timer_btn_${g.id}`}
+                              onClick={() => handleStartTimer(g)}
+                              className="w-full py-2 px-2.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current text-indigo-400" />
+                              <span>Start Timer</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              id={`log_finish_goal_btn_${g.id}`}
+                              onClick={() => {
+                                if (onCompleteSession) {
+                                  onCompleteSession(undefined, g.id, g.lastSessionNote || undefined);
+                                } else {
+                                  onEditGoal(g.id, { completedCount: g.completedCount + 1 });
+                                }
+                              }}
+                              className="w-full py-2 px-2.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                              title="Instantly mark 1 session as completed for this goal"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Log & Finish</span>
+                            </button>
+                          </div>
+
+                          {/* Cascading Goal Agenda Delay + Hold Buttons */}
+                          <div className="flex items-center justify-between gap-1 bg-black/20 p-1.5 rounded-lg border border-white/5 text-[10px]">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <span className="text-slate-400 font-semibold flex items-center gap-1">
+                                <RotateCw className="w-3 h-3 text-amber-400" />
+                                Shift:
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleDelayGoalAgenda(g, 1)}
+                                className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
+                                title="Shift all upcoming sessions for this goal forward by 1 day"
+                              >
+                                +1d
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDelayGoalAgenda(g, 7)}
+                                className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
+                                title="Shift all upcoming sessions for this goal forward by 1 week"
+                              >
+                                +1w
+                              </button>
+                            </div>
+
+                            <button
+                              type="button"
+                              id={`pause_goal_btn_${g.id}`}
+                              onClick={() => {
+                                setPauseModalGoal(g);
+                                setPausePreset("1_week");
+                                setPauseReason("exam_week");
+                                setClearFutureEvents(true);
+                              }}
+                              className="bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-500/40 px-2 py-0.5 rounded font-extrabold transition flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                              title="Hold / Freeze goal during exam week, school terms, or vacation"
+                            >
+                              <Pause className="w-3 h-3" />
+                              <span>Hold / Freeze</span>
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1612,6 +1790,202 @@ export default function GoalTracker({
           })}
         </div>
       </div>
+
+      {/* Goal Hold / Freeze Configuration Modal */}
+      {pauseModalGoal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div 
+            className="bg-[#121524] border border-amber-500/30 rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5 relative text-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button 
+              type="button" 
+              onClick={() => setPauseModalGoal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-white/10 pb-4">
+              <div className="p-3 bg-amber-500/20 border border-amber-500/30 rounded-xl text-amber-400">
+                <PauseCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  Hold / Freeze Goal
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    {pauseModalGoal.name}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Temporarily pause scheduling & protect your consistency streak during exams, school terms, or travel.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              {/* Hold Duration Presets */}
+              <div>
+                <label className="block text-slate-300 font-bold mb-2 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                  Hold Duration:
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {[
+                    { id: "1_week", label: "1 Week", desc: "Exam Week 📝" },
+                    { id: "2_weeks", label: "2 Weeks", desc: "Short Break" },
+                    { id: "1_month", label: "1 Month", desc: "Midterm Term" },
+                    { id: "2_months", label: "2 Months", desc: "School Term 🎒" },
+                    { id: "indefinite", label: "Indefinite", desc: "Until Resumed" },
+                    { id: "custom", label: "Custom Date", desc: "Pick Date" },
+                  ].map(preset => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => setPausePreset(preset.id as any)}
+                      className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                        pausePreset === preset.id
+                          ? "bg-amber-500/20 border-amber-500/60 text-white ring-1 ring-amber-500/40"
+                          : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="font-bold text-xs">{preset.label}</div>
+                      <div className="text-[10px] text-amber-300/80">{preset.desc}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {pausePreset === "custom" && (
+                  <div className="mt-3 bg-black/20 p-3 rounded-xl border border-white/10">
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Resume Date:
+                    </label>
+                    <input
+                      type="date"
+                      value={customPauseUntil}
+                      min={new Date().toISOString().split("T")[0]}
+                      onChange={(e) => setCustomPauseUntil(e.target.value)}
+                      className="w-full bg-[#0d0f1b] border border-white/20 rounded-lg p-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-400"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Pause Reason Selector */}
+              <div>
+                <label className="block text-slate-300 font-bold mb-2 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  Hold Reason / Tag:
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: "exam_week", label: "📝 Exam Week" },
+                    { id: "school_term", label: "🎒 School Term" },
+                    { id: "vacation", label: "✈️ Vacation / Travel" },
+                    { id: "project_crunch", label: "💼 Project Crunch" },
+                    { id: "personal", label: "🌿 Personal Break" },
+                  ].map(reason => (
+                    <button
+                      key={reason.id}
+                      type="button"
+                      onClick={() => setPauseReason(reason.id)}
+                      className={`p-2 rounded-lg border text-left text-xs font-semibold transition cursor-pointer ${
+                        pauseReason === reason.id
+                          ? "bg-indigo-600/30 border-indigo-400 text-white"
+                          : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                      }`}
+                    >
+                      {reason.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Clear Uncompleted Events Checkbox */}
+              <div className="p-3 bg-black/20 rounded-xl border border-white/10">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={clearFutureEvents}
+                    onChange={(e) => setClearFutureEvents(e.target.checked)}
+                    className="mt-0.5 rounded border-white/20 text-amber-500 focus:ring-amber-500/20 bg-[#0d0f1b] w-4 h-4 cursor-pointer"
+                  />
+                  <div>
+                    <span className="font-bold text-slate-200 text-xs block">
+                      Clear Uncompleted Scheduled Events
+                    </span>
+                    <span className="text-[10px] text-slate-400 leading-snug block mt-0.5">
+                      Automatically remove pending future calendar blocks for this goal during the hold period so your schedule stays clean.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Streak Shield Highlight */}
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-2 text-[11px] text-emerald-300">
+                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <strong>Streak Shield Active:</strong> Your consistency metrics and streak counters will freeze without penalty during this hold window.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setPauseModalGoal(null)}
+                className="px-4 py-2 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl border border-white/10 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!pauseModalGoal) return;
+                  let pauseUntilDateStr: string | undefined = undefined;
+                  if (pausePreset === "1_week") {
+                    const d = new Date();
+                    d.setDate(d.getDate() + 7);
+                    pauseUntilDateStr = d.toISOString().split("T")[0];
+                  } else if (pausePreset === "2_weeks") {
+                    const d = new Date();
+                    d.setDate(d.getDate() + 14);
+                    pauseUntilDateStr = d.toISOString().split("T")[0];
+                  } else if (pausePreset === "1_month") {
+                    const d = new Date();
+                    d.setMonth(d.getMonth() + 1);
+                    pauseUntilDateStr = d.toISOString().split("T")[0];
+                  } else if (pausePreset === "2_months") {
+                    const d = new Date();
+                    d.setMonth(d.getMonth() + 2);
+                    pauseUntilDateStr = d.toISOString().split("T")[0];
+                  } else if (pausePreset === "custom") {
+                    pauseUntilDateStr = customPauseUntil;
+                  } else if (pausePreset === "indefinite") {
+                    pauseUntilDateStr = undefined;
+                  }
+
+                  if (onPauseGoal) {
+                    onPauseGoal(pauseModalGoal.id, pauseReason, pauseUntilDateStr, clearFutureEvents);
+                  } else {
+                    onEditGoal(pauseModalGoal.id, {
+                      isPaused: true,
+                      pauseReason,
+                      pauseUntil: pauseUntilDateStr,
+                      pausedAt: new Date().toISOString()
+                    });
+                  }
+                  setPauseModalGoal(null);
+                }}
+                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-black text-xs font-extrabold rounded-xl shadow-lg shadow-amber-500/20 transition cursor-pointer flex items-center gap-1.5"
+              >
+                <Pause className="w-3.5 h-3.5 fill-current" />
+                <span>Apply Hold & Freeze Goal</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

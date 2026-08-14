@@ -216,6 +216,11 @@ export default function FocusTimerModal({
     if (!timerState?.isRunning) return;
 
     const interval = setInterval(() => {
+      let isTimerCompleted = false;
+      let completedEventId: string | undefined;
+      let completedGoalId: string | undefined;
+      let completedNote: string | undefined;
+
       setTimerState((prev) => {
         if (!prev || !prev.isRunning || !prev.targetEndTime) return prev;
 
@@ -223,9 +228,11 @@ export default function FocusTimerModal({
         const diffSec = Math.max(0, Math.round((prev.targetEndTime - now) / 1000));
 
         if (diffSec <= 0) {
-          playCompletionChime();
-          onCompleteRef.current(prev.eventId, prev.goalId, prev.sessionTakeawayNote.trim() || undefined);
-          
+          isTimerCompleted = true;
+          completedEventId = prev.eventId;
+          completedGoalId = prev.goalId;
+          completedNote = prev.sessionTakeawayNote.trim() || undefined;
+
           const completedState: ActiveTimerData = {
             ...prev,
             timeRemaining: 0,
@@ -242,6 +249,13 @@ export default function FocusTimerModal({
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedState));
         return updatedState;
       });
+
+      if (isTimerCompleted) {
+        playCompletionChime();
+        if (onCompleteRef.current) {
+          onCompleteRef.current(completedEventId, completedGoalId, completedNote);
+        }
+      }
     }, 1000);
 
     return () => clearInterval(interval);
@@ -262,6 +276,10 @@ export default function FocusTimerModal({
   };
 
   const handleAdjustMinutes = (deltaMins: number) => {
+    if (timerState.eventId && onExtendRef.current) {
+      onExtendRef.current(timerState.eventId, deltaMins);
+    }
+
     updateTimerState((prev) => {
       if (!prev) return null;
       const deltaSec = deltaMins * 60;
@@ -269,10 +287,6 @@ export default function FocusTimerModal({
       const nextTotal = Math.max(10, prev.totalSec + deltaSec);
       const isRunningNow = deltaMins > 0 ? true : prev.isRunning;
       const nextTargetEnd = isRunningNow ? Date.now() + nextRemaining * 1000 : null;
-
-      if (prev.eventId && onExtendRef.current) {
-        onExtendRef.current(prev.eventId, deltaMins);
-      }
 
       return {
         ...prev,

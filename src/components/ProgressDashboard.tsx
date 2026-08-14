@@ -31,9 +31,15 @@ import {
   Calendar,
   Medal,
   Star,
-  TrendingUp
+  TrendingUp,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  Pause
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
+import { renderGoalIcon } from "../lib/goalIcons";
 
 interface ProgressDashboardProps {
   goals: Goal[];
@@ -145,29 +151,81 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
 
   const streakBadge = getBadgeTier(maxStreak, 3, 5, 7);
 
-  // Category event counts & badges for milestone cards
-  const pythonEvents = completedEvents.filter(e => 
-    e.title.toLowerCase().includes("python") || 
-    e.title.toLowerCase().includes("code") || 
-    e.type === "side_project" ||
-    e.type === "job_search"
+  const [badgesCollapsed, setBadgesCollapsed] = useState(false);
+
+  // Dynamic Goal Badges generated directly from active user goals
+  const dynamicGoalBadges = goals.map(goal => {
+    const goalEvts = completedEvents.filter(e => e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goal.name.toLowerCase())));
+    const totalDone = Math.max(goal.completedCount, goalEvts.length);
+    const tier = getBadgeTier(totalDone, 2, 5, 8);
+    return {
+      id: goal.id,
+      name: goal.name,
+      subtitle: goal.category || goal.type.toUpperCase(),
+      color: goal.color || "#818cf8",
+      icon: goal.icon,
+      type: goal.type,
+      totalDone,
+      tier
+    };
+  });
+
+  const [splitViewMode, setSplitViewMode] = useState<"scheduled" | "completed">(
+    completedEvents.length > 0 ? "completed" : "scheduled"
   );
-  const pythonBadge = getBadgeTier(pythonEvents.length, 2, 5, 8);
+  const [paceTimeframe, setPaceTimeframe] = useState<"current_week" | "past_7_days">("current_week");
+  const [paceMetricMode, setPaceMetricMode] = useState<"both" | "completed" | "scheduled">("both");
+  const [targetChartTimeframe, setTargetChartTimeframe] = useState<"this_week" | "all_time">("this_week");
+  const [dashboardGoalScope, setDashboardGoalScope] = useState<"all" | "active">("all");
 
-  const fitnessEvents = completedEvents.filter(e => e.type === "workout");
-  const fitnessBadge = getBadgeTier(fitnessEvents.length, 2, 5, 8);
+  // Chart A: Target vs Actual bar chart data sorted by Goal Priority
+  const getPriorityScore = (p?: string) => (p === "critical" ? 3 : p === "important" ? 2 : 1);
+  const scopedGoals = goals.filter(g => dashboardGoalScope === "all" || !g.isPaused);
+  const sortedGoals = [...scopedGoals].sort((a, b) => getPriorityScore(b.priority) - getPriorityScore(a.priority));
 
-  const studyEventsAll = completedEvents.filter(e => e.type === "study");
-  const studyBadge = getBadgeTier(studyEventsAll.length, 2, 5, 10);
+  const now = new Date();
+  const day = now.getDay();
+  const diffToMon = now.getDate() - day + (day === 0 ? -6 : 1);
+  const startOfWeek = new Date(now.getFullYear(), now.getMonth(), diffToMon);
+  startOfWeek.setHours(0, 0, 0, 0);
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 7);
 
-  // Chart A: Target vs Actual bar chart data
-  const goalCompareData = goals.map(g => ({
-    name: g.name.length > 18 ? g.name.substring(0, 15) + "..." : g.name,
-    Target: g.weeklyTarget,
-    Completed: g.completedCount,
-  }));
+  const goalCompareData = sortedGoals.map(g => {
+    const goalEvtsThisWeek = events.filter(e => {
+      if (e.goalId !== g.id && (!e.title || !e.title.toLowerCase().includes(g.name.toLowerCase()))) return false;
+      const d = new Date(e.start);
+      return d >= startOfWeek && d < endOfWeek;
+    });
 
-  // Chart B: Distribution data
+    const completedThisWeek = goalEvtsThisWeek.filter(e => e.completed).length;
+    const scheduledThisWeek = goalEvtsThisWeek.length;
+    const totalCompleted = Math.max(
+      g.completedCount,
+      completedEvents.filter(e => e.goalId === g.id || (e.title && e.title.toLowerCase().includes(g.name.toLowerCase()))).length
+    );
+
+    const completedVal = targetChartTimeframe === "this_week" ? completedThisWeek : totalCompleted;
+    const targetVal = g.weeklyTarget;
+
+    return {
+      id: g.id,
+      fullName: g.name,
+      name: g.name.length > 15 ? g.name.substring(0, 13) + "..." : g.name,
+      priority: g.priority || "normal",
+      category: g.category || g.type,
+      isPaused: g.isPaused,
+      pauseReason: g.pauseReason,
+      Target: targetVal,
+      Completed: completedVal,
+      ScheduledThisWeek: scheduledThisWeek,
+      CompletedThisWeek: completedThisWeek,
+      TotalCompleted: totalCompleted,
+      color: g.color || "#818cf8"
+    };
+  });
+
+  // Chart B: Dynamic Category Distribution data
   const typeDetails: { [key: string]: { label: string; color: string } } = {
     workout: { label: "Workouts", color: "#f43f5e" },
     study: { label: "Studies & Dev", color: "#06b6d4" },
@@ -178,40 +236,86 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
     external: { label: "External Busy", color: "#64748b" }
   };
 
-  const distributionData = Object.entries(typeDetails).map(([typeKey, details]) => {
-    const typeEvents = completedEvents.filter(e => e.type === typeKey);
-    const totalMinutes = typeEvents.reduce((acc, curr) => {
-      const goal = goals.find(g => g.id === curr.goalId);
-      return acc + (goal ? goal.durationMinutes : 60);
-    }, 0);
-    const hours = Math.round((totalMinutes / 60) * 10) / 10;
-    return {
-      name: `${details.label}`,
-      value: hours,
-      color: details.color
-    };
-  }).filter(d => d.value > 0);
+  const catMap: { [key: string]: { name: string; value: number; color: string } } = {};
+  const sourceEventsForSplit = splitViewMode === "completed" ? completedEvents : events;
 
-  const finalDistributionData = distributionData.length > 0 
-    ? distributionData 
-    : [{ name: "No Active Records", value: 1, color: "#cbd5e1" }];
+  if (sourceEventsForSplit.length > 0) {
+    sourceEventsForSplit.forEach(evt => {
+      const goal = goals.find(g => g.id === evt.goalId);
+      const catKey = goal?.category || goal?.name || (evt.type ? evt.type.replace('_', ' ').toUpperCase() : "General");
+      const duration = goal ? goal.durationMinutes : Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000) || 60;
+      const hours = duration / 60;
+      const color = goal?.color || typeDetails[evt.type]?.color || "#818cf8";
 
-  // Past 7 days area chart
-  const last7DaysOfCompletions = Array.from({ length: 7 }, (_, idx) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (6 - idx));
+      if (!catMap[catKey]) {
+        catMap[catKey] = { name: catKey, value: 0, color };
+      }
+      catMap[catKey].value += hours;
+    });
+  } else if (goals.length > 0) {
+    goals.forEach(goal => {
+      const catKey = goal.category || goal.name;
+      const hours = (goal.weeklyTarget * goal.durationMinutes) / 60;
+      const color = goal.color || "#818cf8";
+      if (!catMap[catKey]) {
+        catMap[catKey] = { name: catKey, value: 0, color };
+      }
+      catMap[catKey].value += hours;
+    });
+  }
+
+  const categorySplitData = Object.values(catMap)
+    .map(item => ({ ...item, value: Math.round(item.value * 10) / 10 }))
+    .filter(item => item.value > 0);
+
+  const totalSplitHours = Math.round(categorySplitData.reduce((acc, c) => acc + c.value, 0) * 10) / 10;
+
+  const finalDistributionData = categorySplitData.length > 0 
+    ? categorySplitData 
+    : [{ name: "No Active Records", value: 1, color: "#64748b" }];
+
+  // Daily Completion & Scheduled Pace data calculation
+  const getPaceDays = () => {
+    if (paceTimeframe === "current_week") {
+      const now = new Date();
+      const day = now.getDay();
+      const diffToMon = now.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(now.getFullYear(), now.getMonth(), diffToMon);
+
+      return Array.from({ length: 7 }, (_, idx) => {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + idx);
+        return d;
+      });
+    } else {
+      return Array.from({ length: 7 }, (_, idx) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - idx));
+        return d;
+      });
+    }
+  };
+
+  const dailyPaceData = getPaceDays().map((d) => {
     const dayStr = d.toLocaleDateString("en-US", { weekday: "short" });
+    const fullDateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     
-    const count = completedEvents.filter(e => {
+    const dayEvents = events.filter(e => {
       const eDate = new Date(e.start);
       return eDate.getFullYear() === d.getFullYear() && 
              eDate.getMonth() === d.getMonth() && 
              eDate.getDate() === d.getDate();
-    }).length;
+    });
+
+    const scheduledCount = dayEvents.length;
+    const completedCount = dayEvents.filter(e => e.completed).length;
 
     return {
       day: dayStr,
-      sessions: count
+      fullDateStr,
+      Scheduled: scheduledCount,
+      Completed: completedCount,
+      sessions: paceMetricMode === "completed" ? completedCount : (paceMetricMode === "scheduled" ? scheduledCount : Math.max(scheduledCount, completedCount))
     };
   });
 
@@ -436,210 +540,289 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
 
       {/* SECTION 3: MILESTONE & STREAK BADGES */}
       <div id="milestone_streak_badges_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
-        <div>
-          <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
-            <Award className="w-4 h-4 text-amber-400" />
-            Milestone & Streak Badges
-          </h3>
-          <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
-            Earn tiered rewards for maintaining weekly streaks in key routines like Python Dev or Fitness!
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/10">
+          <div>
+            <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
+              <Award className="w-4 h-4 text-amber-400" />
+              Milestone & Streak Badges
+            </h3>
+            <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
+              Earn tiered rewards as you log sessions and maintain streaks across your routines.
+            </p>
+          </div>
+
+          <button
+            onClick={() => setBadgesCollapsed(!badgesCollapsed)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/30 border border-white/10 text-xs text-slate-300 hover:text-white transition cursor-pointer self-start sm:self-auto shrink-0"
+          >
+            {badgesCollapsed ? (
+              <>
+                <Eye className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Show Badges ({dynamicGoalBadges.length + 1})</span>
+                <ChevronDown className="w-3.5 h-3.5 ml-0.5" />
+              </>
+            ) : (
+              <>
+                <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+                <span>Hide Section</span>
+                <ChevronUp className="w-3.5 h-3.5 ml-0.5" />
+              </>
+            )}
+          </button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          
-          {/* BADGE 1: PYTHON DEV MASTER */}
-          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-blue-500/20 text-blue-400 rounded-lg">
-                  <Code className="w-5 h-5" />
+        {!badgesCollapsed && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            
+            {/* DYNAMIC GOAL BADGE CARDS */}
+            {dynamicGoalBadges.map((badgeItem) => (
+              <div 
+                key={badgeItem.id} 
+                className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0 pr-1">
+                    <div 
+                      className="p-2 rounded-lg shrink-0"
+                      style={{ backgroundColor: `${badgeItem.color}25`, color: badgeItem.color }}
+                    >
+                      {renderGoalIcon(badgeItem.icon, badgeItem.type, "w-4 h-4")}
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-bold text-white truncate" title={badgeItem.name}>
+                        {badgeItem.name}
+                      </h4>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        {badgeItem.subtitle}
+                      </p>
+                    </div>
+                  </div>
+
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${badgeItem.tier.color}`}>
+                    {badgeItem.tier.label}
+                  </span>
                 </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white">Python Dev Master</h4>
-                  <p className="text-[10px] text-slate-400">Coding & AI Engineering</p>
+
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[10px] text-slate-300 font-medium">
+                    <span>Completed: <strong>{badgeItem.totalDone}</strong></span>
+                    <span>Next: {badgeItem.tier.nextLevel}</span>
+                  </div>
+                  <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{ 
+                        backgroundColor: badgeItem.color,
+                        width: `${Math.min((badgeItem.totalDone / badgeItem.tier.target) * 100, 100)}%` 
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-slate-400 italic leading-tight">
+                  {badgeItem.totalDone >= 8 
+                    ? `🏆 Masterclass status! Unstoppable progress in ${badgeItem.name}.`
+                    : `Complete ${Math.max(badgeItem.tier.target - badgeItem.totalDone, 1)} more sessions to elevate level.`}
+                </p>
+              </div>
+            ))}
+
+            {/* CONSISTENCY STREAK BADGE CARD */}
+            <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0 pr-1">
+                  <div className="p-2 bg-amber-500/20 text-amber-400 rounded-lg shrink-0">
+                    <Flame className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-bold text-white truncate">Consistency Streak</h4>
+                    <p className="text-[10px] text-slate-400 truncate">Daily Goal Completion</p>
+                  </div>
+                </div>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${streakBadge.color}`}>
+                  {streakBadge.label}
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[10px] text-slate-300 font-medium">
+                  <span>Max Streak: <strong>{maxStreak} Days</strong></span>
+                  <span>Target: {streakBadge.target} Days</span>
+                </div>
+                <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-amber-500 h-full rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min((maxStreak / streakBadge.target) * 100, 100)}%` }}
+                  />
                 </div>
               </div>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${pythonBadge.color}`}>
-                {pythonBadge.label}
-              </span>
+
+              <p className="text-[10px] text-slate-400 italic leading-tight">
+                {maxStreak >= 7 
+                  ? "🔥 Unstoppable Streak Legend! Completed goals 7+ days in a row."
+                  : `Maintain a ${streakBadge.target}-day consecutive goal streak for the next reward tier.`}
+              </p>
             </div>
 
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
-                <span>Completed Sessions: <strong>{pythonEvents.length}</strong></span>
-                <span>Next: {pythonBadge.nextLevel}</span>
-              </div>
-              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-blue-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min((pythonEvents.length / pythonBadge.target) * 100, 100)}%` }}
-                />
-              </div>
-            </div>
-
-            <p className="text-[10px] text-slate-400 italic">
-              {pythonEvents.length >= 8 
-                ? "🏆 Elite Python Developer! Masterclass status achieved."
-                : `Complete ${pythonBadge.target - pythonEvents.length} more sessions to reach the next Python badge level.`}
-            </p>
           </div>
-
-          {/* BADGE 2: FITNESS CHAMPION */}
-          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-rose-500/20 text-rose-400 rounded-lg">
-                  <Dumbbell className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white">Fitness Champion</h4>
-                  <p className="text-[10px] text-slate-400">Workouts & Health</p>
-                </div>
-              </div>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${fitnessBadge.color}`}>
-                {fitnessBadge.label}
-              </span>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
-                <span>Completed Workouts: <strong>{fitnessEvents.length}</strong></span>
-                <span>Next: {fitnessBadge.nextLevel}</span>
-              </div>
-              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-rose-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min((fitnessEvents.length / fitnessBadge.target) * 100, 100)}%` }}
-                />
-              </div>
-            </div>
-
-            <p className="text-[10px] text-slate-400 italic">
-              {fitnessEvents.length >= 8 
-                ? "🏋️ Fitness Titan! Unstoppable physical momentum."
-                : `Log ${fitnessBadge.target - fitnessEvents.length} more workout blocks to elevate your fitness badge.`}
-            </p>
-          </div>
-
-          {/* BADGE 3: DEEP STUDY SCHOLAR */}
-          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-cyan-500/20 text-cyan-400 rounded-lg">
-                  <BookOpen className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white">Deep Study Scholar</h4>
-                  <p className="text-[10px] text-slate-400">Cognitive & Learning</p>
-                </div>
-              </div>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${studyBadge.color}`}>
-                {studyBadge.label}
-              </span>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
-                <span>Study Sessions: <strong>{studyEventsAll.length}</strong></span>
-                <span>Next: {studyBadge.nextLevel}</span>
-              </div>
-              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-cyan-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min((studyEventsAll.length / studyBadge.target) * 100, 100)}%` }}
-                />
-              </div>
-            </div>
-
-            <p className="text-[10px] text-slate-400 italic">
-              {studyEventsAll.length >= 10 
-                ? "🧠 Knowledge Titan! Mastered consistent deep focus."
-                : `Complete ${studyBadge.target - studyEventsAll.length} more study blocks to upgrade badge.`}
-            </p>
-          </div>
-
-          {/* BADGE 4: UNSTOPPABLE STREAK LEGEND */}
-          <div className="bg-black/25 border border-white/10 p-4 rounded-xl space-y-3 flex flex-col justify-between relative overflow-hidden">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-amber-500/20 text-amber-400 rounded-lg">
-                  <Flame className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-white">Consistency Streak</h4>
-                  <p className="text-[10px] text-slate-400">Daily Goal Completion</p>
-                </div>
-              </div>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${streakBadge.color}`}>
-                {streakBadge.label}
-              </span>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-[10px] text-slate-300 font-medium">
-                <span>Max Streak: <strong>{maxStreak} Days</strong></span>
-                <span>Target: {streakBadge.target} Days</span>
-              </div>
-              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-amber-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min((maxStreak / streakBadge.target) * 100, 100)}%` }}
-                />
-              </div>
-            </div>
-
-            <p className="text-[10px] text-slate-400 italic">
-              {maxStreak >= 7 
-                ? "🔥 Unstoppable Streak Legend! Completed goals 7+ days in a row."
-                : `Maintain a ${streakBadge.target}-day consecutive goal streak to earn the next reward tier.`}
-            </p>
-          </div>
-
-        </div>
+        )}
       </div>
 
       {/* SECTION 4: VISUAL CHARTS GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
         {/* CHART 1: WEEKLY COMPONENT ACTIVITY AREA CHART */}
-        <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-xl lg:col-span-2">
-          <h3 className="font-sans font-semibold text-white text-sm mb-1">Daily Completion Pace</h3>
-          <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Sessions completed per day over the past 7 days.</p>
+        <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-xl lg:col-span-2 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/10">
+            <div>
+              <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-indigo-400" />
+                Daily Completion Pace
+              </h3>
+              <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
+                Scheduled vs completed goal sessions across the {paceTimeframe === "current_week" ? "Current Week (Mon–Sun)" : "Past 7 Days"}.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              {/* Timeframe Toggle */}
+              <div className="bg-black/30 p-1 rounded-lg border border-white/10 flex items-center gap-1">
+                <button
+                  onClick={() => setPaceTimeframe("current_week")}
+                  className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                    paceTimeframe === "current_week" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Current Week
+                </button>
+                <button
+                  onClick={() => setPaceTimeframe("past_7_days")}
+                  className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                    paceTimeframe === "past_7_days" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Past 7 Days
+                </button>
+              </div>
+
+              {/* Metric Toggle */}
+              <div className="bg-black/30 p-1 rounded-lg border border-white/10 flex items-center gap-1">
+                <button
+                  onClick={() => setPaceMetricMode("both")}
+                  className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                    paceMetricMode === "both" ? "bg-emerald-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Both
+                </button>
+                <button
+                  onClick={() => setPaceMetricMode("completed")}
+                  className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                    paceMetricMode === "completed" ? "bg-emerald-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Completed
+                </button>
+                <button
+                  onClick={() => setPaceMetricMode("scheduled")}
+                  className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                    paceMetricMode === "scheduled" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Scheduled
+                </button>
+              </div>
+            </div>
+          </div>
           
-          <div className="h-64" id="activity_history_container">
+          <div className="h-60" id="activity_history_container">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={last7DaysOfCompletions}>
+              <AreaChart data={dailyPaceData}>
                 <defs>
-                  <linearGradient id="colorSessions" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="colorScheduled" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#818cf8" stopOpacity={0.4}/>
                     <stop offset="95%" stopColor="#818cf8" stopOpacity={0.01}/>
+                  </linearGradient>
+                  <linearGradient id="colorCompleted" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.5}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.05}/>
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="day" tick={{ fontSize: 10, fill: '#cbd5e1' }} stroke="rgba(255,255,255,0.1)" />
                 <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#cbd5e1' }} stroke="rgba(255,255,255,0.1)" />
-                <Tooltip contentStyle={{ fontSize: '11px', borderRadius: '12px', background: '#0c0f1a', border: '1px solid rgba(255,255,255,0.15)', color: '#fff' }} />
-                <Area type="monotone" dataKey="sessions" stroke="#818cf8" strokeWidth={2} fillOpacity={1} fill="url(#colorSessions)" />
+                <Tooltip 
+                  labelFormatter={(label, payload) => {
+                    const item = payload && payload[0]?.payload;
+                    return item ? `${item.day} (${item.fullDateStr})` : label;
+                  }}
+                  contentStyle={{ fontSize: '11px', borderRadius: '12px', background: '#0c0f1a', border: '1px solid rgba(255,255,255,0.15)', color: '#fff' }} 
+                />
+                {(paceMetricMode === "both" || paceMetricMode === "scheduled") && (
+                  <Area 
+                    type="monotone" 
+                    dataKey="Scheduled" 
+                    stroke="#818cf8" 
+                    strokeWidth={2} 
+                    strokeDasharray="4 4" 
+                    fillOpacity={1} 
+                    fill="url(#colorScheduled)" 
+                    name="Scheduled Sessions"
+                  />
+                )}
+                {(paceMetricMode === "both" || paceMetricMode === "completed") && (
+                  <Area 
+                    type="monotone" 
+                    dataKey="Completed" 
+                    stroke="#10b981" 
+                    strokeWidth={2.5} 
+                    fillOpacity={1} 
+                    fill="url(#colorCompleted)" 
+                    name="Completed Sessions"
+                  />
+                )}
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         {/* CHART 2: TIME SPLIT PIE */}
-        <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-xl">
-          <h3 className="font-sans font-semibold text-white text-sm mb-1">Category Split</h3>
-          <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Distribution of logged focus hours by goal category.</p>
+        <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-xl space-y-3">
+          <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/10">
+            <div>
+              <h3 className="font-sans font-semibold text-white text-sm">Category Split</h3>
+              <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">Focus time distribution by goal category.</p>
+            </div>
 
-          <div className="h-48 relative flex items-center justify-center" id="ratio_pie_container">
+            <div className="bg-black/30 p-1 rounded-lg border border-white/10 flex items-center gap-1 text-[10px]">
+              <button
+                onClick={() => setSplitViewMode("scheduled")}
+                className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                  splitViewMode === "scheduled" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Scheduled
+              </button>
+              <button
+                onClick={() => setSplitViewMode("completed")}
+                className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                  splitViewMode === "completed" ? "bg-emerald-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Logged
+              </button>
+            </div>
+          </div>
+
+          <div className="h-44 relative flex items-center justify-center" id="ratio_pie_container">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={finalDistributionData}
                   cx="50%"
                   cy="50%"
-                  innerRadius={50}
-                  outerRadius={70}
-                  paddingAngle={5}
+                  innerRadius={48}
+                  outerRadius={68}
+                  paddingAngle={4}
                   dataKey="value"
                 >
                   {finalDistributionData.map((entry, index) => (
@@ -649,22 +832,24 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
                 <Tooltip formatter={(value) => `${value} hrs`} contentStyle={{ fontSize: '11px', borderRadius: '8px', background: '#0c0f1a', border: '1px solid rgba(255,255,255,0.15)', color: '#fff' }} />
               </PieChart>
             </ResponsiveContainer>
-            <div className="absolute flex flex-col justify-center items-center select-none pt-2">
+            <div className="absolute flex flex-col justify-center items-center select-none pt-1">
               <span className="text-xl font-bold font-sans text-white">
-                {Math.round((totalCompletedMinutes / 60) * 10) / 10}h
+                {totalSplitHours}h
               </span>
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Logged</span>
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                {splitViewMode === "scheduled" ? "Planned" : "Logged"}
+              </span>
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 pt-4 border-t border-white/10 mt-2 select-none" id="pie_legend_list">
+          <div className="flex flex-col gap-1.5 pt-2 border-t border-white/10 select-none max-h-36 overflow-y-auto pr-1" id="pie_legend_list">
             {finalDistributionData.map((d, index) => (
               <div key={index} className="flex items-center justify-between text-[11px] font-medium text-slate-200">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }} />
-                  <span>{d.name}</span>
+                <div className="flex items-center gap-1.5 truncate">
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                  <span className="truncate">{d.name}</span>
                 </div>
-                <span className="font-bold">{d.value} hrs</span>
+                <span className="font-bold shrink-0">{d.value} hrs</span>
               </div>
             ))}
           </div>
@@ -673,9 +858,62 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
       </div>
 
       {/* CHART 3: TARGET vs ACTUAL BAR CHART */}
-      <div className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl" id="comparison_bar_card">
-        <h3 className="font-sans font-semibold text-white text-sm mb-1">Weekly Target vs Actual Completion</h3>
-        <p className="text-[11px] text-slate-300 mb-4 font-medium leading-tight">Bar progression comparing target session count against actual completed sessions.</p>
+      <div className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4" id="comparison_bar_card">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/10">
+          <div>
+            <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
+              <Target className="w-4 h-4 text-indigo-400" />
+              Target vs Actual Completion
+            </h3>
+            <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
+              {targetChartTimeframe === "this_week"
+                ? "Comparing weekly target session counts against completions recorded for the Current Week (Mon–Sun)."
+                : "Comparing weekly targets against total all-time logged focus sessions."}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-[11px] shrink-0">
+            {/* Scope Toggle */}
+            <div className="bg-black/30 p-1 rounded-lg border border-white/10 flex items-center gap-1">
+              <button
+                onClick={() => setDashboardGoalScope("all")}
+                className={`px-2.5 py-0.5 rounded font-semibold transition cursor-pointer ${
+                  dashboardGoalScope === "all" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                All Goals ({goals.length})
+              </button>
+              <button
+                onClick={() => setDashboardGoalScope("active")}
+                className={`px-2.5 py-0.5 rounded font-semibold transition cursor-pointer ${
+                  dashboardGoalScope === "active" ? "bg-emerald-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Active Only ({goals.filter(g => !g.isPaused).length})
+              </button>
+            </div>
+
+            {/* Timeframe Toggle */}
+            <div className="bg-black/30 p-1 rounded-lg border border-white/10 flex items-center gap-1">
+              <button
+                onClick={() => setTargetChartTimeframe("this_week")}
+                className={`px-2.5 py-0.5 rounded font-semibold transition cursor-pointer ${
+                  targetChartTimeframe === "this_week" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                This Week
+              </button>
+              <button
+                onClick={() => setTargetChartTimeframe("all_time")}
+                className={`px-2.5 py-0.5 rounded font-semibold transition cursor-pointer ${
+                  targetChartTimeframe === "all_time" ? "bg-indigo-600 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                All-Time
+              </button>
+            </div>
+          </div>
+        </div>
 
         <div className="h-64" id="target_comparison_bar_container">
           {goals.length === 0 ? (
@@ -685,12 +923,92 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={goalCompareData}>
-                <XAxis dataKey="name" stroke="rgba(255,255,255,0.1)" tick={{ fontSize: 10, fill: '#cbd5e1' }} />
-                <YAxis stroke="rgba(255,255,255,0.1)" tick={{ fontSize: 10, fill: '#cbd5e1' }} />
-                <Tooltip contentStyle={{ fontSize: '11px', borderRadius: '12px', background: '#0c0f1a', border: '1px solid rgba(255,255,255,0.15)', color: '#fff' }} />
-                <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                <Bar dataKey="Target" fill="rgba(255,255,255,0.15)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="Completed" fill="#818cf8" radius={[4, 4, 0, 0]} />
+                <XAxis 
+                  dataKey="name" 
+                  stroke="rgba(255,255,255,0.15)" 
+                  tick={{ fontSize: 10, fill: '#cbd5e1' }}
+                  tickLine={false} 
+                />
+                <YAxis 
+                  allowDecimals={false} 
+                  stroke="rgba(255,255,255,0.15)" 
+                  tick={{ fontSize: 10, fill: '#cbd5e1' }}
+                  tickLine={false} 
+                />
+                <Tooltip 
+                  content={({ active, payload }) => {
+                    if (active && payload && payload.length) {
+                      const data = payload[0].payload;
+                      const priorityColor = 
+                        data.priority === "critical" ? "text-rose-400 border-rose-500/40 bg-rose-500/10" :
+                        data.priority === "important" ? "text-amber-400 border-amber-500/40 bg-amber-500/10" :
+                        "text-blue-400 border-blue-500/40 bg-blue-500/10";
+
+                      const pct = Math.round((data.Completed / Math.max(data.Target, 1)) * 100);
+
+                      return (
+                        <div className="bg-[#0c0f1a] border border-white/20 p-3 rounded-xl shadow-2xl space-y-2 text-xs min-w-[200px]">
+                          <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1.5">
+                            <span className="font-bold text-white truncate max-w-[140px]">{data.fullName}</span>
+                            <div className="flex items-center gap-1">
+                              {data.isPaused && (
+                                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/20 text-amber-300">
+                                  ON HOLD
+                                </span>
+                              )}
+                              <span className={`text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${priorityColor}`}>
+                                {data.priority}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-1 text-slate-300 text-[11px]">
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">Weekly Target:</span>
+                              <span className="font-semibold text-white">{data.Target} sessions</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">{targetChartTimeframe === "this_week" ? "Completed This Week:" : "Total Completed:"}</span>
+                              <span className="font-semibold text-emerald-400">{data.Completed} sessions</span>
+                            </div>
+                            {targetChartTimeframe === "this_week" && (
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Scheduled This Week:</span>
+                                <span className="font-semibold text-indigo-300">{data.ScheduledThisWeek} sessions</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="pt-1 border-t border-white/10 flex items-center justify-between text-[10px]">
+                            <span className="text-slate-400">Pace Progress:</span>
+                            <span className={`font-bold ${pct >= 100 ? "text-emerald-400" : pct >= 50 ? "text-amber-400" : "text-indigo-400"}`}>
+                              {pct}% Achieved
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  }}
+                />
+                <Legend 
+                  wrapperStyle={{ fontSize: '11px', paddingTop: '12px', color: '#f1f5f9' }} 
+                  formatter={(value) => <span className="text-slate-200 font-medium">{value}</span>}
+                />
+                <Bar 
+                  dataKey="Target" 
+                  name="Weekly Target" 
+                  fill="#1e293b" 
+                  stroke="#475569" 
+                  strokeWidth={1} 
+                  radius={[4, 4, 0, 0]} 
+                />
+                <Bar 
+                  dataKey="Completed" 
+                  name={targetChartTimeframe === "this_week" ? "Completed (This Week)" : "Completed (All-Time)"} 
+                  fill="#6366f1" 
+                  radius={[4, 4, 0, 0]} 
+                />
               </BarChart>
             </ResponsiveContainer>
           )}

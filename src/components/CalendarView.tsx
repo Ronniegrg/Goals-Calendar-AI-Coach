@@ -65,6 +65,7 @@ interface CalendarViewProps {
   onDeleteGoal?: (goalId: string) => void;
   onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
   onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
+  onResetAndRegenerateCalendar?: (options?: { clearMode?: "uncompleted_goals" | "all_events"; keepExternal?: boolean }) => void;
 }
 
 export default function CalendarView({
@@ -79,7 +80,8 @@ export default function CalendarView({
   onEditGoal,
   onDeleteGoal,
   onEditEvent,
-  onBulkEditEvents
+  onBulkEditEvents,
+  onResetAndRegenerateCalendar
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -88,6 +90,11 @@ export default function CalendarView({
     return "week";
   });
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
+
+  // Reset & Regenerate Calendar Modal State
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetClearMode, setResetClearMode] = useState<"uncompleted_goals" | "all_events">("uncompleted_goals");
+  const [resetKeepExternal, setResetKeepExternal] = useState(true);
   
   // Mobile & List View Search/Filter State
   const [listSearchQuery, setListSearchQuery] = useState("");
@@ -396,10 +403,17 @@ export default function CalendarView({
         const searchDay = new Date(currentTime);
         searchDay.setDate(currentTime.getDate() + dayOffset);
 
-        const windowsToTry = [
-          { startH: dayOffset === 0 ? Math.max(prefStart, currentTime.getHours() + 1) : prefStart, endH: prefEnd },
-          { startH: dayOffset === 0 ? Math.max(8, currentTime.getHours() + 1) : 8, endH: 22 }
-        ];
+        let windowsToTry: { startH: number; endH: number }[] = [];
+        if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+          windowsToTry = [
+            { startH: dayOffset === 0 ? Math.max(prefStart, currentTime.getHours() + 1) : prefStart, endH: prefEnd },
+            { startH: dayOffset === 0 ? Math.max(8, currentTime.getHours() + 1) : 8, endH: 22 }
+          ];
+        } else {
+          windowsToTry = [
+            { startH: dayOffset === 0 ? Math.max(prefStart, currentTime.getHours() + 1) : prefStart, endH: prefEnd }
+          ];
+        }
 
         for (const win of windowsToTry) {
           if (foundSlot) break;
@@ -481,10 +495,17 @@ export default function CalendarView({
         .filter(e => e.id !== targetEvt.id && isSameDay(new Date(e.start), targetDate))
         .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
 
-      const windowsToTry = [
-        { startH: startHour, endH: endHour },
-        { startH: 8, endH: 22 }
-      ];
+      let windowsToTry: { startH: number; endH: number }[] = [];
+      if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+        windowsToTry = [
+          { startH: startHour, endH: endHour },
+          { startH: 8, endH: 22 }
+        ];
+      } else {
+        windowsToTry = [
+          { startH: startHour, endH: endHour }
+        ];
+      }
 
       let slotFound = false;
       let candStart = new Date(targetDate);
@@ -628,10 +649,17 @@ export default function CalendarView({
         const goal = getGoalForEvent(evt);
         const { startHour, endHour } = getPreferredTimeWindow(goal, fallbackStartHour);
 
-        const windowsToTry = [
-          { startH: startHour, endH: endHour },
-          { startH: 8, endH: 22 }
-        ];
+        let windowsToTry: { startH: number; endH: number }[] = [];
+        if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+          windowsToTry = [
+            { startH: startHour, endH: endHour },
+            { startH: 8, endH: 22 }
+          ];
+        } else {
+          windowsToTry = [
+            { startH: startHour, endH: endHour }
+          ];
+        }
 
         let slotFound = false;
         let testS = new Date(targetDate);
@@ -1733,7 +1761,10 @@ export default function CalendarView({
           <div className="flex items-center gap-1.5 shrink-0 ml-auto sm:ml-0">
             <button
               id="open_sync_sidebar_btn"
-              onClick={() => setShowSyncPanel(!showSyncPanel)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSyncPanel(prev => !prev);
+              }}
               className="p-2 border border-slate-300 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px]"
               title="External Calendar Feeds"
             >
@@ -1761,11 +1792,14 @@ export default function CalendarView({
             </button>
 
             {/* Delay Today Quick Trigger */}
-            <div className="relative">
+            <div className="relative z-50">
               <button
                 id="delay_today_btn"
                 type="button"
-                onClick={() => setShowDelayTodayMenu(!showDelayTodayMenu)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowDelayTodayMenu(prev => !prev);
+                }}
                 className="p-2 border border-amber-300 dark:border-amber-500/30 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold px-2.5 min-h-[36px]"
                 title="Shift today's remaining uncompleted sessions forward if running late"
               >
@@ -1774,13 +1808,14 @@ export default function CalendarView({
               </button>
               {showDelayTodayMenu && (
                 <div 
-                  className="absolute right-0 mt-2 w-48 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-50 text-left animate-fade-in space-y-1"
+                  className="absolute right-0 mt-2 w-48 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left animate-fade-in space-y-1"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       handleDelayRemainingToday(30);
                       setShowDelayTodayMenu(false);
                     }}
@@ -1791,7 +1826,8 @@ export default function CalendarView({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       handleDelayRemainingToday(60);
                       setShowDelayTodayMenu(false);
                     }}
@@ -1802,7 +1838,8 @@ export default function CalendarView({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       handleDelayRemainingToday(120);
                       setShowDelayTodayMenu(false);
                     }}
@@ -1814,7 +1851,8 @@ export default function CalendarView({
                   <div className="border-t border-slate-200 dark:border-white/10 my-1"></div>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       handleDelayRemainingToday(24 * 60);
                       setShowDelayTodayMenu(false);
                     }}
@@ -1825,7 +1863,8 @@ export default function CalendarView({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       handleDelayRemainingToday(2 * 24 * 60);
                       setShowDelayTodayMenu(false);
                     }}
@@ -1836,7 +1875,8 @@ export default function CalendarView({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       handleDelayRemainingToday(7 * 24 * 60);
                       setShowDelayTodayMenu(false);
                     }}
@@ -1848,6 +1888,19 @@ export default function CalendarView({
                 </div>
               )}
             </div>
+
+            {/* Reset & Regenerate Calendar Trigger */}
+            <button
+              id="reset_regenerate_calendar_btn"
+              type="button"
+              onClick={() => setShowResetModal(true)}
+              className="p-2 border border-purple-300 dark:border-purple-500/30 bg-purple-100 dark:bg-purple-500/15 hover:bg-purple-200 dark:hover:bg-purple-500/25 text-purple-900 dark:text-purple-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold px-2.5 min-h-[36px]"
+              title="Reset & Regenerate calendar schedule from active goals"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+              <span className="hidden lg:inline">Regenerate</span>
+              <span className="lg:hidden">Reset</span>
+            </button>
 
             <button
               id="open_add_goal_modal_btn"
@@ -3524,6 +3577,139 @@ export default function CalendarView({
                 className="text-xs font-bold px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/25 cursor-pointer transition flex items-center gap-1.5"
               >
                 {customDialog.confirmText || "OK"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL WINDOW: Reset & Regenerate Calendar */}
+      {showResetModal && (
+        <div id="reset_calendar_modal_backdrop" className="fixed inset-0 bg-[#020205]/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div id="reset_calendar_modal_card" className="bg-[#0f111a] border border-purple-500/30 rounded-2xl shadow-2xl w-full max-w-lg p-6 relative space-y-5">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-purple-500/20 text-purple-400 rounded-xl border border-purple-500/30">
+                  <RefreshCw className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-sans font-bold text-white text-base">Reset & Regenerate Calendar</h3>
+                  <p className="text-xs text-slate-400">Re-map optimal time slots automatically for active goals</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="close_reset_calendar_modal_btn"
+                onClick={() => setShowResetModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Choose how you would like to reset your calendar schedule. The auto-scheduler will recalculate free windows based on your goals and availability preferences.
+              </p>
+
+              <div className="grid grid-cols-1 gap-3 pt-1">
+                {/* Option 1: Clean Reset */}
+                <div 
+                  onClick={() => setResetClearMode("uncompleted_goals")}
+                  className={`p-3.5 rounded-xl border cursor-pointer transition flex items-start gap-3 ${
+                    resetClearMode === "uncompleted_goals"
+                      ? "bg-purple-500/15 border-purple-500/50 text-white shadow-lg shadow-purple-500/10"
+                      : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="reset_mode"
+                    checked={resetClearMode === "uncompleted_goals"}
+                    onChange={() => setResetClearMode("uncompleted_goals")}
+                    className="mt-1 accent-purple-500 cursor-pointer"
+                  />
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-xs text-white">Clean Reset & Reschedule</span>
+                      <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-md font-bold">Recommended</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-snug">
+                      Wipes uncompleted future/upcoming sessions and cleanly recalculates goal sessions for the next 4 weeks. Keeps your completed history & streak records.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Option 2: Full Slate Wipe */}
+                <div 
+                  onClick={() => setResetClearMode("all_events")}
+                  className={`p-3.5 rounded-xl border cursor-pointer transition flex items-start gap-3 ${
+                    resetClearMode === "all_events"
+                      ? "bg-amber-500/15 border-amber-500/50 text-white shadow-lg shadow-amber-500/10"
+                      : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="reset_mode"
+                    checked={resetClearMode === "all_events"}
+                    onChange={() => setResetClearMode("all_events")}
+                    className="mt-1 accent-amber-500 cursor-pointer"
+                  />
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-xs text-white">Full Slate Wipe & Reschedule</span>
+                      <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-md font-bold">Wipe All</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-snug">
+                      Removes all existing sessions from the calendar completely and builds a fresh new schedule from scratch.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Option toggle for external calendar events */}
+              <div className="pt-2">
+                <label className="flex items-center gap-2.5 p-3 bg-white/5 border border-white/10 rounded-xl cursor-pointer hover:bg-white/10 transition">
+                  <input
+                    type="checkbox"
+                    checked={resetKeepExternal}
+                    onChange={(e) => setResetKeepExternal(e.target.checked)}
+                    className="w-4 h-4 rounded border-white/20 bg-white/10 text-purple-500 focus:ring-purple-500 focus:ring-offset-0 cursor-pointer"
+                  />
+                  <div className="text-xs">
+                    <span className="font-semibold text-white block">Preserve External Connected Feeds</span>
+                    <span className="text-[11px] text-slate-400">Keep imported Google Calendar / external busy blocks untouched</span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-white/10">
+              <button
+                type="button"
+                id="cancel_reset_calendar_btn"
+                onClick={() => setShowResetModal(false)}
+                className="text-xs font-semibold px-4 py-2.5 border border-white/10 bg-white/5 hover:bg-white/10 text-white rounded-xl transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="confirm_reset_calendar_btn"
+                onClick={() => {
+                  if (onResetAndRegenerateCalendar) {
+                    onResetAndRegenerateCalendar({
+                      clearMode: resetClearMode,
+                      keepExternal: resetKeepExternal
+                    });
+                  }
+                  setShowResetModal(false);
+                }}
+                className="text-xs font-bold px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl shadow-lg shadow-purple-600/25 cursor-pointer transition flex items-center gap-1.5"
+              >
+                <Sparkles className="w-4 h-4" />
+                Confirm Reset & Regenerate
               </button>
             </div>
           </div>

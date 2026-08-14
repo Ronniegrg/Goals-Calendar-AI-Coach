@@ -43,6 +43,10 @@ export interface Goal {
   lastSessionNote?: string;
   lastSessionNoteDate?: string;
   priority?: GoalPriority;
+  isPaused?: boolean;
+  pauseReason?: string;
+  pauseUntil?: string;
+  pausedAt?: string;
 }
 
 export interface CalendarEvent {
