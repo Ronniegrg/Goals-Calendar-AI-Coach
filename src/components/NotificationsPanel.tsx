@@ -46,9 +46,16 @@ export default function NotificationsPanel({
   onToggleAlertPush
 }: NotificationsPanelProps) {
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
-    typeof window !== "undefined" ? Notification.permission : "default"
-  );
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
+    if (typeof window !== "undefined" && "Notification" in window && typeof Notification !== "undefined") {
+      try {
+        return Notification.permission;
+      } catch {
+        return "default";
+      }
+    }
+    return "default";
+  });
 
   // Persistent audible browser alert sound settings
   const [audibleAlertsEnabled, setAudibleAlertsEnabled] = useState<boolean>(() => {
@@ -186,7 +193,7 @@ export default function NotificationsPanel({
 
   // Request browser Notification permissions
   const handleRequestPermission = async () => {
-    if (typeof window !== "undefined" && "Notification" in window) {
+    if (typeof window !== "undefined" && "Notification" in window && typeof Notification !== "undefined") {
       try {
         const permission = await Notification.requestPermission();
         setNotificationPermission(permission);
@@ -461,7 +468,7 @@ export default function NotificationsPanel({
               <button
                 onClick={() => {
                   triggerUpcomingSim();
-                  if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                  if (typeof window !== "undefined" && "Notification" in window && typeof Notification !== "undefined" && Notification.permission === "granted") {
                     try {
                       new Notification(`⏰ Pre-Session Alert (${alertLeadMinutes}m before)`, {
                         body: `Upcoming session: Morning Cardio & Stretch starts in ${alertLeadMinutes} minutes!`

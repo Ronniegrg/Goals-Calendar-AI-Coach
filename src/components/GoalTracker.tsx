@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Plus, 
   Trash2, 
@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
-import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
+import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -189,6 +189,40 @@ export default function GoalTracker({
 
   // Status Filter in Catalog ("all" | "active" | "on_hold")
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "on_hold">("all");
+
+  // Active Timer Tracker for live studying pulse and saved study progress
+  const [activeTimerData, setActiveTimerData] = useState<{ 
+    goalId?: string; 
+    title?: string; 
+    isRunning: boolean; 
+    timeRemaining: number; 
+    totalSec: number;
+    isCompleted?: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const checkActiveTimer = () => {
+      try {
+        const raw = localStorage.getItem("active_focus_timer_v2");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && (parsed.isRunning || (parsed.timeRemaining < parsed.totalSec && parsed.timeRemaining > 0 && !parsed.isCompleted))) {
+            setActiveTimerData(parsed);
+            return;
+          }
+        }
+      } catch {}
+      setActiveTimerData(null);
+    };
+
+    checkActiveTimer();
+    const interval = setInterval(checkActiveTimer, 1000);
+    window.addEventListener("storage", checkActiveTimer);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("storage", checkActiveTimer);
+    };
+  }, []);
 
   // Focus Timer Modal State
   const [timerOpen, setTimerOpen] = useState(false);
@@ -1334,12 +1368,29 @@ export default function GoalTracker({
               .map((g) => {
               const countPercent = Math.min(Math.round((g.completedCount / g.weeklyTarget) * 100), 100);
               const gPriority = g.priority || "normal";
+
+              // Check if goal is currently being actively studied
+              const isCurrentlyStudying = activeTimerData?.isRunning && (
+                (activeTimerData.goalId && activeTimerData.goalId === g.id) ||
+                (activeTimerData.title && g.name && activeTimerData.title.toLowerCase().trim() === g.name.toLowerCase().trim())
+              );
+
+              // Check if goal has saved in-progress study time from earlier
+              const goalSavedProgress = getSavedProgress(g.id, undefined, g.name);
+              const hasSavedProgress = !isCurrentlyStudying && goalSavedProgress && goalSavedProgress.timeRemaining > 0 && goalSavedProgress.timeRemaining < goalSavedProgress.totalSec;
+              const savedRemainingMins = hasSavedProgress ? Math.ceil(goalSavedProgress.timeRemaining / 60) : 0;
+              const savedSpentMins = hasSavedProgress ? Math.floor((goalSavedProgress.totalSec - goalSavedProgress.timeRemaining) / 60) : 0;
+
               return (
                 <div 
                   key={g.id} 
                   id={`goal_panel_card_${g.id}`}
                   className={`border rounded-xl p-4 flex flex-col justify-between transition relative overflow-hidden ${
-                    g.isPaused
+                    isCurrentlyStudying
+                      ? "border-emerald-500 bg-emerald-950/25 shadow-xl shadow-emerald-950/40 ring-2 ring-emerald-500/50 animate-pulse"
+                      : hasSavedProgress
+                      ? "border-amber-500/50 bg-amber-950/15 shadow-md shadow-amber-950/20"
+                      : g.isPaused
                       ? "border-amber-500/40 bg-amber-950/20 hover:border-amber-500/60"
                       : gPriority === "critical"
                       ? "border-rose-500/30 bg-rose-950/10 hover:border-rose-500/50 hover:bg-rose-950/20 shadow-md shadow-rose-950/20"
@@ -1349,6 +1400,35 @@ export default function GoalTracker({
                   }`}
                 >
                   <div className="space-y-1.5">
+                    {/* Live Studying Now Banner Indicator */}
+                    {isCurrentlyStudying && (
+                      <div className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-between gap-2 mb-1 shadow-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="relative flex h-2.5 w-2.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                          </span>
+                          <span className="tracking-wide uppercase font-extrabold text-emerald-200">Studying Now</span>
+                        </div>
+                        <span className="font-mono text-emerald-300 font-extrabold bg-emerald-500/20 px-1.5 py-0.5 rounded text-[10px]">
+                          {Math.ceil((activeTimerData?.timeRemaining || 0) / 60)}m left
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Saved In-Progress Study Time Banner */}
+                    {hasSavedProgress && !isCurrentlyStudying && (
+                      <div className="bg-amber-500/15 border border-amber-500/30 text-amber-200 px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+                          <span>Session Paused ({savedSpentMins}m done)</span>
+                        </div>
+                        <span className="font-mono text-amber-300 font-bold bg-amber-500/20 px-1.5 py-0.2 rounded">
+                          {savedRemainingMins}m left
+                        </span>
+                      </div>
+                    )}
+
                     {/* On-Hold Status Banner */}
                     {g.isPaused && (
                       <div className="bg-amber-500/15 border border-amber-500/30 text-amber-200 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-between gap-2 mb-1">
@@ -1599,16 +1679,40 @@ export default function GoalTracker({
                       ) : (
                         <>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <button
-                              type="button"
-                              id={`start_goal_timer_btn_${g.id}`}
-                              onClick={() => handleStartTimer(g)}
-                              className="w-full py-2 px-2.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                              title={`Open focus timer for ${g.name} (${g.durationMinutes || 60}m)`}
-                            >
-                              <Clock className="w-3.5 h-3.5 text-indigo-400" />
-                              <span>Focus Timer</span>
-                            </button>
+                            {isCurrentlyStudying ? (
+                              <button
+                                type="button"
+                                id={`start_goal_timer_btn_${g.id}`}
+                                onClick={() => handleStartTimer(g)}
+                                className="w-full py-2 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/30 active:scale-95"
+                                title="Open active study timer session"
+                              >
+                                <Play className="w-3.5 h-3.5 fill-current" />
+                                <span>Studying Now ({Math.ceil((activeTimerData?.timeRemaining || 0) / 60)}m left)</span>
+                              </button>
+                            ) : hasSavedProgress ? (
+                              <button
+                                type="button"
+                                id={`start_goal_timer_btn_${g.id}`}
+                                onClick={() => handleStartTimer(g)}
+                                className="w-full py-2 px-2.5 bg-amber-600/25 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                                title={`Resume saved session (${savedRemainingMins}m remaining)`}
+                              >
+                                <Play className="w-3.5 h-3.5 fill-current text-amber-400" />
+                                <span>Resume ({savedRemainingMins}m left)</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                id={`start_goal_timer_btn_${g.id}`}
+                                onClick={() => handleStartTimer(g)}
+                                className="w-full py-2 px-2.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                                title={`Open focus timer for ${g.name} (${g.durationMinutes || 60}m)`}
+                              >
+                                <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                                <span>Focus Timer</span>
+                              </button>
+                            )}
 
                             <button
                               type="button"

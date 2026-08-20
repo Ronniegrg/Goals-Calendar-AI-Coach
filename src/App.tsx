@@ -814,7 +814,7 @@ export default function App() {
             "upcoming"
           );
 
-          if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted" && alertPushEnabled) {
+          if (typeof window !== "undefined" && "Notification" in window && typeof Notification !== "undefined" && Notification.permission === "granted" && alertPushEnabled) {
             try {
               new Notification(`⏰ Session Starts in ${roundedMins} Mins!`, {
                 body: `"${evt.title}" at ${timeStr}. Time to prepare!`
@@ -863,7 +863,7 @@ export default function App() {
     });
 
     // Browser dynamic desktop alerts fallback if enabled
-    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+    if (typeof window !== "undefined" && "Notification" in window && typeof Notification !== "undefined" && Notification.permission === "granted") {
       try {
         new Notification(title, { body: message });
       } catch {

@@ -468,15 +468,16 @@ export default function CalendarView({
   };
 
   // Cascading Ripple Delay helper: Shifts a target event AND ripples all subsequent uncompleted events forward
-  const handleCascadingDelayEvent = (targetEvt: CalendarEvent, delayMs: number, delayLabel: string) => {
+  const handleCascadingDelayEvent = (targetEvt: CalendarEvent, delayMs: number | "now", delayLabel: string) => {
     if (targetEvt.type === "external") {
       showCustomAlert("External Event", "External Google Calendar events cannot be shifted from here.");
       return;
     }
 
     const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
-    const isDayDelay = delayMs >= 24 * 60 * 60 * 1000;
-    const daysOffset = isDayDelay ? Math.round(delayMs / (24 * 60 * 60 * 1000)) : 0;
+    const isNow = delayMs === "now";
+    const isDayDelay = typeof delayMs === "number" && delayMs >= 24 * 60 * 60 * 1000;
+    const daysOffset = isDayDelay ? Math.round((delayMs as number) / (24 * 60 * 60 * 1000)) : 0;
     const targetStart = new Date(targetEvt.start).getTime();
     const targetEnd = new Date(targetEvt.end).getTime();
     const duration = targetEnd - targetStart;
@@ -484,7 +485,12 @@ export default function CalendarView({
     let newTargetStart: number;
     let newTargetEnd: number;
 
-    if (isDayDelay) {
+    if (isNow) {
+      const nowClean = new Date();
+      nowClean.setSeconds(0, 0);
+      newTargetStart = nowClean.getTime();
+      newTargetEnd = newTargetStart + duration;
+    } else if (isDayDelay) {
       const origS = new Date(targetEvt.start);
       const targetDate = new Date(origS.getFullYear(), origS.getMonth(), origS.getDate() + daysOffset);
       const goal = getGoalForEvent(targetEvt);
@@ -539,7 +545,7 @@ export default function CalendarView({
       newTargetStart = candStart.getTime();
       newTargetEnd = candEnd.getTime();
     } else {
-      newTargetStart = targetStart + delayMs;
+      newTargetStart = targetStart + (delayMs as number);
       newTargetEnd = newTargetStart + duration;
     }
 
@@ -603,16 +609,16 @@ export default function CalendarView({
     setTimeout(() => setRebalanceStatus(null), 5000);
   };
 
-  // Delay all remaining sessions today by X minutes or days
-  const handleDelayRemainingToday = (delayMinutes: number) => {
-    const delayMs = delayMinutes * 60 * 1000;
+  // Delay all remaining sessions today by X minutes or days, or shift to 'now'
+  const handleDelayRemainingToday = (delayMinutes: number | "now") => {
+    const isNow = delayMinutes === "now";
     const nowTime = now.getTime();
     
-    // Find today's uncompleted events that end after or around now
+    // Find today's uncompleted events
     const todayUncompleted = events.filter(e => {
       if (e.completed || e.type === "external") return false;
       const s = new Date(e.start);
-      return isSameDay(s, now) && new Date(e.end).getTime() >= nowTime - 30 * 60 * 1000;
+      return isSameDay(s, now) && (isNow || new Date(e.end).getTime() >= nowTime - 30 * 60 * 1000);
     }).sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
     if (todayUncompleted.length === 0) {
@@ -621,10 +627,58 @@ export default function CalendarView({
     }
 
     const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
-    const isDayDelay = delayMinutes >= 24 * 60;
+    const isDayDelay = typeof delayMinutes === "number" && delayMinutes >= 24 * 60;
     const daysOffset = isDayDelay ? Math.round(delayMinutes / (24 * 60)) : 0;
     let count = 0;
 
+    if (isNow) {
+      const currentStart = new Date();
+      currentStart.setSeconds(0, 0);
+      let nextAvailableStartMs = currentStart.getTime();
+
+      todayUncompleted.forEach((evt, idx) => {
+        const origS = new Date(evt.start);
+        const origE = new Date(evt.end);
+        const dur = origE.getTime() - origS.getTime();
+
+        let newSMs: number;
+        if (idx === 0) {
+          newSMs = currentStart.getTime();
+        } else {
+          const prevOrigE = new Date(todayUncompleted[idx - 1].end).getTime();
+          const origGap = Math.max(10 * 60 * 1000, origS.getTime() - prevOrigE);
+          newSMs = Math.max(nextAvailableStartMs + 10 * 60 * 1000, nextAvailableStartMs + origGap);
+        }
+
+        const newEMs = newSMs + dur;
+        nextAvailableStartMs = newEMs;
+
+        const newS = new Date(newSMs);
+        const newE = new Date(newEMs);
+
+        updates.push({
+          id: evt.id,
+          fields: {
+            start: newS.toISOString(),
+            end: newE.toISOString(),
+            notes: `${evt.notes || ''} (Shifted to Now @ ${newS.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})`.trim()
+          }
+        });
+        count++;
+      });
+
+      if (onBulkEditEvents) {
+        onBulkEditEvents(updates);
+      } else if (onEditEvent) {
+        updates.forEach(u => onEditEvent(u.id, u.fields));
+      }
+
+      setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today to start immediately from Now (${currentStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})!`);
+      setTimeout(() => setRebalanceStatus(null), 5000);
+      return;
+    }
+
+    const delayMs = (delayMinutes as number) * 60 * 1000;
     const occupiedByDay: Record<string, { start: Date; end: Date }[]> = {};
 
     todayUncompleted.forEach(evt => {
@@ -1808,10 +1862,37 @@ export default function CalendarView({
               </button>
               {showDelayTodayMenu && (
                 <div 
-                  className="absolute right-0 mt-2 w-48 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left animate-fade-in space-y-1"
+                  className="absolute right-0 mt-2 w-52 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left animate-fade-in space-y-1"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
+                  
+                  {/* Shift to Now Option */}
+                  <button
+                    type="button"
+                    id="delay_today_now_btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelayRemainingToday("now");
+                      setShowDelayTodayMenu(false);
+                    }}
+                    className="w-full text-left px-2.5 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-500/20 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-900 dark:text-emerald-300 font-bold flex items-center justify-between cursor-pointer transition-colors mb-1 shadow-xs"
+                    title="Shift today's remaining uncompleted sessions to start immediately at the current time"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      </span>
+                      <span>Now (Current Time)</span>
+                    </div>
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                      {now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    </span>
+                  </button>
+
+                  <div className="border-t border-slate-200 dark:border-white/10 my-1"></div>
+
                   <button
                     type="button"
                     onClick={(e) => {
@@ -3004,6 +3085,22 @@ export default function CalendarView({
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-0.5">Cascade Shift Forward:</p>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCascadingDelayEvent(evt, "now", `Now @ ${now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+                                        setActiveShiftMenuId(null);
+                                      }}
+                                      className="w-full text-left px-2.5 py-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-500/20 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-900 dark:text-emerald-300 font-bold flex items-center justify-between cursor-pointer mb-1 shadow-xs"
+                                    >
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                        <span>Start Now</span>
+                                      </div>
+                                      <span className="text-[10px] text-emerald-800 dark:text-emerald-300 font-mono font-bold">{now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                                    </button>
+                                    <div className="border-t border-slate-200 dark:border-white/10 my-1"></div>
                                     <button
                                       type="button"
                                       onClick={(e) => {
