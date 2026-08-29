@@ -1095,6 +1095,8 @@ export default function App() {
       let nextGoals = [...goals];
       let shouldIncrementGoalCount = false;
 
+      const trimmedNote = note && note.trim() ? note.trim() : "";
+
       if (targetEvt) {
         const wasCompleted = targetEvt.completed;
         nextEvents = prevEvents.map(evt => {
@@ -1103,7 +1105,7 @@ export default function App() {
               ...evt,
               completed: true,
               goalId: targetGoal ? targetGoal.id : evt.goalId,
-              ...(note ? { completionNote: note } : {})
+              completionNote: trimmedNote || undefined
             };
           }
           return evt;
@@ -1124,7 +1126,7 @@ export default function App() {
           type: targetGoal.type || "study",
           completed: true,
           goalId: targetGoal.id,
-          completionNote: note
+          completionNote: trimmedNote || undefined
         };
         nextEvents = [newEvt, ...prevEvents];
         shouldIncrementGoalCount = true;
@@ -1136,7 +1138,8 @@ export default function App() {
             return {
               ...g,
               completedCount: shouldIncrementGoalCount ? g.completedCount + 1 : g.completedCount,
-              ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+              lastSessionNote: trimmedNote || undefined,
+              lastSessionNoteDate: trimmedNote ? new Date().toISOString() : undefined
             };
           }
           return g;

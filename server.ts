@@ -32,6 +32,56 @@ function getAi(): GoogleGenAI {
   return aiClient;
 }
 
+/**
+ * Resilient Gemini Content Generator with multi-model fallback and transient error handling.
+ * If the primary model (e.g. gemini-3.7-flash) returns 503 (high demand) or 429, it gracefully
+ * attempts fallback with gemini-3.1-flash-lite / gemini-flash-latest before returning null for local heuristic fallbacks.
+ */
+async function generateWithFallback(params: {
+  contents: any;
+  config?: any;
+  primaryModel?: string;
+  fallbackModel?: string;
+}): Promise<any | null> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return null;
+
+  const ai = getAi();
+  const primaryModel = params.primaryModel || "gemini-3.7-flash";
+  const fallbackModel = params.fallbackModel || "gemini-3.1-flash-lite";
+
+  try {
+    const result = await ai.models.generateContent({
+      model: primaryModel,
+      contents: params.contents,
+      config: params.config
+    });
+    if (result && result.text) {
+      return result;
+    }
+  } catch (primaryErr: any) {
+    const errMsg = primaryErr?.message || String(primaryErr);
+    console.warn(`Primary Gemini model (${primaryModel}) unavailable: ${errMsg}. Attempting fallback with ${fallbackModel}...`);
+    
+    try {
+      // Brief pause before fallback attempt
+      await new Promise((r) => setTimeout(r, 250));
+      const fallbackResult = await ai.models.generateContent({
+        model: fallbackModel,
+        contents: params.contents,
+        config: params.config
+      });
+      if (fallbackResult && fallbackResult.text) {
+        return fallbackResult;
+      }
+    } catch (fallbackErr: any) {
+      console.warn(`Fallback Gemini model (${fallbackModel}) unavailable: ${fallbackErr?.message || fallbackErr}. Engaging local smart heuristic generator.`);
+    }
+  }
+
+  return null;
+}
+
 // Simple JSON File Database file path
 const DB_FILE = path.join(process.cwd(), "db_sync.json");
 
@@ -329,21 +379,18 @@ ${JSON.stringify(availability, null, 2)}`;
 
     const userPrompt = prompt || "Analyze my current routine and suggest 3 direct optimizations to boost my weekly consistency and completion rate.";
 
-    try {
-      const result = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: userPrompt,
-        config: {
-          systemInstruction: systemPrompt,
-          temperature: 0.7
-        }
-      });
-
-      if (result && result.text) {
-        return res.json({ text: result.text });
+    const result = await generateWithFallback({
+      primaryModel: "gemini-3.7-flash",
+      fallbackModel: "gemini-3.1-flash-lite",
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.7
       }
-    } catch (geminiErr: any) {
-      console.warn("Gemini API call failed, falling back to smart dynamic response generator:", geminiErr?.message || geminiErr);
+    });
+
+    if (result && result.text) {
+      return res.json({ text: result.text });
     }
 
     // Smart contextual fallback response if Gemini call throws or returns empty
@@ -454,7 +501,6 @@ app.post("/api/coach/digest", async (req, res) => {
   }
 
   try {
-    const ai = getAi();
     const systemPrompt = `You are a Productivity Analytics AI generating a Weekly Digest & Insights report.
 Analyze the user's goals and completed events. Return JSON with the following EXACT key structure:
 {
@@ -467,8 +513,9 @@ Analyze the user's goals and completed events. Return JSON with the following EX
 Return ONLY valid JSON. No markdown syntax wrapper.`;
 
     const userPrompt = `Goals: ${JSON.stringify(goals)}\nCompleted/Scheduled Events: ${JSON.stringify(events)}`;
-    const result = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+    const result = await generateWithFallback({
+      primaryModel: "gemini-3.7-flash",
+      fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,
@@ -477,29 +524,225 @@ Return ONLY valid JSON. No markdown syntax wrapper.`;
       }
     });
 
-    const parsed = JSON.parse(result.text || "{}");
-    return res.json(parsed);
-  } catch (err) {
-    console.error("Digest generation error:", err);
-    return res.json({
-      productivityScore: completionRate,
-      peakFocusWindow: "09:00 - 11:30 AM (High Focus Peak)",
-      reflectionSummary: "Solid weekly progress! You maintained strong focus during morning technical blocks, while evening sessions required extra discipline.",
-      productivityPatterns: [
-        "Morning technical study blocks achieve highest completion consistency.",
-        "Physical workout blocks correlate with improved afternoon energy levels.",
-        "Late night study slots carry higher risk of postponement."
+    if (result && result.text) {
+      const parsed = JSON.parse(result.text.trim());
+      if (parsed && typeof parsed.productivityScore === "number") {
+        return res.json(parsed);
+      }
+    }
+  } catch (err: any) {
+    console.warn("Digest parsing/generation notice:", err?.message || err);
+  }
+
+  return res.json({
+    productivityScore: completionRate,
+    peakFocusWindow: "09:00 - 11:30 AM (High Focus Peak)",
+    reflectionSummary: "Solid weekly progress! You maintained strong focus during morning technical blocks, while evening sessions required extra discipline.",
+    productivityPatterns: [
+      "Morning technical study blocks achieve highest completion consistency.",
+      "Physical workout blocks correlate with improved afternoon energy levels.",
+      "Late night study slots carry higher risk of postponement."
+    ],
+    recommendedAdjustments: [
+      "Schedule high-focus learning goals during your peak 09:00-11:30 AM energy window.",
+      "Reserve 14:00-16:00 PM for moderate tasks and active recovery.",
+      "Maintain consistent sleep hygiene by ending study blocks by 21:30 PM."
+    ]
+  });
+});
+
+// 5. AI SUB-STEPS & SESSION PHASING GENERATOR
+app.post("/api/coach/suggest-substeps", async (req, res) => {
+  const { 
+    goalName = "Deep Focus Session", 
+    goalType = "study", 
+    category = "General", 
+    durationMinutes = 60,
+    difficulty = "intermediate",
+    focusStyle = "balanced"
+  } = req.body;
+
+  const keyAvailable = !!process.env.GEMINI_API_KEY;
+  const targetDur = Math.max(15, Number(durationMinutes) || 60);
+
+  // Smart heuristic algorithmic generator used when Gemini is not configured or as instant fallback
+  function generateFallbackSubSteps(name: string, type: string, dur: number, diff: string) {
+    const nameLower = name.toLowerCase();
+    
+    if (type === "workout" || nameLower.includes("cardio") || nameLower.includes("fitness") || nameLower.includes("run") || nameLower.includes("gym")) {
+      const warmup = Math.max(5, Math.round(dur * 0.15));
+      const cooldown = Math.max(5, Math.round(dur * 0.15));
+      const main = Math.max(10, dur - warmup - cooldown);
+      return {
+        subSteps: [
+          { id: "step_1", title: "Dynamic Warm-up & Mobility", durationMinutes: warmup, description: "Joint rotations, light cardio ramp, and activation." },
+          { id: "step_2", title: "Core Workout Sets / Main Routine", durationMinutes: main, description: "Target muscle groups or high-intensity intervals." },
+          { id: "step_3", title: "Cool-down & Static Stretching", durationMinutes: cooldown, description: "Lower heart rate and stretch major muscle groups." }
+        ],
+        rationale: `Optimal 3-stage training block: ${warmup}m injury-prevention warmup, ${main}m progressive intensity work, and ${cooldown}m recovery stretching.`,
+        totalDuration: dur
+      };
+    }
+
+    if (type === "job_search" || nameLower.includes("job") || nameLower.includes("interview") || nameLower.includes("resume")) {
+      const research = Math.max(10, Math.round(dur * 0.25));
+      const review = Math.max(10, Math.round(dur * 0.20));
+      const apply = Math.max(15, dur - research - review);
+      return {
+        subSteps: [
+          { id: "step_1", title: "Role Research & Job Board Scan", durationMinutes: research, description: "Identify 3-5 high-match target openings and recruiter contacts." },
+          { id: "step_2", title: "Tailored Applications & Cover Notes", durationMinutes: apply, description: "Customize resume keywords and submit high-quality applications." },
+          { id: "step_3", title: "Networking Outreach & Tracking", durationMinutes: review, description: "Send connection notes on LinkedIn and log entries in tracker." }
+        ],
+        rationale: `Structured pipeline: ${research}m sourcing, ${apply}m targeted submissions, and ${review}m relationship building.`,
+        totalDuration: dur
+      };
+    }
+
+    if (type === "side_project" || nameLower.includes("code") || nameLower.includes("build") || nameLower.includes("saas")) {
+      const plan = Math.max(10, Math.round(dur * 0.20));
+      const test = Math.max(10, Math.round(dur * 0.20));
+      const build = Math.max(15, dur - plan - test);
+      return {
+        subSteps: [
+          { id: "step_1", title: "Architecture & Spec Review", durationMinutes: plan, description: "Review backlog tickets, wireframes, and API contracts." },
+          { id: "step_2", title: "Deep Feature Implementation", durationMinutes: build, description: "Write clean code, modules, and component logic." },
+          { id: "step_3", title: "Testing, Refactoring & Commit", durationMinutes: test, description: "Run test suites, verify edge cases, and push git commit." }
+        ],
+        rationale: `Engineering flow: ${plan}m design check, ${build}m uninterrupted coding, and ${test}m verification.`,
+        totalDuration: dur
+      };
+    }
+
+    // Default Study / Learning Session Breakdown (Review -> Core Practice -> Quiz / Recall)
+    if (dur <= 30) {
+      const rev = 7;
+      const core = 15;
+      const quiz = 8;
+      return {
+        subSteps: [
+          { id: "step_1", title: "Flashcard & Prerequisite Review", durationMinutes: rev, description: "Active recall of key terms and concepts from prior sessions." },
+          { id: "step_2", title: "Focused Topic Study", durationMinutes: core, description: "Read new material or work through sample problems." },
+          { id: "step_3", title: "Rapid Self-Quiz & Summary", durationMinutes: quiz, description: "Close books and write a quick 3-bullet takeaway quiz." }
+        ],
+        rationale: `Rapid 30m Micro-Sprint: ${rev}m recall ramp, ${core}m new content, and ${quiz}m retention checkpoint.`,
+        totalDuration: 30
+      };
+    }
+
+    if (dur >= 90) {
+      const part1 = Math.round(dur * 0.18); // e.g. 15-20m
+      const part2 = Math.round(dur * 0.42); // e.g. 38-40m
+      const part3 = Math.round(dur * 0.25); // e.g. 20-25m
+      const part4 = dur - part1 - part2 - part3; // e.g. 12-15m
+      return {
+        subSteps: [
+          { id: "step_1", title: "Theory & Prerequisite Review", durationMinutes: part1, description: "Spaced repetition flashcards and review of previous session notes." },
+          { id: "step_2", title: "Deep Practice & Problem Solving", durationMinutes: part2, description: "Solve complex questions and apply concepts actively without looking at answers." },
+          { id: "step_3", title: "Timed Diagnostic Practice Quiz", durationMinutes: part3, description: "Simulated exam conditions / test questions under clock pressure." },
+          { id: "step_4", title: "Error Analysis & Mistake Journaling", durationMinutes: part4, description: "Break down why errors occurred and record notes for next session." }
+        ],
+        rationale: `Intensive 4-Stage Mastery Session: ${part1}m theory review, ${part2}m deep practice, ${part3}m timed quiz, and ${part4}m mistake feedback loop.`,
+        totalDuration: dur
+      };
+    }
+
+    // Standard 45 - 60 min Study Breakdown
+    const reviewMins = Math.max(10, Math.round(dur * 0.25)); // 15m for 60m
+    const quizMins = Math.max(10, Math.round(dur * 0.20));   // 10-15m for 60m
+    const practiceMins = Math.max(15, dur - reviewMins - quizMins); // 30-35m for 60m
+
+    return {
+      subSteps: [
+        { 
+          id: "step_1", 
+          title: "Concept Review & Active Recall", 
+          durationMinutes: reviewMins, 
+          description: "Review prior formulas, flashcards, or highlight summary notes." 
+        },
+        { 
+          id: "step_2", 
+          title: "Deep Problem Set & Core Study", 
+          durationMinutes: practiceMins, 
+          description: "Execute primary learning exercises, code challenges, or textbook questions." 
+        },
+        { 
+          id: "step_3", 
+          title: "Self-Testing Quiz & Takeaways", 
+          durationMinutes: quizMins, 
+          description: "Take a self-quiz without notes and write key session takeaways in notes." 
+        }
       ],
-      recommendedAdjustments: [
-        "Schedule high-focus learning goals during your peak 09:00-11:30 AM energy window.",
-        "Reserve 14:00-16:00 PM for moderate tasks and active recovery.",
-        "Maintain consistent sleep hygiene by ending study blocks by 21:30 PM."
-      ]
+      rationale: `Evidence-based 3-stage study architecture: ${reviewMins}m retrieval warm-up, ${practiceMins}m deliberate practice, and ${quizMins}m testing effect reinforcement.`,
+      totalDuration: dur
+    };
+  }
+
+  if (!keyAvailable) {
+    await new Promise((r) => setTimeout(r, 300));
+    return res.json(generateFallbackSubSteps(goalName, goalType, targetDur, difficulty));
+  }
+
+  try {
+    const systemPrompt = `You are an expert Learning Sciences & Productivity Coach.
+Your task is to break down a study or focus session into 2 to 4 timed sub-steps (phases) totaling EXACTLY ${targetDur} minutes.
+Recommended patterns:
+- For Study/Academic: Step 1 = Concept & Formula Review (15-25%), Step 2 = Deep Practice Problems (50-60%), Step 3 = Self-Quiz & Mistake Logging (15-25%).
+- For Workout: Step 1 = Dynamic Warmup (15%), Step 2 = Core Sets (70%), Step 3 = Cooldown & Stretch (15%).
+- For Coding/Projects: Step 1 = Spec Review (20%), Step 2 = Implementation (60%), Step 3 = Testing & Committing (20%).
+
+The sum of all "durationMinutes" across subSteps MUST equal exactly ${targetDur}.
+
+Return JSON in this EXACT schema:
+{
+  "subSteps": [
+    {
+      "id": "step_1",
+      "title": "Title of phase",
+      "durationMinutes": 15,
+      "description": "Short explanation of what to do in this phase"
+    }
+  ],
+  "rationale": "One-sentence explanation of why this phase breakdown optimizes learning retention and cognitive pacing.",
+  "totalDuration": ${targetDur}
+}
+Return ONLY valid JSON. No markdown ticks.`;
+
+    const userPrompt = `Goal Name: "${goalName}"\nType: "${goalType}"\nCategory: "${category}"\nTotal Session Duration: ${targetDur} minutes\nDifficulty / Focus: "${difficulty}"`;
+
+    const result = await generateWithFallback({
+      primaryModel: "gemini-3.7-flash",
+      fallbackModel: "gemini-3.1-flash-lite",
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: "application/json"
+      }
     });
+
+    if (result && result.text) {
+      const parsed = JSON.parse(result.text.trim());
+      if (parsed && Array.isArray(parsed.subSteps) && parsed.subSteps.length > 0) {
+        // Ensure ids are unique and durations sum up to targetDur
+        let currentSum = parsed.subSteps.reduce((acc: number, s: any) => acc + (Number(s.durationMinutes) || 0), 0);
+        if (currentSum !== targetDur && parsed.subSteps.length > 0) {
+          const diff = targetDur - currentSum;
+          parsed.subSteps[parsed.subSteps.length - 1].durationMinutes = Math.max(5, (parsed.subSteps[parsed.subSteps.length - 1].durationMinutes || 10) + diff);
+        }
+        parsed.totalDuration = targetDur;
+        return res.json(parsed);
+      }
+    }
+
+    return res.json(generateFallbackSubSteps(goalName, goalType, targetDur, difficulty));
+  } catch (err: any) {
+    console.warn("Sub-steps generator notice:", err?.message || err);
+    return res.json(generateFallbackSubSteps(goalName, goalType, targetDur, difficulty));
   }
 });
 
-// 5. SMART ENERGY-BASED SCHEDULING ENDPOINT
+// 6. SMART ENERGY-BASED SCHEDULING ENDPOINT
 app.post("/api/coach/energy-schedule", async (req, res) => {
   const { goals = [], events = [], availability = [], energyProfile = "lark" } = req.body;
 

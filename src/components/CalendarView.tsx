@@ -36,9 +36,13 @@ import {
   Laptop,
   RotateCw,
   Smile,
-  Play
+  Play,
+  Wand2,
+  ListOrdered,
+  Minus,
+  Loader2
 } from "lucide-react";
-import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow } from "../types";
+import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
 
@@ -115,6 +119,8 @@ export default function CalendarView({
   const [goalCustomEnd, setGoalCustomEnd] = useState("16:00");
   const [goalColor, setGoalColor] = useState("#f43f5e");
   const [goalIcon, setGoalIcon] = useState("target");
+  const [goalSubSteps, setGoalSubSteps] = useState<SessionSubStep[]>([]);
+  const [isGeneratingGoalSubSteps, setIsGeneratingGoalSubSteps] = useState(false);
   
   // Event Form State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -127,6 +133,9 @@ export default function CalendarView({
   const [newCompletionNote, setNewCompletionNote] = useState("");
   const [newGoalId, setNewGoalId] = useState("");
   const [newCompleted, setNewCompleted] = useState(false);
+  const [newEventSubSteps, setNewEventSubSteps] = useState<SessionSubStep[]>([]);
+  const [isGeneratingEventSubSteps, setIsGeneratingEventSubSteps] = useState(false);
+  const [showEventSubStepsEditor, setShowEventSubStepsEditor] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
 
   // Focus Timer Modal state
@@ -153,7 +162,8 @@ export default function CalendarView({
       goalId: evt.goalId,
       category: associatedGoal?.category || evt.type,
       color: associatedGoal?.color || (evt.type === "study" ? "#3b82f6" : evt.type === "workout" ? "#f43f5e" : "#10b981"),
-      previousSessionNote: associatedGoal?.lastSessionNote
+      previousSessionNote: associatedGoal?.lastSessionNote,
+      subSteps: evt.subSteps || associatedGoal?.subSteps
     });
   };
 
@@ -166,12 +176,14 @@ export default function CalendarView({
       goalId: goal.id,
       category: goal.category || goal.type,
       color: goal.color || "#6366f1",
-      previousSessionNote: goal.lastSessionNote
+      previousSessionNote: goal.lastSessionNote,
+      subSteps: goal.subSteps
     });
   };
 
   const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
     let targetEvtId = eventId;
+    const trimmedNote = note && note.trim() ? note.trim() : "";
 
     // If eventId wasn't directly provided, try to find an uncompleted event for this goal today
     if (!targetEvtId && goalId && events) {
@@ -189,7 +201,7 @@ export default function CalendarView({
 
     if (targetEvtId) {
       if (onEditEvent) {
-        onEditEvent(targetEvtId, { completed: true, ...(note ? { completionNote: note } : {}) });
+        onEditEvent(targetEvtId, { completed: true, completionNote: trimmedNote || undefined });
       } else {
         onToggleCompleteEvent(targetEvtId);
       }
@@ -200,7 +212,8 @@ export default function CalendarView({
       if (g) {
         onEditGoal(g.id, {
           ...(!targetEvtId ? { completedCount: g.completedCount + 1 } : {}),
-          ...(note ? { lastSessionNote: note, lastSessionNoteDate: new Date().toISOString() } : {})
+          lastSessionNote: trimmedNote || undefined,
+          lastSessionNoteDate: trimmedNote ? new Date().toISOString() : undefined
         });
       }
     }
@@ -1421,7 +1434,8 @@ export default function CalendarView({
           completed: newCompleted,
           notes: newNotes,
           completionNote: newCompletionNote.trim() || undefined,
-          goalId: newGoalId || undefined
+          goalId: newGoalId || undefined,
+          subSteps: newEventSubSteps.length > 0 ? newEventSubSteps : undefined
         });
       }
       if (newGoalId && newCompletionNote.trim() && onEditGoal) {
@@ -1439,7 +1453,8 @@ export default function CalendarView({
         completed: newCompleted,
         notes: newNotes,
         completionNote: newCompletionNote.trim() || undefined,
-        goalId: newGoalId || undefined
+        goalId: newGoalId || undefined,
+        subSteps: newEventSubSteps.length > 0 ? newEventSubSteps : undefined
       });
       if (newGoalId && newCompletionNote.trim() && onEditGoal) {
         onEditGoal(newGoalId, {
@@ -1455,6 +1470,8 @@ export default function CalendarView({
     setNewCompletionNote("");
     setNewGoalId("");
     setNewCompleted(false);
+    setNewEventSubSteps([]);
+    setShowEventSubStepsEditor(false);
     setEditingEventId(null);
     setShowAddModal(false);
   };
@@ -1483,7 +1500,45 @@ export default function CalendarView({
     setNewCompletionNote(evt.completionNote || "");
     setNewGoalId(evt.goalId || "");
     setNewCompleted(evt.completed || false);
+    setNewEventSubSteps(evt.subSteps || goals.find(g => g.id === evt.goalId)?.subSteps || []);
+    setShowEventSubStepsEditor(Boolean(evt.subSteps && evt.subSteps.length > 0));
     setShowAddModal(true);
+  };
+
+  const handleGenerateEventAiSubSteps = async () => {
+    if (!newTitle.trim()) return;
+    setIsGeneratingEventSubSteps(true);
+    try {
+      const sDate = new Date(`${newDay}T${newStartTime}:00`);
+      const eDate = new Date(`${newDay}T${newEndTime}:00`);
+      const durationMinutes = Math.max(15, Math.round((eDate.getTime() - sDate.getTime()) / 60000)) || 60;
+      
+      const associatedGoal = goals.find(g => g.id === newGoalId);
+      
+      const res = await fetch("/api/coach/suggest-substeps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalName: newTitle,
+          category: associatedGoal?.category || newType || "Study",
+          durationMinutes,
+          difficulty: "intermediate",
+          focusStyle: "balanced"
+        })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data.subSteps && Array.isArray(data.subSteps) && data.subSteps.length > 0) {
+          setNewEventSubSteps(data.subSteps);
+          setShowEventSubStepsEditor(true);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to generate event sub-steps:", err);
+    } finally {
+      setIsGeneratingEventSubSteps(false);
+    }
   };
 
   // Open helper with clean defaults for adding a goal
@@ -3577,6 +3632,107 @@ export default function CalendarView({
                   className="w-full text-xs p-2.5 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition placeholder:text-slate-500"
                   rows={2}
                 />
+              </div>
+
+              {/* Sub-Steps Breakdown Section */}
+              <div className="bg-[#0b0d18] border border-white/10 rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest flex items-center gap-1.5">
+                    <ListOrdered className="w-3.5 h-3.5 text-indigo-400" />
+                    Session Sub-Steps ({newEventSubSteps.length})
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleGenerateEventAiSubSteps}
+                      disabled={isGeneratingEventSubSteps || !newTitle.trim()}
+                      className="px-2 py-1 bg-indigo-500/20 hover:bg-indigo-500/35 border border-indigo-400/30 text-indigo-300 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                      title="AI Coach generates study/workout phases"
+                    >
+                      {isGeneratingEventSubSteps ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin text-indigo-300" />
+                          <span>Suggesting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Wand2 className="w-3 h-3 text-indigo-400" />
+                          <span>AI Breakdown</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const totalMins = newEventSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+                        const sDate = new Date(`${newDay}T${newStartTime}:00`);
+                        const eDate = new Date(`${newDay}T${newEndTime}:00`);
+                        const eventDur = Math.max(15, Math.round((eDate.getTime() - sDate.getTime()) / 60000)) || 60;
+                        const defaultPhaseDur = Math.max(5, Math.min(15, eventDur - totalMins > 0 ? eventDur - totalMins : 15));
+                        
+                        setNewEventSubSteps([
+                          ...newEventSubSteps,
+                          {
+                            id: `step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                            title: `Phase ${newEventSubSteps.length + 1}`,
+                            durationMinutes: defaultPhaseDur
+                          }
+                        ]);
+                        setShowEventSubStepsEditor(true);
+                      }}
+                      className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3 text-emerald-400" />
+                      <span>Add</span>
+                    </button>
+                  </div>
+                </div>
+
+                {newEventSubSteps.length === 0 ? (
+                  <p className="text-[11px] text-slate-400 italic">
+                    No custom sub-steps defined yet. Click <strong>AI Breakdown</strong> to automatically divide this block into review, study, and quiz phases!
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                    {newEventSubSteps.map((step, idx) => (
+                      <div key={step.id} className="p-2 bg-black/40 border border-white/5 rounded-lg flex items-center gap-2">
+                        <span className="text-[10px] font-mono text-slate-400 w-4 text-center">{idx + 1}</span>
+                        <input
+                          type="text"
+                          value={step.title}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setNewEventSubSteps(newEventSubSteps.map((s, i) => i === idx ? { ...s, title: val } : s));
+                          }}
+                          placeholder="e.g. 15m Review"
+                          className="flex-1 text-xs bg-white/5 border border-white/10 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-400"
+                        />
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="1"
+                            max="240"
+                            value={step.durationMinutes}
+                            onChange={(e) => {
+                              const val = Math.max(1, Number(e.target.value) || 1);
+                              setNewEventSubSteps(newEventSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: val } : s));
+                            }}
+                            className="w-12 text-xs bg-white/5 border border-white/10 rounded px-1.5 py-1 text-white text-center font-mono focus:outline-none focus:border-indigo-400"
+                          />
+                          <span className="text-[10px] font-mono text-slate-400">m</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setNewEventSubSteps(newEventSubSteps.filter((_, i) => i !== idx))}
+                          className="p-1 text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                          title="Remove phase"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-2 py-1 select-none">

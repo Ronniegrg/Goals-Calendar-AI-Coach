@@ -25,6 +25,14 @@ export interface SubTask {
   completed: boolean;
 }
 
+export interface SessionSubStep {
+  id: string;
+  title: string;
+  durationMinutes: number;
+  description?: string;
+  completed?: boolean;
+}
+
 export interface Goal {
   id: string;
   name: string;
@@ -39,6 +47,7 @@ export interface Goal {
   color: string;
   createdAt: string;
   subtasks?: SubTask[];
+  subSteps?: SessionSubStep[];
   icon?: string;
   lastSessionNote?: string;
   lastSessionNoteDate?: string;
@@ -60,6 +69,7 @@ export interface CalendarEvent {
   notes?: string;
   completionNote?: string;
   icon?: string;
+  subSteps?: SessionSubStep[];
 }
 
 export interface AvailabilityWindow {

@@ -246,7 +246,8 @@ export default function GoalTracker({
       goalId: g.id,
       category: g.category || g.type,
       color: g.color || "#6366f1",
-      previousSessionNote: g.lastSessionNote
+      previousSessionNote: g.lastSessionNote,
+      subSteps: g.subSteps
     });
   };
 
@@ -1719,13 +1720,13 @@ export default function GoalTracker({
                               id={`log_finish_goal_btn_${g.id}`}
                               onClick={() => {
                                 if (onCompleteSession) {
-                                  onCompleteSession(undefined, g.id, g.lastSessionNote || undefined);
+                                  onCompleteSession(undefined, g.id, undefined);
                                 } else {
-                                  onEditGoal(g.id, { completedCount: g.completedCount + 1 });
+                                  onEditGoal(g.id, { completedCount: g.completedCount + 1, lastSessionNote: undefined, lastSessionNoteDate: undefined });
                                 }
                               }}
                               className="w-full py-2 px-2.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                              title="Instantly mark 1 session as completed for this goal"
+                              title="Instantly mark 1 session as completed for this goal (clears previous carryover note if blank)"
                             >
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                               <span>Log & Finish</span>
