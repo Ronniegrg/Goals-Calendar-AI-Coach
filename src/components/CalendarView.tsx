@@ -70,6 +70,8 @@ interface CalendarViewProps {
   onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
   onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
   onResetAndRegenerateCalendar?: (options?: { clearMode?: "uncompleted_goals" | "all_events"; keepExternal?: boolean }) => void;
+  targetDate?: Date;
+  onNavigateToDate?: (date: Date) => void;
 }
 
 export default function CalendarView({
@@ -85,7 +87,9 @@ export default function CalendarView({
   onDeleteGoal,
   onEditEvent,
   onBulkEditEvents,
-  onResetAndRegenerateCalendar
+  onResetAndRegenerateCalendar,
+  targetDate,
+  onNavigateToDate
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -93,7 +97,13 @@ export default function CalendarView({
     }
     return "week";
   });
-  const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  const [currentDate, setCurrentDate] = useState<Date>(() => targetDate ? new Date(targetDate) : new Date());
+
+  useEffect(() => {
+    if (targetDate) {
+      setCurrentDate(new Date(targetDate));
+    }
+  }, [targetDate]);
 
   // Reset & Regenerate Calendar Modal State
   const [showResetModal, setShowResetModal] = useState(false);
@@ -251,7 +261,50 @@ export default function CalendarView({
   // Live Current Time state for Google Calendar-style current time indicator line
   const [now, setNow] = useState<Date>(new Date());
 
+  // Theme observer for crisp contrast in light and dark mode
+  const [isLightMode, setIsLightMode] = useState<boolean>(() => {
+    if (typeof document !== "undefined") {
+      return document.documentElement.classList.contains("light-theme");
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const updateTheme = () => {
+      const isLight = document.documentElement.classList.contains("light-theme");
+      setIsLightMode(isLight);
+    };
+    updateTheme();
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleCardMouseEnter = (eventId: string) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setHoveredEventId(eventId);
+  };
+
+  const handleCardMouseLeave = (eventId: string) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredEventId(prev => (prev === eventId ? null : prev));
+    }, 280);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    };
+  }, []);
 
   // Drag & Drop and Rescheduling States
   const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
@@ -514,45 +567,58 @@ export default function CalendarView({
         .filter(e => e.id !== targetEvt.id && isSameDay(new Date(e.start), targetDate))
         .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
 
-      let windowsToTry: { startH: number; endH: number }[] = [];
-      if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
-        windowsToTry = [
-          { startH: startHour, endH: endHour },
-          { startH: 8, endH: 22 }
-        ];
-      } else {
-        windowsToTry = [
-          { startH: startHour, endH: endHour }
-        ];
-      }
+      // 1. First priority: Try exact same time of day on the shifted day
+      const testSameS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+      testSameS.setHours(origS.getHours(), origS.getMinutes(), 0, 0);
+      const testSameE = new Date(testSameS.getTime() + duration);
+      const hasSameOverlap = existingOccupied.some(occ => testSameS < occ.end && testSameE > occ.start);
 
       let slotFound = false;
-      let candStart = new Date(targetDate);
-      let candEnd = new Date(targetDate);
+      let candStart = testSameS;
+      let candEnd = testSameE;
 
-      for (const win of windowsToTry) {
-        if (slotFound) break;
-        const durHours = duration / (3600 * 1000);
-        const maxStartH = Math.max(win.startH, win.endH - durHours);
-        for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
-          const testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-          testS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
-          const testE = new Date(testS.getTime() + duration);
-
-          const overlap = existingOccupied.some(occ => testS < occ.end && testE > occ.start);
-          if (!overlap) {
-            candStart = testS;
-            candEnd = testE;
-            slotFound = true;
-            break;
-          }
-        }
+      if (!hasSameOverlap) {
+        slotFound = true;
       }
 
+      // 2. If same time has conflict, search preferred windows
       if (!slotFound) {
-        candStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-        candStart.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
-        candEnd = new Date(candStart.getTime() + duration);
+        let windowsToTry: { startH: number; endH: number }[] = [];
+        if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+          windowsToTry = [
+            { startH: startHour, endH: endHour },
+            { startH: 8, endH: 22 }
+          ];
+        } else {
+          windowsToTry = [
+            { startH: startHour, endH: endHour }
+          ];
+        }
+
+        for (const win of windowsToTry) {
+          if (slotFound) break;
+          const durHours = duration / (3600 * 1000);
+          const maxStartH = Math.max(win.startH, win.endH - durHours);
+          for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
+            const testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+            testS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+            const testE = new Date(testS.getTime() + duration);
+
+            const overlap = existingOccupied.some(occ => testS < occ.end && testE > occ.start);
+            if (!overlap) {
+              candStart = testS;
+              candEnd = testE;
+              slotFound = true;
+              break;
+            }
+          }
+        }
+
+        if (!slotFound) {
+          candStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+          candStart.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
+          candEnd = new Date(candStart.getTime() + duration);
+        }
       }
 
       newTargetStart = candStart.getTime();
@@ -563,12 +629,13 @@ export default function CalendarView({
     }
 
     // Shift target event
+    const cleanNotes = targetEvt.notes ? targetEvt.notes.replace(/\s*\(Agenda (Delayed|Shifted)[^)]*\)/g, "") : "";
     updates.push({
       id: targetEvt.id,
       fields: {
         start: new Date(newTargetStart).toISOString(),
         end: new Date(newTargetEnd).toISOString(),
-        notes: `${targetEvt.notes || ''} (Delayed +${delayLabel})`.trim()
+        notes: `${cleanNotes} (Shifted +${delayLabel})`.trim()
       }
     });
 
@@ -614,11 +681,76 @@ export default function CalendarView({
       updates.forEach(u => onEditEvent(u.id, u.fields));
     }
 
+    // Automatically advance current calendar date so the user sees the shifted event
+    if (isDayDelay) {
+      const shiftedDateObj = new Date(newTargetStart);
+      setCurrentDate(shiftedDateObj);
+      onNavigateToDate?.(shiftedDateObj);
+    }
+
     const msg = rippleCount > 0 
       ? `⚡ Shifted "${targetEvt.title}" (+${delayLabel}) & rippled ${rippleCount} downstream session(s) forward!`
       : `⚡ Shifted "${targetEvt.title}" forward by +${delayLabel}!`;
     
     setRebalanceStatus(msg);
+    setTimeout(() => setRebalanceStatus(null), 5000);
+  };
+
+  // Shift all uncompleted sessions for a goal forward by delayDays
+  const handleShiftGoalAgenda = (goal: Goal, delayDays: number) => {
+    const goalNameLower = goal.name.toLowerCase();
+    const goalEvents = events.filter(e => {
+      if (e.completed) return false;
+      if (e.goalId === goal.id) return true;
+      if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
+      return false;
+    });
+
+    if (goalEvents.length === 0) {
+      setRebalanceStatus(`No upcoming sessions to shift for "${goal.name}".`);
+      setTimeout(() => setRebalanceStatus(null), 4000);
+      return;
+    }
+
+    const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
+    let firstShiftedStart: number | null = null;
+
+    goalEvents.forEach(evt => {
+      const oldStart = new Date(evt.start);
+      const oldEnd = new Date(evt.end);
+      const dur = oldEnd.getTime() - oldStart.getTime();
+
+      const newStart = new Date(oldStart);
+      newStart.setDate(oldStart.getDate() + delayDays);
+      const newEnd = new Date(newStart.getTime() + dur);
+
+      if (!firstShiftedStart) firstShiftedStart = newStart.getTime();
+
+      const cleanNotes = evt.notes ? evt.notes.replace(/\s*\(Agenda (Delayed|Shifted)[^)]*\)/g, "") : "";
+      updates.push({
+        id: evt.id,
+        fields: {
+          start: newStart.toISOString(),
+          end: newEnd.toISOString(),
+          notes: `${cleanNotes} (Shifted +${delayDays === 7 ? "1w" : "1d"})`.trim()
+        }
+      });
+    });
+
+    if (onBulkEditEvents) {
+      onBulkEditEvents(updates);
+    } else if (onEditEvent) {
+      updates.forEach(u => onEditEvent(u.id, u.fields));
+    }
+
+    if (firstShiftedStart) {
+      const targetD = new Date(firstShiftedStart);
+      setCurrentDate(targetD);
+      onNavigateToDate?.(targetD);
+    }
+
+    const dayLabel = delayDays === 7 ? "1 week" : `${delayDays} day(s)`;
+    setRebalanceStatus(`⏩ Shifted ${updates.length} session(s) for "${goal.name}" forward by ${dayLabel}!`);
     setTimeout(() => setRebalanceStatus(null), 5000);
   };
 
@@ -846,9 +978,9 @@ export default function CalendarView({
     };
   }, [viewMode, currentDate]);
 
-  // Helper to calculate a 100% OPAQUE solid dark card background tinted with goal color (NO BLEED-THROUGH)
-  const getSolidBgFromColor = (color: string, intensityFactor: number = 0.35) => {
-    if (!color) return "#181b2e";
+  // Helper to calculate a 100% OPAQUE solid card background tinted with goal color
+  const getSolidBgFromColor = (color: string, intensityFactor: number = 0.35, lightMode: boolean = isLightMode) => {
+    if (!color) return lightMode ? "#f8fafc" : "#181b2e";
     let cr = 99, cg = 102, cb = 241; // default indigo
     if (color.startsWith("#")) {
       const hex = color.replace("#", "");
@@ -869,7 +1001,19 @@ export default function CalendarView({
         cb = parseInt(match[2]);
       }
     }
-    // Base dark navy canvas values
+
+    if (lightMode) {
+      // In light mode: clean luminous pastel tint on white surface
+      // 12% to 18% color saturation ensures soft tinted background and high contrast with dark slate text
+      const bgR = 255, bgG = 255, bgB = 255;
+      const factor = Math.min(intensityFactor, 0.20);
+      const r = Math.round(bgR * (1 - factor) + cr * factor);
+      const g = Math.round(bgG * (1 - factor) + cg * factor);
+      const b = Math.round(bgB * (1 - factor) + cb * factor);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    // Base dark navy canvas values for dark mode
     const bgR = 18, bgG = 21, bgB = 38;
     const r = Math.round(bgR * (1 - intensityFactor) + cr * intensityFactor);
     const g = Math.round(bgG * (1 - intensityFactor) + cg * intensityFactor);
@@ -882,17 +1026,6 @@ export default function CalendarView({
     const goal = goals.find(g => g.id === evt.goalId);
     const baseColor = goal?.color;
 
-    if (baseColor) {
-      return {
-        borderLeftColor: baseColor,
-        backgroundColor: getSolidBgFromColor(baseColor, 0.35), // 100% solid opaque
-        color: "#ffffff",
-        hoverBg: getSolidBgFromColor(baseColor, 0.55), // 100% solid opaque on hover
-        dotColor: baseColor,
-        isCustom: true
-      };
-    }
-
     // Default Fallbacks based on category/type
     const fallbackHex: Record<string, string> = {
       workout: "#f43f5e",
@@ -904,15 +1037,16 @@ export default function CalendarView({
       external: "#64748b"
     };
 
-    const hex = fallbackHex[evt.type] || "#6366f1";
+    const hex = baseColor || fallbackHex[evt.type] || "#6366f1";
 
     return {
       borderLeftColor: hex,
-      backgroundColor: getSolidBgFromColor(hex, 0.35),
-      color: "#ffffff",
-      hoverBg: getSolidBgFromColor(hex, 0.55),
+      cardBorder: isLightMode ? getSolidBgFromColor(hex, 0.28, true) : "rgba(255, 255, 255, 0.12)",
+      backgroundColor: getSolidBgFromColor(hex, isLightMode ? 0.12 : 0.35, isLightMode),
+      hoverBg: getSolidBgFromColor(hex, isLightMode ? 0.18 : 0.50, isLightMode),
+      color: isLightMode ? "#0f172a" : "#ffffff",
       dotColor: hex,
-      isCustom: false
+      isCustom: Boolean(baseColor)
     };
   };
 
@@ -2300,27 +2434,48 @@ export default function CalendarView({
 
       {/* Goal Colors Quick Legend Strip */}
       {goals.length > 0 && (
-        <div className="bg-slate-900/90 dark:bg-[#0c0d18] border-b border-white/10 px-4 py-2 flex items-center gap-3 overflow-x-auto no-scrollbar text-xs">
-          <span className="text-[11px] font-extrabold text-slate-300 dark:text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
-            <Target className="w-3.5 h-3.5 text-indigo-400" /> Goal Color Legend:
+        <div className="bg-slate-50 dark:bg-[#0c0d18] border-b border-slate-200 dark:border-white/10 px-4 py-2.5 flex items-center gap-3 overflow-x-auto no-scrollbar text-xs shadow-2xs">
+          <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
+            <Target className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" /> Goal Color Legend:
           </span>
           <div className="flex items-center gap-2 min-w-0 flex-1 overflow-x-auto no-scrollbar">
             {goals.map(g => (
               <div
                 key={g.id}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-extrabold shrink-0 shadow-xs transition-all hover:scale-105"
+                onClick={(e) => handleOpenTimerForGoal(g, e)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-extrabold shrink-0 shadow-2xs transition-all hover:scale-105 cursor-pointer select-none"
                 style={{
-                  backgroundColor: getSolidBgFromColor(g.color, 0.35),
-                  borderColor: getSolidBgFromColor(g.color, 0.6),
-                  color: "#ffffff"
+                  backgroundColor: getSolidBgFromColor(g.color, isLightMode ? 0.12 : 0.35, isLightMode),
+                  borderColor: getSolidBgFromColor(g.color, isLightMode ? 0.35 : 0.6, isLightMode),
+                  color: isLightMode ? "#0f172a" : "#ffffff"
                 }}
-                title={`${g.name} (${g.completedCount}/${g.weeklyTarget} completed this week)`}
+                title={`${g.name} (${g.completedCount}/${g.weeklyTarget} completed this week) - Click to start focus timer`}
               >
-                <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-1 ring-white/30" style={{ backgroundColor: g.color }} />
-                <span className="truncate max-w-[140px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{g.name}</span>
-                <span className="text-[9.5px] font-mono opacity-90 bg-black/40 px-1.5 py-0.2 rounded border border-white/10">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-1 ring-black/10 dark:ring-white/30" style={{ backgroundColor: g.color }} />
+                <span className="truncate max-w-[140px]">{g.name}</span>
+                <span className="goal-target-counter text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shadow-2xs shrink-0 tracking-tight bg-white/80 dark:bg-black/40 border border-black/5 dark:border-white/10 text-slate-700 dark:text-slate-300">
                   {g.completedCount}/{g.weeklyTarget}
                 </span>
+                <div className="flex items-center gap-1 ml-1 pl-1 border-l border-black/10 dark:border-white/20" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    id={`cal_shift_goal_1d_${g.id}`}
+                    onClick={() => handleShiftGoalAgenda(g, 1)}
+                    className="px-1.5 py-0.5 rounded bg-white dark:bg-black/40 hover:bg-amber-500 hover:text-white dark:hover:text-black text-amber-700 dark:text-amber-300 border border-amber-500/20 dark:border-amber-400/30 text-[9px] font-mono font-extrabold transition cursor-pointer active:scale-95 shadow-2xs"
+                    title={`Shift all upcoming "${g.name}" sessions forward by 1 day`}
+                  >
+                    +1d
+                  </button>
+                  <button
+                    type="button"
+                    id={`cal_shift_goal_1w_${g.id}`}
+                    onClick={() => handleShiftGoalAgenda(g, 7)}
+                    className="px-1.5 py-0.5 rounded bg-white dark:bg-black/40 hover:bg-amber-500 hover:text-white dark:hover:text-black text-amber-700 dark:text-amber-300 border border-amber-500/20 dark:border-amber-400/30 text-[9px] font-mono font-extrabold transition cursor-pointer active:scale-95 shadow-2xs"
+                    title={`Shift all upcoming "${g.name}" sessions forward by 1 week`}
+                  >
+                    +1w
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -2334,22 +2489,28 @@ export default function CalendarView({
         {viewMode === "week" && (
           <div className="min-w-[800px] flex flex-col h-full">
             {/* Days row header */}
-            <div className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200 dark:border-white/10 sticky top-0 bg-slate-100/95 dark:bg-[#0d0e16]/95 backdrop-blur-md z-10 shadow-xs">
-              <div className="p-3 text-center text-xs font-bold text-slate-600 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 self-center">Time (UTC)</div>
+            <div className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200 dark:border-white/10 sticky top-0 bg-white/95 dark:bg-[#0d0e16]/95 backdrop-blur-md z-10 shadow-xs">
+              <div className="p-3 text-center text-xs font-semibold text-slate-500 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 self-center">
+                Time
+              </div>
               {weekDates.map((day, dIdx) => {
                 const todayFlag = isSameDay(day, new Date());
                 return (
                   <div 
                     key={dIdx} 
-                    className={`p-3 text-center border-r border-slate-200 dark:border-white/10 ${
-                      todayFlag ? "bg-indigo-500/15 text-indigo-700 dark:text-indigo-400" : "text-slate-700 dark:text-slate-300"
+                    className={`p-2.5 text-center border-r border-slate-200 dark:border-white/10 transition-colors ${
+                      todayFlag ? "bg-indigo-50/60 dark:bg-indigo-950/25" : ""
                     }`}
                   >
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    <div className={`text-[10px] font-bold uppercase tracking-wider ${
+                      todayFlag ? "text-indigo-600 dark:text-indigo-400" : "text-slate-500 dark:text-slate-400"
+                    }`}>
                       {day.toLocaleDateString("en-US", { weekday: "short" })}
                     </div>
-                    <div className={`text-sm mt-0.5 font-extrabold rounded-lg inline-block w-7 h-7 leading-7 ${
-                      todayFlag ? "bg-indigo-600 text-white text-center shadow-lg shadow-indigo-500/25 font-black" : "text-slate-900 dark:text-slate-200"
+                    <div className={`text-xs mt-1 font-extrabold rounded-full mx-auto w-7 h-7 flex items-center justify-center transition-all ${
+                      todayFlag 
+                        ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30" 
+                        : "text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10"
                     }`}>
                       {day.getDate()}
                     </div>
@@ -2361,9 +2522,9 @@ export default function CalendarView({
             {/* Hourly schedule rows */}
             <div className="relative flex-1 bg-transparent">
               {hours.map((hour) => (
-                <div key={hour} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-white/5 h-16 min-h-16">
+                <div key={hour} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200/70 dark:border-white/5 h-16 min-h-16">
                   {/* Hour Label */}
-                  <div className="p-1 px-2 text-right text-[10px] font-mono text-slate-400 border-r border-white/10 bg-transparent select-none whitespace-nowrap self-center">
+                  <div className="p-1 px-2.5 text-right text-[10px] font-mono font-medium text-slate-500 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 bg-transparent select-none whitespace-nowrap self-center">
                     {hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}
                   </div>
 
@@ -2376,8 +2537,8 @@ export default function CalendarView({
                         onDragOver={(e) => handleDragOver(e, hour, dIdx)}
                         onDragLeave={handleDragLeave}
                         onDrop={(e) => handleDropEvent(e, hour, dIdx)}
-                        className={`border-r border-white/5 relative group transition-colors ${
-                          isCellOver ? "bg-indigo-500/25 border-2 border-indigo-400 shadow-inner" : "hover:bg-white/5"
+                        className={`border-r border-slate-200/70 dark:border-white/5 relative group transition-colors ${
+                          isCellOver ? "bg-indigo-500/20 border-2 border-indigo-400 shadow-inner" : "hover:bg-slate-50/80 dark:hover:bg-white/5"
                         }`}
                       >
                         {/* Empty cell hover creation help */}
@@ -2391,7 +2552,7 @@ export default function CalendarView({
                           }}
                           className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer"
                         >
-                          <Plus className="w-4 h-4 text-indigo-400" />
+                          <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
                         </button>
                       </div>
                     );
@@ -2407,21 +2568,19 @@ export default function CalendarView({
                   style={{ top: `${currentTopPixelWeek}px` }}
                   title={`Current Time: ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
                 >
-                  {/* Glowing Time Badge on the left of red line */}
-                  <div className="absolute -left-1 font-mono text-[9px] font-extrabold bg-red-600 text-white px-1.5 py-0.5 rounded-full shadow-lg shadow-red-500/80 z-50 -translate-x-full flex items-center gap-1">
+                  {/* Clean Time Badge on the left of red line */}
+                  <div className="absolute -left-1 font-mono text-[9px] font-bold bg-rose-500 text-white px-1.5 py-0.5 rounded-full shadow-sm z-50 -translate-x-full flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
                     <span>{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                   </div>
 
                   {/* Red Circle Indicator centered on today's column vertical grid border */}
                   <div
-                    className="absolute w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/80 z-40 -translate-x-1/2 flex items-center justify-center transition-all duration-300"
+                    className="absolute w-2.5 h-2.5 bg-rose-500 ring-2 ring-white dark:ring-slate-900 rounded-full shadow-sm z-40 -translate-x-1/2 flex items-center justify-center transition-all duration-300"
                     style={{ left: `calc(${todayIdx} * (100% / 7))` }}
-                  >
-                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
-                  </div>
+                  />
                   {/* Red horizontal line across grid */}
-                  <div className="h-[2px] bg-red-500 w-full shadow-md shadow-red-500/70"></div>
+                  <div className="h-[2px] bg-rose-500/90 w-full"></div>
                 </div>
               )}
 
@@ -2459,49 +2618,75 @@ export default function CalendarView({
                     draggable={true}
                     onDragStart={(e) => handleDragStart(e, evt.id)}
                     onClick={() => handleTriggerEditEvent(evt)}
-                    onMouseEnter={() => setHoveredEventId(evt.id)}
-                    onMouseLeave={() => setHoveredEventId(null)}
-                    className={`absolute p-1.5 border-l-4 rounded-lg text-left transition-all cursor-grab active:cursor-grabbing select-none ${
+                    onMouseEnter={() => handleCardMouseEnter(evt.id)}
+                    onMouseLeave={() => handleCardMouseLeave(evt.id)}
+                    className={`cal-event-card absolute p-2 border border-l-4 rounded-xl text-left cursor-pointer select-none transition-all duration-150 ${
                       draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
                     } ${
                       isHovered
-                        ? "shadow-2xl ring-2 ring-indigo-400 z-[100] opacity-100 scale-[1.02]"
+                        ? "shadow-2xl ring-2 ring-indigo-500/80 z-[120] opacity-100 scale-[1.01]"
                         : isAnyHovered
-                        ? "opacity-35 z-10 shadow-sm"
-                        : "opacity-100 z-10 shadow-sm hover:z-20"
+                        ? "opacity-35 z-10 shadow-xs"
+                        : "opacity-100 z-10 shadow-xs hover:z-20"
                     }`}
                     style={{
                       left: isHovered && totalCols > 1 ? `calc(80px + (${dayDiff} * (100% - 80px) / 7) + 1px)` : subLeft,
                       width: isHovered && totalCols > 1 ? `calc(((100% - 80px) / 7) - 2px)` : subWidth,
+                      minWidth: isHovered ? "165px" : undefined,
                       top: `${topPixel}px`,
-                      height: isHovered ? `${Math.max(heightPixel, 115)}px` : `${heightPixel}px`,
+                      height: isHovered ? "auto" : `${heightPixel}px`,
+                      minHeight: isHovered ? `${Math.max(heightPixel, 185)}px` : undefined,
                       borderLeftColor: colors.borderLeftColor,
+                      borderColor: colors.cardBorder,
                       backgroundColor: isHovered ? colors.hoverBg : colors.backgroundColor,
                       color: colors.color,
                       overflow: isHovered ? "visible" : "hidden"
                     }}
                   >
-                    <div className="flex flex-col h-full justify-between">
+                    <div className="flex flex-col h-full justify-between gap-1">
                       <div>
+                        {/* Header Row: Title & Quick Timer Button */}
                         <div className="flex items-center justify-between gap-1">
-                          <h4 className={`text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] ${evt.completed ? "line-through opacity-60" : ""}`}>
+                          <h4 className={`cal-event-title text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0 ${
+                            evt.completed ? "line-through opacity-60" : ""
+                          }`}>
                             {getEventIcon(evt)}
                             <span className="truncate">{evt.title}</span>
                           </h4>
-                          {totalCols > 2 && !isHovered && (
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: colors.borderLeftColor }} />
-                          )}
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {/* Instant 1-Click Play Timer Button right in card header */}
+                            <button
+                              type="button"
+                              id={`quick_timer_btn_week_${evt.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenTimerForEvent(evt, e);
+                              }}
+                              className="cal-quick-play-btn w-5 h-5 rounded-full transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
+                              title="Start Focus Timer immediately"
+                            >
+                              <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                            </button>
+
+                            {totalCols > 2 && !isHovered && (
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: colors.borderLeftColor }} />
+                            )}
+                          </div>
                         </div>
 
+                        {/* Tied Goal Badge */}
                         {(() => {
                           const tiedGoal = goals.find(g => g.id === evt.goalId);
                           if (!tiedGoal) return null;
-                          // Don't render duplicate badge if title matches goal name
                           if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
                           return (
                             <span
-                              className="text-[8.5px] font-extrabold px-1.5 py-0.5 rounded border border-white/20 truncate max-w-full inline-flex items-center gap-1 mt-0.5 text-white shadow-xs"
-                              style={{ backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.45) }}
+                              className="text-[8.5px] font-extrabold px-1.5 py-0.5 rounded border border-black/10 dark:border-white/20 truncate max-w-full inline-flex items-center gap-1 mt-0.5 shadow-2xs"
+                              style={{ 
+                                backgroundColor: getSolidBgFromColor(tiedGoal.color, isLightMode ? 0.2 : 0.45, isLightMode),
+                                color: isLightMode ? "#0f172a" : "#ffffff"
+                              }}
                               title={`Goal: ${tiedGoal.name}`}
                             >
                               <Target className="w-2.5 h-2.5 shrink-0" style={{ color: tiedGoal.color }} />
@@ -2510,124 +2695,181 @@ export default function CalendarView({
                           );
                         })()}
 
+                        {/* Time Badge */}
                         <p 
                           onClick={(e) => handleOpenTimerForEvent(evt, e)}
-                          className="text-[9px] font-extrabold text-indigo-100 dark:text-indigo-200 hover:text-white flex items-center gap-0.5 font-mono mt-0.5 truncate cursor-pointer hover:underline drop-shadow-[0_1px_1.5px_rgba(0,0,0,0.9)]"
+                          className="cal-event-time text-[9px] font-extrabold flex items-center gap-1 font-mono mt-0.5 truncate cursor-pointer hover:underline"
                           title="Click to start Focus Timer for this session"
                         >
-                          <Clock className="w-2.5 h-2.5 shrink-0 text-indigo-300" />
+                          <Clock className="w-2.5 h-2.5 shrink-0 text-indigo-500 dark:text-indigo-300" />
                           <span>{evtStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                          <Play className="w-2 h-2 ml-0.5 fill-current text-emerald-400 shrink-0" />
+                          <span className="opacity-60">-</span>
+                          <span>{evtEnd.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                         </p>
+
                         {evt.completionNote && (
-                          <p className="text-[8px] text-amber-300 font-bold italic truncate bg-amber-500/10 px-1 py-0.5 rounded mt-0.5 border border-amber-500/20" title={`Completion Note: ${evt.completionNote}`}>
+                          <p className="text-[8px] text-amber-700 dark:text-amber-300 font-bold italic truncate bg-amber-500/15 dark:bg-amber-500/10 px-1 py-0.5 rounded mt-0.5 border border-amber-500/30 dark:border-amber-500/20" title={`Completion Note: ${evt.completionNote}`}>
                             Note: "{evt.completionNote}"
                           </p>
                         )}
                       </div>
 
-                      {/* Hover Quick Resize Controls */}
+                      {/* Expanded Section: Actions & Controls (ONLY shown when hovered) */}
                       {isHovered && (
-                        <div className="w-full my-1 p-1 rounded-lg bg-black/70 border border-white/20 shadow-xs" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center justify-between text-[8px] font-mono text-slate-300 font-extrabold px-0.5 mb-0.5">
-                            <span>Duration</span>
-                            <span className="text-indigo-200">{Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)}m</span>
-                          </div>
-                          <div className="grid grid-cols-3 gap-1 w-full">
-                            <button
-                              type="button"
-                              onClick={(e) => handleAdjustDuration(e, evt, -15)}
-                              className="bg-white/15 hover:bg-white/30 text-white py-0.5 px-0.5 rounded text-[8.5px] font-black font-mono transition text-center cursor-pointer truncate shadow-2xs"
-                              title="Shorten by 15 mins"
-                            >
-                              -15m
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleAdjustDuration(e, evt, 15)}
-                              className="bg-indigo-500/50 hover:bg-indigo-500/75 text-white border border-indigo-300/40 py-0.5 px-0.5 rounded text-[8.5px] font-black font-mono transition text-center cursor-pointer truncate shadow-2xs"
-                              title="Extend by 15 mins"
-                            >
-                              +15m
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleAdjustDuration(e, evt, 30)}
-                              className="bg-indigo-500/50 hover:bg-indigo-500/75 text-white border border-indigo-300/40 py-0.5 px-0.5 rounded text-[8.5px] font-black font-mono transition text-center cursor-pointer truncate shadow-2xs"
-                              title="Extend by 30 mins"
-                            >
-                              +30m
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Action buttons footer */}
-                      {(isHovered || heightPixel >= 52) && (
-                        <div className="flex items-center justify-between border-t border-white/10 pt-1 mt-0.5 gap-1">
-                          <button
-                            id={`timer_event_btn_week_${evt.id}`}
-                            onClick={(e) => handleOpenTimerForEvent(evt, e)}
-                            className="text-[8.5px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/30 transition cursor-pointer shrink-0"
-                            title="Start Focus Timer"
-                          >
-                            <Play className="w-2 h-2 fill-current text-emerald-400" />
-                            <span>Timer</span>
-                          </button>
-
-                          <button
-                            id={`complete_event_btn_week_${evt.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleCompleteEvent(evt.id);
-                            }}
-                            className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 transition cursor-pointer shrink-0 ${
-                              evt.completed 
-                                ? "bg-emerald-600 text-white" 
-                                : "bg-white/10 hover:bg-white/20 border border-white/10 text-white"
-                            }`}
-                          >
-                            <Check className="w-2.5 h-2.5 font-bold" />
-                            <span>{evt.completed ? "Done" : "Mark"}</span>
-                          </button>
+                        <div className="flex flex-col gap-1.5 mt-1 pt-1.5 border-t border-black/10 dark:border-white/10" onClick={(e) => e.stopPropagation()}>
                           
-                          {googleAccessToken && evt.type !== "external" && (
+                          {/* Primary Action Buttons: Start Timer & Done */}
+                          <div className="flex items-center gap-1.5">
                             <button
+                              type="button"
+                              id={`timer_event_btn_week_${evt.id}`}
+                              onClick={(e) => handleOpenTimerForEvent(evt, e)}
+                              className="cal-timer-btn flex-1 py-1 px-2 rounded-lg font-extrabold text-[9.5px] flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
+                              title="Start Focus Timer for this session"
+                            >
+                              <Play className="w-3 h-3 fill-current" />
+                              <span>Start Timer</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              id={`complete_event_btn_week_${evt.id}`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleExportToGoogleCalendar(evt);
+                                onToggleCompleteEvent(evt.id);
                               }}
-                              disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
-                              className={`p-0.5 rounded transition cursor-pointer ${
-                                exportStatus[evt.id] === "success"
-                                  ? "text-emerald-400"
-                                  : exportStatus[evt.id] === "error"
-                                  ? "text-red-400"
-                                  : exportStatus[evt.id] === "syncing"
-                                  ? "text-indigo-400 animate-spin"
-                                  : "text-slate-400 hover:text-indigo-400"
+                              className={`py-1 px-2 rounded-lg font-bold text-[9.5px] flex items-center justify-center gap-1 transition active:scale-95 cursor-pointer shrink-0 ${
+                                evt.completed 
+                                  ? "bg-emerald-700 text-white" 
+                                  : isLightMode
+                                  ? "bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 shadow-2xs"
+                                  : "bg-white/10 hover:bg-white/20 text-white border border-white/15"
                               }`}
-                              title="Export to Google"
+                              title={evt.completed ? "Mark Uncompleted" : "Mark as Done"}
                             >
-                              {exportStatus[evt.id] === "success" ? (
-                                <CheckCircle2 className="w-3 h-3 animate-pulse" />
-                              ) : (
-                                <CalendarCheck className="w-3 h-3" />
-                              )}
+                              <Check className="w-3 h-3 font-bold" />
+                              <span>{evt.completed ? "Done" : "Mark"}</span>
                             </button>
-                          )}
 
-                          <button
-                            id={`delete_event_btn_week_${evt.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onDeleteEvent(evt.id);
-                            }}
-                            className="opacity-60 hover:opacity-100 text-slate-300 hover:text-rose-400 p-0.5 transition cursor-pointer shrink-0"
-                            title="Delete Event"
-                          >
-                            <Trash2 className="w-2.5 h-2.5" />
-                          </button>
+                            {googleAccessToken && evt.type !== "external" && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleExportToGoogleCalendar(evt);
+                                }}
+                                disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                                className={`p-1 rounded-lg border transition cursor-pointer shrink-0 ${
+                                  isLightMode ? "border-slate-300 bg-white" : "border-white/10 bg-white/5"
+                                } ${
+                                  exportStatus[evt.id] === "success"
+                                    ? "text-emerald-500"
+                                    : exportStatus[evt.id] === "error"
+                                    ? "text-rose-500"
+                                    : exportStatus[evt.id] === "syncing"
+                                    ? "text-indigo-500 animate-spin"
+                                    : "text-slate-400 hover:text-indigo-500"
+                                }`}
+                                title="Sync to Google Calendar"
+                              >
+                                {exportStatus[evt.id] === "success" ? (
+                                  <CheckCircle2 className="w-3 h-3 animate-pulse" />
+                                ) : (
+                                  <CalendarCheck className="w-3 h-3" />
+                                )}
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              id={`delete_event_btn_week_${evt.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteEvent(evt.id);
+                              }}
+                              className={`p-1 rounded-lg transition cursor-pointer shrink-0 ${
+                                isLightMode 
+                                  ? "text-slate-400 hover:text-rose-600 hover:bg-rose-50" 
+                                  : "text-slate-400 hover:text-rose-400 hover:bg-rose-500/20"
+                              }`}
+                              title="Delete Event"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+
+                          {/* Secondary Controls (Duration & Shift) - shown when hovered */}
+                          {isHovered && (
+                            <div className="cal-controls-box w-full p-1.5 rounded-lg border text-[8.5px] space-y-1.5">
+                              <div className="flex items-center justify-between font-mono font-bold opacity-80 px-0.5">
+                                <span>Duration:</span>
+                                <span className="font-extrabold text-indigo-600 dark:text-indigo-300">
+                                  {Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)}m
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleAdjustDuration(e, evt, -15)}
+                                  className="py-1 px-1 rounded text-[8.5px] font-bold font-mono transition text-center cursor-pointer bg-slate-200/80 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200"
+                                  title="Shorten by 15 mins"
+                                >
+                                  -15m
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleAdjustDuration(e, evt, 15)}
+                                  className="py-1 px-1 rounded text-[8.5px] font-bold font-mono transition text-center cursor-pointer bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-600/40 dark:hover:bg-indigo-600/70 text-indigo-800 dark:text-indigo-200 font-extrabold"
+                                  title="Extend by 15 mins"
+                                >
+                                  +15m
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleAdjustDuration(e, evt, 30)}
+                                  className="py-1 px-1 rounded text-[8.5px] font-bold font-mono transition text-center cursor-pointer bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-600/40 dark:hover:bg-indigo-600/70 text-indigo-800 dark:text-indigo-200 font-extrabold"
+                                  title="Extend by 30 mins"
+                                >
+                                  +30m
+                                </button>
+                              </div>
+
+                              {!evt.completed && evt.type !== "external" && (
+                                <>
+                                  <div className="flex items-center justify-between font-mono font-bold opacity-80 px-0.5 pt-1 border-t border-black/10 dark:border-white/10">
+                                    <span>Shift Event:</span>
+                                    <span className="text-amber-600 dark:text-amber-300">Days</span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-1">
+                                    <button
+                                      type="button"
+                                      id={`cal_event_shift_1d_${evt.id}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCascadingDelayEvent(evt, 24 * 60 * 60 * 1000, "1d");
+                                      }}
+                                      className="py-1 px-1 rounded text-[8.5px] font-bold font-mono transition text-center cursor-pointer bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:hover:bg-amber-500/40 text-amber-800 dark:text-amber-200 border border-amber-300/60 dark:border-amber-400/30"
+                                      title="Shift this event forward by 1 day"
+                                    >
+                                      +1d
+                                    </button>
+                                    <button
+                                      type="button"
+                                      id={`cal_event_shift_1w_${evt.id}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCascadingDelayEvent(evt, 7 * 24 * 60 * 60 * 1000, "1w");
+                                      }}
+                                      className="py-1 px-1 rounded text-[8.5px] font-bold font-mono transition text-center cursor-pointer bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:hover:bg-amber-500/40 text-amber-800 dark:text-amber-200 border border-amber-300/60 dark:border-amber-400/30"
+                                      title="Shift this event forward by 1 week"
+                                    >
+                                      +1w
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2641,9 +2883,9 @@ export default function CalendarView({
         {/* VIEW 2: DAILY VIEW GRID */}
         {viewMode === "day" && (
           <div className="flex flex-col h-full bg-transparent">
-            <div className="border-b border-white/10 p-4 sticky top-0 bg-[#0c0d16]/95 backdrop-blur-md z-10 flex items-center gap-3">
+            <div className="border-b border-slate-200 dark:border-white/10 p-3.5 sticky top-0 bg-white/95 dark:bg-[#0c0d16]/95 backdrop-blur-md z-10 flex items-center gap-2.5">
               <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></span>
-              <p className="text-xs text-slate-300 font-medium font-sans">Viewing single day schedule.</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300 font-medium font-sans">Viewing single day schedule.</p>
             </div>
             
             <div className="relative flex-1 bg-transparent">
@@ -2655,18 +2897,16 @@ export default function CalendarView({
                   style={{ top: `${currentTopPixelDay}px` }}
                   title={`Current Time: ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
                 >
-                  {/* Glowing Time Badge on the left of red line */}
-                  <div className="absolute -left-1 font-mono text-[9px] font-extrabold bg-red-600 text-white px-1.5 py-0.5 rounded-full shadow-lg shadow-red-500/80 z-50 -translate-x-full flex items-center gap-1">
+                  {/* Clean Time Badge on the left of red line */}
+                  <div className="absolute -left-1 font-mono text-[9px] font-bold bg-rose-500 text-white px-1.5 py-0.5 rounded-full shadow-sm z-50 -translate-x-full flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
                     <span>{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                   </div>
 
                   {/* Red Circle Indicator on 100px vertical time line border */}
-                  <div className="absolute left-0 w-3.5 h-3.5 bg-red-500 rounded-full shadow-lg shadow-red-500/80 z-40 -translate-x-1/2 flex items-center justify-center">
-                    <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
-                  </div>
+                  <div className="absolute left-0 w-2.5 h-2.5 bg-rose-500 ring-2 ring-white dark:ring-slate-900 rounded-full shadow-sm z-40 -translate-x-1/2 flex items-center justify-center"></div>
                   {/* Red horizontal line across day view schedule */}
-                  <div className="h-[2px] bg-red-500 w-full shadow-md shadow-red-500/70"></div>
+                  <div className="h-[2px] bg-rose-500/90 w-full"></div>
                 </div>
               )}
 
@@ -2693,11 +2933,11 @@ export default function CalendarView({
                     onDragOver={(e) => handleDragOver(e, hour)}
                     onDragLeave={handleDragLeave}
                     onDrop={(e) => handleDropEvent(e, hour)}
-                    className={`grid grid-cols-[100px_1fr] border-b border-white/5 h-24 min-h-24 transition-colors ${
-                      isDayCellOver ? "bg-indigo-500/20 border-2 border-indigo-400" : ""
+                    className={`grid grid-cols-[100px_1fr] border-b border-slate-200/70 dark:border-white/5 h-24 min-h-24 transition-colors ${
+                      isDayCellOver ? "bg-indigo-500/20 border-2 border-indigo-400 shadow-inner" : ""
                     }`}
                   >
-                    <div className="p-3 text-right text-xs font-mono text-slate-400 border-r border-white/10 bg-transparent select-none">
+                    <div className="p-3 text-right text-xs font-mono font-medium text-slate-500 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 bg-transparent select-none">
                       {hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}
                     </div>
                     
@@ -2710,13 +2950,14 @@ export default function CalendarView({
                             setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
                             setShowAddModal(true);
                           }}
-                          className="text-[10px] text-slate-400 group-hover:text-indigo-400 font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all absolute inset-0 pl-4 justify-start cursor-pointer"
+                          className="text-[10px] text-slate-400 group-hover:text-indigo-500 font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all absolute inset-0 pl-4 justify-start cursor-pointer"
                         >
                           <Plus className="w-3.5 h-3.5" /> Block hour
                         </button>
                       ) : (
                         hourEvents.map(evt => {
                           const colors = getEventColorStyles(evt);
+                          const isHovered = hoveredEventId === evt.id;
                           return (
                             <div 
                               key={evt.id} 
@@ -2724,20 +2965,25 @@ export default function CalendarView({
                               draggable={true}
                               onDragStart={(e) => handleDragStart(e, evt.id)}
                               onClick={() => handleTriggerEditEvent(evt)}
-                              onMouseEnter={() => setHoveredEventId(evt.id)}
-                              onMouseLeave={() => setHoveredEventId(null)}
-                              className={`p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-grab active:cursor-grabbing transition hover:scale-[1.01] border-l-4 relative ${
+                              onMouseEnter={() => handleCardMouseEnter(evt.id)}
+                              onMouseLeave={() => handleCardMouseLeave(evt.id)}
+                              className={`cal-event-card p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-grab active:cursor-grabbing transition-all border border-l-4 relative ${
                                 draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
+                              } ${
+                                isHovered ? "shadow-xl ring-2 ring-indigo-500/80 scale-[1.01]" : ""
                               }`}
                               style={{
                                 borderLeftColor: colors.borderLeftColor,
-                                backgroundColor: hoveredEventId === evt.id ? colors.hoverBg : colors.backgroundColor,
+                                borderColor: colors.cardBorder,
+                                backgroundColor: isHovered ? colors.hoverBg : colors.backgroundColor,
                                 color: colors.color
                               }}
                             >
                               <div className="flex justify-between items-start mb-1.5 gap-2">
                                 <div className="space-y-1">
-                                  <h4 className={`text-xs sm:text-sm font-extrabold flex items-center gap-1.5 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] ${evt.completed ? "line-through opacity-50" : ""}`}>
+                                  <h4 className={`cal-event-title text-xs sm:text-sm font-extrabold flex items-center gap-1.5 ${
+                                    evt.completed ? "line-through opacity-50" : ""
+                                  }`}>
                                     {getEventIcon(evt)}
                                     <span>{evt.title}</span>
                                   </h4>
@@ -2747,38 +2993,55 @@ export default function CalendarView({
                                     if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
                                     return (
                                       <span
-                                        className="text-[10px] font-extrabold px-2 py-0.5 rounded-md border border-white/20 text-white shadow-xs inline-flex items-center gap-1"
-                                        style={{ backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.45) }}
+                                        className="text-[10px] font-extrabold px-2 py-0.5 rounded-md border border-black/10 dark:border-white/20 shadow-2xs inline-flex items-center gap-1"
+                                        style={{ 
+                                          backgroundColor: getSolidBgFromColor(tiedGoal.color, isLightMode ? 0.2 : 0.45, isLightMode),
+                                          color: isLightMode ? "#0f172a" : "#ffffff"
+                                        }}
                                       >
-                                        <Target className="w-3 h-3 text-white" />
-                                        {tiedGoal.name}
+                                        <Target className="w-3 h-3 shrink-0" style={{ color: tiedGoal.color }} />
+                                        <span>{tiedGoal.name}</span>
                                       </span>
                                     );
                                   })()}
                                 </div>
-                                <span className="text-[10px] font-mono font-black text-white/90 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] bg-black/30 px-2 py-0.5 rounded-md border border-white/10">
-                                  {new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                </span>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    id={`quick_timer_btn_day_${evt.id}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenTimerForEvent(evt, e);
+                                    }}
+                                    className="cal-quick-play-btn w-5 h-5 rounded-full transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
+                                    title="Start Focus Timer immediately"
+                                  >
+                                    <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                                  </button>
+                                  <span className="cal-event-time text-[10px] font-mono font-black px-2 py-0.5 rounded-md border shadow-xs">
+                                    {new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                </div>
                               </div>
                               {evt.notes && <p className="text-[10px] opacity-75 mb-2 italic">"{evt.notes}"</p>}
                               {evt.completionNote && (
-                                <p className="text-[10px] text-amber-300 font-bold italic mb-2 flex items-start gap-1 bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
-                                  <Sparkles className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                                <p className="text-[10px] text-amber-700 dark:text-amber-300 font-bold italic mb-2 flex items-start gap-1 bg-amber-500/15 dark:bg-amber-500/10 p-1.5 rounded border border-amber-500/30 dark:border-amber-500/20">
+                                  <Sparkles className="w-3 h-3 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
                                   <span>Logged Takeaway: "{evt.completionNote}"</span>
                                 </p>
                               )}
 
                               {/* Quick Resize controls in Day view */}
-                              <div className="my-1.5 p-1.5 rounded-lg bg-black/40 border border-white/10" onClick={(e) => e.stopPropagation()}>
-                                <div className="flex items-center justify-between text-[9px] font-mono text-slate-300 font-extrabold mb-1">
+                              <div className="cal-controls-box my-1.5 p-1.5 rounded-lg border text-[8.5px] space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-between text-[9px] font-mono font-bold opacity-80 mb-1">
                                   <span>Quick Duration:</span>
-                                  <span className="text-indigo-300">{Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)}m</span>
+                                  <span className="text-indigo-600 dark:text-indigo-300 font-extrabold">{Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)}m</span>
                                 </div>
                                 <div className="grid grid-cols-3 gap-1 w-full">
                                   <button
                                     type="button"
                                     onClick={(e) => handleAdjustDuration(e, evt, -15)}
-                                    className="bg-white/15 hover:bg-white/30 text-white py-0.5 px-1 rounded text-[9px] font-extrabold font-mono transition text-center cursor-pointer shadow-2xs"
+                                    className="py-1 px-1 rounded text-[9px] font-bold font-mono transition text-center cursor-pointer bg-slate-200/80 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200"
                                     title="Shorten by 15 mins"
                                   >
                                     -15m
@@ -2786,7 +3049,7 @@ export default function CalendarView({
                                   <button
                                     type="button"
                                     onClick={(e) => handleAdjustDuration(e, evt, 15)}
-                                    className="bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30 py-0.5 px-1 rounded text-[9px] font-extrabold font-mono transition text-center cursor-pointer shadow-2xs"
+                                    className="py-1 px-1 rounded text-[9px] font-bold font-mono transition text-center cursor-pointer bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-600/40 dark:hover:bg-indigo-600/70 text-indigo-800 dark:text-indigo-200 font-extrabold"
                                     title="Extend by 15 mins"
                                   >
                                     +15m
@@ -2794,35 +3057,69 @@ export default function CalendarView({
                                   <button
                                     type="button"
                                     onClick={(e) => handleAdjustDuration(e, evt, 30)}
-                                    className="bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30 py-0.5 px-1 rounded text-[9px] font-extrabold font-mono transition text-center cursor-pointer shadow-2xs"
+                                    className="py-1 px-1 rounded text-[9px] font-bold font-mono transition text-center cursor-pointer bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-600/40 dark:hover:bg-indigo-600/70 text-indigo-800 dark:text-indigo-200 font-extrabold"
                                     title="Extend by 30 mins"
                                   >
                                     +30m
                                   </button>
                                 </div>
+                                {!evt.completed && evt.type !== "external" && (
+                                  <div className="flex items-center justify-between text-[9px] font-mono font-bold opacity-80 px-0.5 mt-1.5 mb-0.5 border-t border-black/10 dark:border-white/10 pt-1">
+                                    <span>Shift Event:</span>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        id={`cal_day_shift_1d_${evt.id}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCascadingDelayEvent(evt, 24 * 60 * 60 * 1000, "1d");
+                                        }}
+                                        className="py-1 px-1.5 rounded text-[9px] font-bold font-mono transition text-center cursor-pointer bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:hover:bg-amber-500/40 text-amber-800 dark:text-amber-200 border border-amber-300/60 dark:border-amber-400/30"
+                                        title="Shift event forward by 1 day and navigate to tomorrow"
+                                      >
+                                        +1d
+                                      </button>
+                                      <button
+                                        type="button"
+                                        id={`cal_day_shift_1w_${evt.id}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCascadingDelayEvent(evt, 7 * 24 * 60 * 60 * 1000, "1w");
+                                        }}
+                                        className="py-1 px-1.5 rounded text-[9px] font-bold font-mono transition text-center cursor-pointer bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:hover:bg-amber-500/40 text-amber-800 dark:text-amber-200 border border-amber-300/60 dark:border-amber-400/30"
+                                        title="Shift event forward by 1 week and navigate to next week"
+                                      >
+                                        +1w
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
-                              <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 gap-1">
+                              <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-black/10 dark:border-white/10 gap-1.5">
                                 <button
                                   type="button"
                                   id={`timer_event_btn_day_${evt.id}`}
                                   onClick={(e) => handleOpenTimerForEvent(evt, e)}
-                                  className="text-[10px] px-2.5 py-1 rounded-md font-bold bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/30 transition flex items-center gap-1 cursor-pointer"
+                                  className="cal-timer-btn text-[10px] px-3 py-1.5 rounded-lg font-extrabold transition active:scale-95 flex items-center gap-1.5 cursor-pointer shadow-xs"
                                   title="Start Focus Timer"
                                 >
-                                  <Play className="w-3 h-3 fill-current text-indigo-400" />
+                                  <Play className="w-3 h-3 fill-current" />
                                   <span>Start Timer</span>
                                 </button>
 
                                 <button
+                                  type="button"
                                   id={`complete_event_btn_day_${evt.id}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onToggleCompleteEvent(evt.id);
                                   }}
-                                  className={`text-[10px] px-2.5 py-1 rounded-md font-bold transition flex items-center gap-1 cursor-pointer ${
+                                  className={`text-[10px] px-2.5 py-1.5 rounded-lg font-bold transition active:scale-95 flex items-center gap-1 cursor-pointer ${
                                     evt.completed 
-                                      ? "bg-emerald-600 text-white" 
-                                      : "bg-white/5 border border-white/10 text-white hover:bg-white/10"
+                                      ? "bg-emerald-700 text-white" 
+                                      : isLightMode
+                                      ? "bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 shadow-2xs"
+                                      : "bg-white/10 hover:bg-white/20 text-white border border-white/15"
                                   }`}
                                 >
                                   {evt.completed ? "Done" : "Mark Done"}
@@ -2830,19 +3127,22 @@ export default function CalendarView({
 
                                 {googleAccessToken && evt.type !== "external" && (
                                   <button
+                                    type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleExportToGoogleCalendar(evt);
                                     }}
                                     disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
-                                    className={`p-1.5 rounded transition cursor-pointer ${
+                                    className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                                      isLightMode ? "border-slate-300 bg-white" : "border-white/10 bg-white/5"
+                                    } ${
                                       exportStatus[evt.id] === "success"
-                                        ? "text-emerald-400"
+                                        ? "text-emerald-500"
                                         : exportStatus[evt.id] === "error"
-                                        ? "text-red-400"
+                                        ? "text-rose-500"
                                         : exportStatus[evt.id] === "syncing"
-                                        ? "text-indigo-400 animate-spin"
-                                        : "text-slate-400 hover:text-indigo-400"
+                                        ? "text-indigo-500 animate-spin"
+                                        : "text-slate-400 hover:text-indigo-500"
                                     }`}
                                     title={
                                       exportStatus[evt.id] === "success"
@@ -2859,12 +3159,18 @@ export default function CalendarView({
                                 )}
 
                                 <button 
+                                  type="button"
                                   id={`delete_event_btn_day_${evt.id}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onDeleteEvent(evt.id);
                                   }}
-                                  className="text-red-400 opacity-70 hover:opacity-100 transition p-1 cursor-pointer"
+                                  className={`p-1.5 rounded-lg transition cursor-pointer ${
+                                    isLightMode
+                                      ? "text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                      : "text-slate-400 hover:text-rose-400 hover:bg-rose-500/20"
+                                  }`}
+                                  title="Delete Event"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -3116,6 +3422,36 @@ export default function CalendarView({
                               <Play className="w-3.5 h-3.5 fill-current text-indigo-600 dark:text-indigo-400" />
                               <span>Timer</span>
                             </button>
+
+                            {/* Quick +1d and +1w buttons */}
+                            {!evt.completed && evt.type !== "external" && (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  id={`cal_list_shift_1d_${evt.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCascadingDelayEvent(evt, 24 * 60 * 60 * 1000, "1d");
+                                  }}
+                                  className="text-[11px] px-2.5 py-2 rounded-xl font-mono font-black bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 flex items-center justify-center cursor-pointer transition min-h-[38px] active:scale-95 shadow-2xs"
+                                  title="Shift event forward by 1 day"
+                                >
+                                  +1d
+                                </button>
+                                <button
+                                  type="button"
+                                  id={`cal_list_shift_1w_${evt.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCascadingDelayEvent(evt, 7 * 24 * 60 * 60 * 1000, "1w");
+                                  }}
+                                  className="text-[11px] px-2.5 py-2 rounded-xl font-mono font-black bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 flex items-center justify-center cursor-pointer transition min-h-[38px] active:scale-95 shadow-2xs"
+                                  title="Shift event forward by 1 week"
+                                >
+                                  +1w
+                                </button>
+                              </div>
+                            )}
 
                             {/* Delay/Shift Popover Menu */}
                             {!evt.completed && evt.type !== "external" && (

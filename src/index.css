@@ -129,10 +129,18 @@ html.light-theme [class*="bg-white/20"] {
 
 html.light-theme [class*="bg-black/"],
 html.light-theme [class*="bg-black/20"],
+html.light-theme [class*="bg-black/30"],
 html.light-theme [class*="bg-black/40"],
 html.light-theme [class*="bg-black/60"] {
   background-color: #f8fafc !important;
-  border-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html.light-theme [class*="bg-black/"] .text-white,
+html.light-theme [class*="bg-black/"] [class*="text-white/"] {
+  color: #0f172a !important;
+  text-shadow: none !important;
 }
 
 /* Text Hierarchy & Contrast in Light Mode */
@@ -221,9 +229,9 @@ html.light-theme .bg-red-600 * {
   color: #ffffff !important;
 }
 
-/* Ensure buttons and pills on light background have high contrast dark text */
-html.light-theme button:not([class*="bg-indigo-600"]):not([class*="bg-indigo-700"]):not([class*="bg-purple-600"]):not([class*="bg-rose-600"]):not([class*="bg-emerald-600"]):not([class*="bg-red-600"]):not([class*="bg-red-500"]) {
-  color: #0f172a !important;
+/* Ensure buttons and pills on light background have clean default contrast without breaking explicitly colored text */
+html.light-theme button:not([class*="text-"]):not([class*="bg-indigo-"]):not([class*="bg-purple-"]):not([class*="bg-rose-"]):not([class*="bg-emerald-"]):not([class*="bg-red-"]):not([class*="bg-amber-"]):not([class*="scheduled-session-chip"]) {
+  color: #0f172a;
 }
 
 /* Borders in Light Mode */
@@ -272,4 +280,234 @@ html.light-theme ::-webkit-scrollbar-thumb {
 html.light-theme ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* ==========================================================================
+   GOAL LEGEND & CALENDAR HIGH-CONTRAST COUNTERS & BADGES
+   ========================================================================== */
+
+/* Light Mode: crisp solid white box with bold dark-slate text */
+.goal-target-counter {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid rgba(15, 23, 42, 0.22) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12) !important;
+  font-weight: 800 !important;
+}
+
+/* Dark Mode: subtle glass black box with crisp white text */
+html.dark .goal-target-counter,
+html.dark-theme .goal-target-counter {
+  background-color: rgba(0, 0, 0, 0.65) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
+  font-weight: 800 !important;
+}
+
+/* Day/Agenda view event time badge */
+.calendar-time-badge {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  font-weight: 800 !important;
+  text-shadow: none !important;
+}
+
+html.dark .calendar-time-badge,
+html.dark-theme .calendar-time-badge {
+  background-color: rgba(0, 0, 0, 0.5) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  font-weight: 800 !important;
+}
+
+/* ==========================================================================
+   SCHEDULED UPCOMING SESSIONS CHIPS (High contrast in Light & Dark Mode)
+   ========================================================================== */
+
+.scheduled-session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.35rem 0.625rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.1;
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Light Theme: Crisp light slate background with high-contrast text */
+html.light-theme .scheduled-session-chip {
+  background-color: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0f172a !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light-theme .scheduled-session-chip:hover {
+  background-color: #e0e7ff !important;
+  border-color: #818cf8 !important;
+  box-shadow: 0 2px 4px rgba(99, 102, 241, 0.12) !important;
+}
+
+html.light-theme .scheduled-session-chip .chip-day {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+html.light-theme .scheduled-session-chip .chip-time {
+  color: #4338ca !important; /* Sharp vibrant Indigo 700 */
+  font-weight: 800 !important;
+}
+
+/* Dark Theme: Deep slate container with bright crisp text */
+html.dark .scheduled-session-chip,
+html.dark-theme .scheduled-session-chip,
+html:not(.light-theme) .scheduled-session-chip {
+  background-color: #1e293b !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+}
+
+html.dark .scheduled-session-chip:hover,
+html.dark-theme .scheduled-session-chip:hover,
+html:not(.light-theme) .scheduled-session-chip:hover {
+  background-color: #312e81 !important;
+  border-color: #818cf8 !important;
+}
+
+html.dark .scheduled-session-chip .chip-day,
+html.dark-theme .scheduled-session-chip .chip-day,
+html:not(.light-theme) .scheduled-session-chip .chip-day {
+  color: #f8fafc !important;
+  font-weight: 700 !important;
+}
+
+html.dark .scheduled-session-chip .chip-time,
+html.dark-theme .scheduled-session-chip .chip-time,
+html:not(.light-theme) .scheduled-session-chip .chip-time {
+  color: #a5b4fc !important; /* Crisp light indigo */
+  font-weight: 800 !important;
+}
+
+/* ==========================================================================
+   CALENDAR EVENT CARDS & HOVER ACTIONS (Flawless Contrast & Interaction)
+   ========================================================================== */
+
+.cal-event-card {
+  transition: box-shadow 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+  pointer-events: auto;
+}
+
+/* Light Mode: Crisp, elegant typography and high contrast */
+html.light-theme .cal-event-card {
+  color: #0f172a !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+}
+
+html.light-theme .cal-event-card .cal-event-title,
+html.light-theme .cal-event-title {
+  color: #0f172a !important;
+  text-shadow: none !important;
+  font-weight: 800 !important;
+}
+
+html.light-theme .cal-event-card .cal-event-time,
+html.light-theme .cal-event-time {
+  color: #334155 !important;
+  text-shadow: none !important;
+  font-weight: 700 !important;
+}
+
+html.light-theme .cal-event-card .cal-controls-box {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0f172a !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+}
+
+html.light-theme .cal-event-card .cal-controls-box * {
+  text-shadow: none !important;
+}
+
+/* Dark Mode: Vivid, deep cards with crisp white text */
+html.dark .cal-event-card,
+html.dark-theme .cal-event-card,
+html:not(.light-theme) .cal-event-card {
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+html.dark .cal-event-card .cal-event-title,
+html.dark-theme .cal-event-card .cal-event-title,
+html:not(.light-theme) .cal-event-card .cal-event-title {
+  color: #ffffff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  font-weight: 800 !important;
+}
+
+html.dark .cal-event-card .cal-event-time,
+html.dark-theme .cal-event-card .cal-event-time,
+html:not(.light-theme) .cal-event-card .cal-event-time {
+  color: #e0e7ff !important;
+}
+
+html.dark .cal-event-card .cal-controls-box,
+html.dark-theme .cal-event-card .cal-controls-box,
+html:not(.light-theme) .cal-event-card .cal-controls-box {
+  background-color: rgba(10, 12, 22, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff !important;
+}
+
+/* Quick Play Icon button in card header */
+.cal-quick-play-btn {
+  transition: all 0.15s ease;
+}
+html.light-theme .cal-quick-play-btn {
+  background-color: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+html.light-theme .cal-quick-play-btn:hover {
+  background-color: #059669;
+  color: #ffffff;
+  border-color: #059669;
+}
+html.dark .cal-quick-play-btn,
+html.dark-theme .cal-quick-play-btn,
+html:not(.light-theme) .cal-quick-play-btn {
+  background-color: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+html.dark .cal-quick-play-btn:hover,
+html.dark-theme .cal-quick-play-btn:hover,
+html:not(.light-theme) .cal-quick-play-btn:hover {
+  background-color: #10b981;
+  color: #ffffff;
+}
+
+/* Ensure the Main Timer button always has vibrant high contrast */
+.cal-timer-btn {
+  background-color: #059669 !important; /* Emerald 600 */
+  color: #ffffff !important;
+  font-weight: 800 !important;
+  text-shadow: none !important;
+  box-shadow: 0 2px 5px rgba(5, 150, 105, 0.3) !important;
+}
+
+.cal-timer-btn:hover {
+  background-color: #10b981 !important; /* Emerald 500 */
+  box-shadow: 0 3px 8px rgba(5, 150, 105, 0.45) !important;
+}
+
+.cal-timer-btn * {
+  color: #ffffff !important;
+}
+
+
 

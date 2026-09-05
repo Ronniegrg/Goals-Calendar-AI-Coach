@@ -25,7 +25,8 @@ import {
   Pause,
   PauseCircle,
   ShieldCheck,
-  CalendarOff
+  CalendarOff,
+  ArrowRight
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -145,7 +146,8 @@ interface GoalTrackerProps {
   onUpdateAvailability: (avail: AvailabilityWindow[]) => void;
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
   onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
-  onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync") => void;
+  onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync", action?: { label: string; onClick: () => void }) => void;
+  onNavigateToCalendar?: (date?: Date) => void;
   autoScheduleEnabled?: boolean;
   onToggleAutoSchedule?: (val: boolean) => void;
   onCompleteSession?: (eventId?: string, goalId?: string, note?: string) => void;
@@ -162,6 +164,7 @@ export default function GoalTracker({
   onEditGoal,
   onEditEvent,
   onBulkEditEvents,
+  onNavigateToCalendar,
   onUpdateAvailability,
   onBulkAddEvents,
   onAddNotification,
@@ -189,6 +192,9 @@ export default function GoalTracker({
 
   // Status Filter in Catalog ("all" | "active" | "on_hold")
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "on_hold">("all");
+
+  // In-card transient feedback for shift / schedule actions
+  const [shiftFeedback, setShiftFeedback] = useState<Record<string, { message: string; timestamp: number }>>({});
 
   // Active Timer Tracker for live studying pulse and saved study progress
   const [activeTimerData, setActiveTimerData] = useState<{ 
@@ -314,7 +320,159 @@ export default function GoalTracker({
     return { startHour: fallbackStartHour, endHour: Math.min(22, fallbackStartHour + 4) };
   };
 
-  // Delay Goal Agenda: Shifts all uncompleted future events associated with this goal forward by delayDays
+  // Helper to schedule sessions for a goal starting at a specific day offset from today
+  const scheduleSessionsForGoal = (goal: Goal, startDayOffset: number) => {
+    const targetCount = Math.max(1, Math.min(goal.weeklyTarget || 3, 3));
+    const newScheduledEvents: CalendarEvent[] = [];
+    const now = new Date();
+    const goalNameLower = goal.name.toLowerCase();
+    let booked = 0;
+
+    for (let dayOffset = startDayOffset; dayOffset <= startDayOffset + 14; dayOffset++) {
+      if (booked >= targetCount) break;
+
+      const targetDay = new Date(now);
+      targetDay.setDate(now.getDate() + dayOffset);
+      const dayOfWeek = targetDay.getDay();
+
+      let availDay = availability.find(a => a.dayOfWeek === dayOfWeek && a.active);
+      if (!availDay) {
+        availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
+      }
+
+      const targetDayString = targetDay.toDateString();
+      const sessionsOnTargetDay = [...events, ...newScheduledEvents].filter(evt => {
+        const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+        return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
+      }).length;
+
+      if (sessionsOnTargetDay >= 1) continue;
+
+      let [availStartHour] = availDay.startTime.split(":").map(Number);
+      let [availEndHour] = availDay.endTime.split(":").map(Number);
+
+      const fallbackStart = 10;
+      const { startHour, endHour } = getPreferredTimeWindowForGoal(goal, fallbackStart);
+      const prefStart = Math.max(availStartHour, startHour);
+      const prefEnd = Math.min(availEndHour, endHour);
+
+      const blockDurationHours = (goal.durationMinutes || 60) / 60;
+      const windowsToTry = [
+        { start: prefStart < prefEnd ? prefStart : availStartHour, end: prefStart < prefEnd ? prefEnd : availEndHour },
+        { start: Math.max(8, availStartHour), end: Math.min(22, availEndHour) }
+      ];
+
+      let slotFound = false;
+      for (const win of windowsToTry) {
+        if (slotFound) break;
+        if (win.start >= win.end) continue;
+
+        for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
+          if (booked >= targetCount) break;
+
+          const slotStart = new Date(targetDay);
+          slotStart.setHours(Math.floor(hrs), Math.round((hrs % 1) * 60), 0, 0);
+
+          if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
+            continue;
+          }
+
+          const slotEnd = new Date(slotStart.getTime() + (goal.durationMinutes || 60) * 60 * 1000);
+
+          const overlap = [...events, ...newScheduledEvents].some(evt => {
+            const evtStart = new Date(evt.start);
+            const evtEnd = new Date(evt.end);
+            return slotStart < evtEnd && slotEnd > evtStart;
+          });
+
+          if (!overlap) {
+            newScheduledEvents.push({
+              id: `${goal.id}_sch_${Date.now()}_${booked}`,
+              title: goal.name,
+              type: goal.type === GoalType.WORKOUT ? "workout" :
+                    goal.type === GoalType.STUDY ? "study" :
+                    goal.type === GoalType.JOB_SEARCH ? "job_search" :
+                    goal.type === GoalType.SIDE_PROJECT ? "side_project" :
+                    goal.type === GoalType.ROUTINE ? "routine" :
+                    "personal",
+              start: slotStart.toISOString(),
+              end: slotEnd.toISOString(),
+              goalId: goal.id,
+              completed: false,
+              notes: `Scheduled session for ${goal.name}`,
+              icon: goal.icon
+            });
+            booked++;
+            slotFound = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (newScheduledEvents.length > 0) {
+      onBulkAddEvents(newScheduledEvents);
+      const startText = startDayOffset === 1 ? "tomorrow" : "next week";
+      const firstTargetDate = new Date(newScheduledEvents[0].start);
+      onAddNotification(
+        "📅 Goal Scheduled",
+        `Scheduled ${newScheduledEvents.length} session(s) for "${goal.name}" starting ${startText}!`,
+        "success",
+        {
+          label: "View in Calendar",
+          onClick: () => {
+            onNavigateToCalendar?.(firstTargetDate);
+          }
+        }
+      );
+      setShiftFeedback(prev => ({
+        ...prev,
+        [goal.id]: { message: `Scheduled ${newScheduledEvents.length} session(s) starting ${startText}!`, timestamp: Date.now() }
+      }));
+    } else {
+      onAddNotification(
+        "Schedule Notice",
+        `Could not find an open slot for "${goal.name}". Check your availability settings or clear conflicts.`,
+        "warning"
+      );
+    }
+  };
+
+  // Helper to format the next upcoming session info for a goal card
+  const getNextSessionForGoal = (goal: Goal) => {
+    const goalNameLower = goal.name.toLowerCase();
+    const uncompleted = events.filter(e => 
+      !e.completed && (e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower)))
+    );
+    if (uncompleted.length === 0) return null;
+
+    uncompleted.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    
+    const now = new Date();
+    // Prioritize upcoming events ending after now
+    const nextEvt = uncompleted.find(e => new Date(e.end).getTime() >= now.getTime()) || uncompleted[0];
+    const startDate = new Date(nextEvt.start);
+
+    const isToday = startDate.toDateString() === now.toDateString();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    const isTomorrow = startDate.toDateString() === tomorrow.toDateString();
+
+    const timeStr = startDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    let dayStr = startDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    if (isToday) dayStr = "Today";
+    else if (isTomorrow) dayStr = "Tomorrow";
+
+    return {
+      formatted: `${dayStr}, ${timeStr}`,
+      totalPending: uncompleted.length,
+      isPast: startDate.getTime() < now.getTime(),
+      date: startDate,
+      upcomingList: uncompleted.slice(0, 3)
+    };
+  };
+
+  // Delay Goal Agenda: Shifts all uncompleted sessions associated with this goal forward by delayDays
   const handleDelayGoalAgenda = (goal: Goal, delayDays: number) => {
     const goalNameLower = goal.name.toLowerCase();
 
@@ -326,78 +484,113 @@ export default function GoalTracker({
       return false;
     });
 
+    // If no sessions are scheduled on calendar, schedule them starting tomorrow (+1d) or next week (+1w)
     if (goalEvents.length === 0) {
-      onAddNotification(
-        "No Pending Sessions",
-        `Goal "${goal.name}" has no upcoming uncompleted sessions scheduled to delay. Use "Run Smart Auto-Scheduler" to populate sessions first.`,
-        "warning"
-      );
+      scheduleSessionsForGoal(goal, delayDays);
       return;
     }
+
+    const sortedEvents = [...goalEvents].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    const now = new Date();
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // Minimum target date must be in the future: today + delayDays
+    const minTargetDate = new Date(todayMidnight);
+    minTargetDate.setDate(todayMidnight.getDate() + delayDays);
 
     let updatedCount = 0;
     const occupiedByDay: Record<string, { start: Date; end: Date }[]> = {};
     const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
 
-    goalEvents.forEach(evt => {
+    // Filter out the events being moved when checking occupied slots to avoid self-collision
+    const movingIds = new Set(sortedEvents.map(e => e.id));
+
+    sortedEvents.forEach((evt, idx) => {
       const oldStart = new Date(evt.start);
       const oldEnd = new Date(evt.end);
-      const duration = oldEnd.getTime() - oldStart.getTime();
+      const duration = oldEnd.getTime() - oldStart.getTime() > 0 
+        ? oldEnd.getTime() - oldStart.getTime() 
+        : (goal.durationMinutes || 60) * 60 * 1000;
 
-      const targetDate = new Date(oldStart.getFullYear(), oldStart.getMonth(), oldStart.getDate() + delayDays);
-      const dayKey = targetDate.toDateString();
-
-      if (!occupiedByDay[dayKey]) {
-        occupiedByDay[dayKey] = events
-          .filter(e => e.id !== evt.id && new Date(e.start).toDateString() === dayKey)
-          .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
-      }
-
-      const fallbackStartHour = oldStart.getHours() + oldStart.getMinutes() / 60;
-      const { startHour, endHour } = getPreferredTimeWindowForGoal(goal, fallbackStartHour);
-
-      const windowsToTry = [
-        { startH: startHour, endH: endHour },
-        { startH: 8, endH: 22 }
-      ];
-
-      let slotFound = false;
-      let candStart = new Date(targetDate);
-      let candEnd = new Date(targetDate);
-
-      for (const win of windowsToTry) {
-        if (slotFound) break;
-        const durHours = duration / (3600 * 1000);
-        const maxStartH = Math.max(win.startH, win.endH - durHours);
-        for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
-          const testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-          testS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
-          const testE = new Date(testS.getTime() + duration);
-
-          const overlap = occupiedByDay[dayKey].some(occ => testS < occ.end && testE > occ.start);
-          if (!overlap) {
-            candStart = testS;
-            candEnd = testE;
-            slotFound = true;
-            break;
-          }
+      let targetDate: Date;
+      if (oldStart.getTime() < todayMidnight.getTime()) {
+        // Event was in the past (overdue). Move it to the future starting at minTargetDate!
+        targetDate = new Date(minTargetDate);
+        targetDate.setDate(minTargetDate.getDate() + idx);
+      } else {
+        // Event was today or in future: shift forward by delayDays
+        targetDate = new Date(oldStart.getFullYear(), oldStart.getMonth(), oldStart.getDate() + delayDays);
+        if (targetDate.getTime() < minTargetDate.getTime()) {
+          targetDate = new Date(minTargetDate);
         }
       }
 
+      const dayKey = targetDate.toDateString();
+      if (!occupiedByDay[dayKey]) {
+        occupiedByDay[dayKey] = events
+          .filter(e => !movingIds.has(e.id) && new Date(e.start).toDateString() === dayKey)
+          .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
+      }
+
+      // 1. First priority: Try exact same time of day on the shifted date!
+      const testSameS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+      testSameS.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+      const testSameE = new Date(testSameS.getTime() + duration);
+
+      let slotFound = false;
+      let candStart = testSameS;
+      let candEnd = testSameE;
+
+      const hasSameOverlap = occupiedByDay[dayKey].some(occ => testSameS < occ.end && testSameE > occ.start);
+      if (!hasSameOverlap) {
+        slotFound = true;
+      }
+
+      // 2. If same time has a conflict, look for preferred window or open slots
       if (!slotFound) {
-        candStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-        candStart.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
-        candEnd = new Date(candStart.getTime() + duration);
+        const fallbackStartHour = oldStart.getHours() + oldStart.getMinutes() / 60;
+        const { startHour, endHour } = getPreferredTimeWindowForGoal(goal, fallbackStartHour);
+
+        const windowsToTry = [
+          { startH: startHour, endH: endHour },
+          { startH: 8, endH: 22 }
+        ];
+
+        for (const win of windowsToTry) {
+          if (slotFound) break;
+          const durHours = duration / (3600 * 1000);
+          const maxStartH = Math.max(win.startH, win.endH - durHours);
+          for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
+            const testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+            testS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+            const testE = new Date(testS.getTime() + duration);
+
+            const overlap = occupiedByDay[dayKey].some(occ => testS < occ.end && testE > occ.start);
+            if (!overlap) {
+              candStart = testS;
+              candEnd = testE;
+              slotFound = true;
+              break;
+            }
+          }
+        }
+
+        if (!slotFound) {
+          candStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+          candStart.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
+          candEnd = new Date(candStart.getTime() + duration);
+        }
       }
 
       occupiedByDay[dayKey].push({ start: candStart, end: candEnd });
 
+      const cleanNotes = evt.notes ? evt.notes.replace(/\s*\(Agenda (Delayed|Shifted)[^)]*\)/g, "") : "";
       updates.push({
         id: evt.id,
         fields: {
           start: candStart.toISOString(),
           end: candEnd.toISOString(),
-          notes: `${evt.notes || ''} (Agenda Delayed +${delayDays}d)`.trim()
+          notes: `${cleanNotes} (Shifted +${delayDays === 7 ? "1w" : "1d"})`.trim()
         }
       });
       updatedCount++;
@@ -409,12 +602,24 @@ export default function GoalTracker({
       updates.forEach(u => onEditEvent(u.id, u.fields));
     }
 
+    const firstShiftedDate = updates.length > 0 && updates[0].fields?.start ? new Date(updates[0].fields.start) : undefined;
     const dayLabel = delayDays === 7 ? "1 week" : `${delayDays} day(s)`;
     onAddNotification(
       "⏩ Goal Agenda Shifted",
-      `Shifted ${updatedCount} upcoming session(s) for "${goal.name}" forward by ${dayLabel} into preferred goal time slots!`,
-      "sync"
+      `Shifted ${updatedCount} session(s) for "${goal.name}" forward by ${dayLabel}!`,
+      "sync",
+      {
+        label: "View in Calendar",
+        onClick: () => {
+          onNavigateToCalendar?.(firstShiftedDate);
+        }
+      }
     );
+
+    setShiftFeedback(prev => ({
+      ...prev,
+      [goal.id]: { message: `Shifted +${delayDays === 7 ? "1w" : "1d"} (${updatedCount} session${updatedCount > 1 ? "s" : ""})`, timestamp: Date.now() }
+    }));
   };
   const [name, setName] = useState("");
   const [type, setType] = useState<GoalType>(GoalType.WORKOUT);
@@ -1733,47 +1938,148 @@ export default function GoalTracker({
                             </button>
                           </div>
 
-                          {/* Cascading Goal Agenda Delay + Hold Buttons */}
-                          <div className="flex items-center justify-between gap-1 bg-black/20 p-1.5 rounded-lg border border-white/5 text-[10px]">
-                            <div className="flex items-center gap-1 flex-wrap">
-                              <span className="text-slate-400 font-semibold flex items-center gap-1">
-                                <RotateCw className="w-3 h-3 text-amber-400" />
-                                Shift:
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleDelayGoalAgenda(g, 1)}
-                                className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
-                                title="Shift all upcoming sessions for this goal forward by 1 day"
-                              >
-                                +1d
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDelayGoalAgenda(g, 7)}
-                                className="bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-bold transition cursor-pointer"
-                                title="Shift all upcoming sessions for this goal forward by 1 week"
-                              >
-                                +1w
-                              </button>
-                            </div>
+                          {/* Dynamic Next Scheduled Session Indicator & Shift Confirmation */}
+                          {(() => {
+                            const nextSession = getNextSessionForGoal(g);
+                            const feedback = shiftFeedback[g.id];
+                            const isFeedbackFresh = feedback && (Date.now() - feedback.timestamp < 3500);
 
-                            <button
-                              type="button"
-                              id={`pause_goal_btn_${g.id}`}
-                              onClick={() => {
-                                setPauseModalGoal(g);
-                                setPausePreset("1_week");
-                                setPauseReason("exam_week");
-                                setClearFutureEvents(true);
-                              }}
-                              className="bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-500/40 px-2 py-0.5 rounded font-extrabold transition flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 shrink-0"
-                              title="Hold / Freeze goal during exam week, school terms, or vacation"
-                            >
-                              <Pause className="w-3 h-3" />
-                              <span>Hold / Freeze</span>
-                            </button>
-                          </div>
+                            return (
+                              <div className="space-y-1 mt-1">
+                                {isFeedbackFresh ? (
+                                  <div className="flex items-center justify-between text-[10px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 px-2 py-1 rounded-lg font-bold animate-pulse">
+                                    <span className="flex items-center gap-1 truncate">
+                                      <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      <span>{feedback.message}</span>
+                                    </span>
+                                    <span className="text-[9px] text-emerald-200 uppercase font-mono shrink-0 ml-1">Updated</span>
+                                  </div>
+                                ) : nextSession ? (
+                                  <div 
+                                    onClick={() => onNavigateToCalendar?.(nextSession.date)}
+                                    className="flex items-center justify-between text-xs bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-500/30 px-2.5 py-1.5 rounded-lg text-indigo-950 dark:text-indigo-200 transition cursor-pointer shadow-2xs"
+                                    title="Click to view this session in the Calendar"
+                                  >
+                                    <span className="flex items-center gap-1.5 font-medium truncate">
+                                      <Calendar className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                                      <span>Next: <strong className="text-slate-900 dark:text-white font-black">{nextSession.formatted}</strong></span>
+                                    </span>
+                                    <span className="text-[10px] text-indigo-700 dark:text-indigo-300 font-mono font-bold shrink-0 ml-1 flex items-center gap-0.5">
+                                      <span>{nextSession.totalPending} scheduled</span>
+                                      <ArrowRight className="w-3 h-3" />
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-between text-xs bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 px-2.5 py-1.5 rounded-lg text-slate-600 dark:text-slate-400">
+                                    <span className="flex items-center gap-1.5 truncate">
+                                      <CalendarOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                      <span>No sessions scheduled</span>
+                                    </span>
+                                    <span className="text-[10px] text-amber-700 dark:text-amber-400 font-bold shrink-0 ml-1">
+                                      Click +1d to schedule
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* Cascading Goal Agenda Delay + Hold Buttons */}
+                                <div className="flex items-center justify-between gap-1 bg-slate-100 dark:bg-black/20 p-1.5 rounded-lg border border-slate-200 dark:border-white/5 text-xs">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-slate-700 dark:text-slate-400 font-bold flex items-center gap-1 text-[11px]">
+                                      <RotateCw className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                      Shift:
+                                    </span>
+                                    <button
+                                      type="button"
+                                      id={`shift_goal_1d_btn_${g.id}`}
+                                      onClick={() => handleDelayGoalAgenda(g, 1)}
+                                      className="bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/35 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-500/40 px-2 py-0.5 rounded font-bold text-[11px] transition cursor-pointer active:scale-95 shadow-2xs"
+                                      title="Push upcoming sessions forward by 1 day (or schedule starting tomorrow if none exist)"
+                                    >
+                                      +1d
+                                    </button>
+                                    <button
+                                      type="button"
+                                      id={`shift_goal_1w_btn_${g.id}`}
+                                      onClick={() => handleDelayGoalAgenda(g, 7)}
+                                      className="bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/35 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-500/40 px-2 py-0.5 rounded font-bold text-[11px] transition cursor-pointer active:scale-95 shadow-2xs"
+                                      title="Push upcoming sessions forward by 1 week (or schedule starting next week if none exist)"
+                                    >
+                                      +1w
+                                    </button>
+
+                                    {onNavigateToCalendar && nextSession && (
+                                      <button
+                                        type="button"
+                                        id={`view_calendar_goal_btn_${g.id}`}
+                                        onClick={() => onNavigateToCalendar(nextSession.date)}
+                                        className="bg-indigo-100 dark:bg-indigo-500/20 hover:bg-indigo-200 dark:hover:bg-indigo-500/35 text-indigo-900 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-500/40 px-2 py-0.5 rounded font-bold text-[11px] transition cursor-pointer active:scale-95 shadow-2xs flex items-center gap-1"
+                                        title="Open Calendar tab and view this goal's scheduled session"
+                                      >
+                                        <Calendar className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
+                                        <span>View Calendar</span>
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    id={`pause_goal_btn_${g.id}`}
+                                    onClick={() => {
+                                      setPauseModalGoal(g);
+                                      setPausePreset("1_week");
+                                      setPauseReason("exam_week");
+                                      setClearFutureEvents(true);
+                                    }}
+                                    className="bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-500/40 px-2 py-0.5 rounded font-extrabold transition flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                                    title="Hold / Freeze goal during exam week, school terms, or vacation"
+                                  >
+                                    <Pause className="w-3 h-3" />
+                                    <span>Hold / Freeze</span>
+                                  </button>
+                                </div>
+
+                                {/* Scheduled Upcoming Sessions Chips */}
+                                {nextSession && nextSession.upcomingList && nextSession.upcomingList.length > 0 && (
+                                  <div className="mt-1 pt-2 border-t border-slate-200 dark:border-white/10 flex flex-col gap-1.5">
+                                    <div className="flex items-center justify-between text-slate-700 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider">
+                                      <span>Scheduled On Calendar:</span>
+                                      {onNavigateToCalendar && (
+                                        <button 
+                                          type="button" 
+                                          onClick={() => onNavigateToCalendar(nextSession.date)} 
+                                          className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-200 flex items-center gap-1 cursor-pointer font-bold text-[10.5px] hover:underline"
+                                        >
+                                          <span>Jump to Calendar</span>
+                                          <ArrowRight className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {nextSession.upcomingList.map((evt, eIdx) => {
+                                        const d = new Date(evt.start);
+                                        const isToday = d.toDateString() === new Date().toDateString();
+                                        const isTomorrow = d.toDateString() === new Date(Date.now() + 86400000).toDateString();
+                                        const dayLabel = isToday ? "Today" : isTomorrow ? "Tomorrow" : d.toLocaleDateString([], { weekday: "short", month: "numeric", day: "numeric" });
+                                        return (
+                                          <button
+                                            key={evt.id || eIdx}
+                                            type="button"
+                                            onClick={() => onNavigateToCalendar?.(d)}
+                                            className="scheduled-session-chip group"
+                                            title={`Click to jump to ${dayLabel} ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} in the Calendar`}
+                                          >
+                                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 group-hover:scale-125 transition-transform shrink-0" />
+                                            <span className="chip-day">{dayLabel}</span>
+                                            <span className="chip-time">{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </>
                       )}
                     </div>

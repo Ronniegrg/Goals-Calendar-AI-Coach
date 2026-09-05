@@ -15,7 +15,11 @@ import {
   CalendarCheck,
   Sun,
   Moon,
-  Monitor
+  Monitor,
+  AlertTriangle,
+  Clock,
+  X,
+  ArrowRight
 } from "lucide-react";
 import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
@@ -107,6 +111,24 @@ export default function App() {
     return "auto";
   });
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
+  const [calendarTargetDate, setCalendarTargetDate] = useState<Date | undefined>(undefined);
+  const [activeToast, setActiveToast] = useState<{
+    id: string;
+    title: string;
+    message: string;
+    type: AppNotification["type"];
+    actionLabel?: string;
+    onAction?: () => void;
+  } | null>(null);
+
+  // Auto-dismiss active floating toast
+  useEffect(() => {
+    if (!activeToast) return;
+    const timer = setTimeout(() => {
+      setActiveToast(null);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [activeToast]);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -393,6 +415,9 @@ export default function App() {
     let purgedCount = 0;
     const validEvents = currentEvents.filter(evt => {
       if (evt.completed || evt.type === "external") return true;
+      // Do not purge events that were shifted or delayed by the user
+      const isShiftedOrDelayed = evt.notes && (evt.notes.includes("Shifted") || evt.notes.includes("Delayed") || evt.notes.includes("Manual"));
+      if (isShiftedOrDelayed) return true;
       const parentGoal = currentGoals.find(g => g.id === evt.goalId || (evt.title && g.name && evt.title.toLowerCase().includes(g.name.toLowerCase())));
       if (!parentGoal) return true;
       const isValid = isEventInGoalTimePrefWindow(evt, parentGoal);
@@ -410,10 +435,29 @@ export default function App() {
       const maxSessionsPerDay = isDailyGoal ? 1 : (goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1);
       const blockDurationHours = (goal.durationMinutes || 60) / 60;
 
+      // Find upcoming uncompleted events for this goal
+      const upcomingGoalEvents = validEvents.filter(evt => {
+        if (evt.completed) return false;
+        const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+        return isThisGoal && new Date(evt.start) >= todayStart;
+      }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+      // If user intentionally shifted sessions forward, do not back-fill dates before the earliest session
+      const hasShifted = upcomingGoalEvents.some(e => e.notes && (e.notes.includes("Shifted") || e.notes.includes("Delayed")));
+      const earliestAllowedDayStart = hasShifted && upcomingGoalEvents.length > 0
+        ? new Date(new Date(upcomingGoalEvents[0].start).setHours(0, 0, 0, 0))
+        : todayStart;
+
       // 4-week rolling horizon (28 days starting from today)
       for (let dayOffset = 0; dayOffset < 28; dayOffset++) {
         const targetDay = new Date(todayStart);
         targetDay.setDate(todayStart.getDate() + dayOffset);
+
+        // Skip days prior to earliest allowed day if user intentionally shifted goal agenda forward
+        if (targetDay < earliestAllowedDayStart) {
+          continue;
+        }
+
         const targetDayString = targetDay.toDateString();
         const weekOffset = Math.floor(dayOffset / 7);
 
@@ -577,7 +621,18 @@ export default function App() {
       const goalNameLower = goal.name.toLowerCase();
       const isDailyGoal = goal.weeklyTarget >= 7;
 
+      // Check if this goal has sessions shifted or delayed forward by the user
+      const hasShifted = events.some(e => {
+        const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
+        return isThisGoal && !e.completed && e.notes && (e.notes.includes("Shifted") || e.notes.includes("Delayed"));
+      });
+
       for (let dayOffset = 0; dayOffset < 28; dayOffset++) {
+        // If user intentionally shifted sessions forward, do not force-refill days in the current week
+        if (hasShifted && dayOffset < 7) {
+          continue;
+        }
+
         const targetDay = new Date(todayStart);
         targetDay.setDate(todayStart.getDate() + dayOffset);
         const targetDayString = targetDay.toDateString();
@@ -844,7 +899,8 @@ export default function App() {
   const triggerSystemNotification = (
     title: string,
     message: string,
-    type: AppNotification["type"]
+    type: AppNotification["type"],
+    action?: { label: string; onClick: () => void }
   ) => {
     const newNotif: AppNotification = {
       id: `n_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
@@ -860,6 +916,16 @@ export default function App() {
       // Sync immediately with current variables
       syncToCloud(goals, events, availability, updated, coachMessages);
       return updated;
+    });
+
+    // Populate on-screen floating toast notification
+    setActiveToast({
+      id: newNotif.id,
+      title,
+      message,
+      type,
+      actionLabel: action?.label,
+      onAction: action?.onClick
     });
 
     // Browser dynamic desktop alerts fallback if enabled
@@ -2028,6 +2094,8 @@ export default function App() {
               events={events}
               goals={goals}
               availability={availability}
+              targetDate={calendarTargetDate}
+              onNavigateToDate={setCalendarTargetDate}
               onAddEvent={handleAddEvent}
               onToggleCompleteEvent={handleToggleEventComplete}
               onDeleteEvent={handleDeleteEvent}
@@ -2052,6 +2120,12 @@ export default function App() {
             onEditGoal={handleEditGoal}
             onEditEvent={handleEditEvent}
             onBulkEditEvents={handleBulkEditEvents}
+            onNavigateToCalendar={(targetDate?: Date) => {
+              if (targetDate) {
+                setCalendarTargetDate(targetDate);
+              }
+              setActiveTab("calendar");
+            }}
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}
@@ -2223,6 +2297,50 @@ export default function App() {
         onCompleteSession={handleCompleteTimerSession}
         onExtendEventDuration={handleExtendEventDuration}
       />
+
+      {/* Global Interactive Floating Toast Notification */}
+      {activeToast && (
+        <div 
+          id="global_system_toast_banner"
+          className="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-50 max-w-sm w-full bg-slate-900/95 text-white p-3.5 rounded-xl border border-white/20 shadow-2xl backdrop-blur-md flex items-start gap-3 transition-all animate-in fade-in slide-in-from-bottom-5 duration-300"
+          role="status"
+        >
+          <div className="shrink-0 mt-0.5">
+            {activeToast.type === "success" && <CheckCircle2 className="w-5 h-5 text-emerald-400" />}
+            {activeToast.type === "warning" && <AlertTriangle className="w-5 h-5 text-amber-400" />}
+            {activeToast.type === "sync" && <RotateCcw className="w-5 h-5 text-cyan-400 animate-spin" style={{ animationDuration: '3s' }} />}
+            {activeToast.type === "upcoming" && <Clock className="w-5 h-5 text-indigo-400" />}
+            {activeToast.type === "motivation" && <Sparkles className="w-5 h-5 text-purple-400" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-xs font-bold text-white tracking-wide">{activeToast.title}</h4>
+            <p className="text-xs text-slate-300 mt-0.5 leading-relaxed break-words">{activeToast.message}</p>
+            {activeToast.actionLabel && activeToast.onAction && (
+              <button
+                type="button"
+                id="toast_action_btn"
+                onClick={() => {
+                  activeToast.onAction?.();
+                  setActiveToast(null);
+                }}
+                className="mt-2 text-[11px] font-bold px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition cursor-pointer flex items-center gap-1 shadow-sm active:scale-95"
+              >
+                <span>{activeToast.actionLabel}</span>
+                <ArrowRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+          <button 
+            type="button" 
+            id="dismiss_global_toast_btn"
+            onClick={() => setActiveToast(null)}
+            className="text-slate-400 hover:text-white p-1 rounded transition shrink-0 cursor-pointer"
+            title="Dismiss notification"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
