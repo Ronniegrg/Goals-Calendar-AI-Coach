@@ -40,7 +40,8 @@ import {
   Wand2,
   ListOrdered,
   Minus,
-  Loader2
+  Loader2,
+  Compass
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -311,7 +312,72 @@ export default function CalendarView({
   const [dragOverCell, setDragOverCell] = useState<{ dayIdx?: number; hour: number } | null>(null);
   const [rebalanceStatus, setRebalanceStatus] = useState<string | null>(null);
 
-  const missedSessionsCount = events.filter(evt => !evt.completed && evt.type !== "external" && new Date(evt.end) < now).length;
+  // Spotlight / Start From Incomplete Goals State
+  const [spotlightEventId, setSpotlightEventId] = useState<string | null>(null);
+  const [spotlightGoalId, setSpotlightGoalId] = useState<string | null>(null);
+  const [currentIncompleteIndex, setCurrentIncompleteIndex] = useState<number>(0);
+  const [spotlightBannerInfo, setSpotlightBannerInfo] = useState<{
+    goal: Goal;
+    event?: CalendarEvent;
+    isOverdue: boolean;
+    deficit: number;
+    totalIncompleteCount: number;
+    currentIndex: number;
+  } | null>(null);
+
+  // Ranked past incomplete sessions (strictly uncompleted sessions on past dates/times: new Date(evt.end) < now)
+  const rankedPastIncompleteSessions = useMemo(() => {
+    // Only uncompleted, non-external events whose scheduled end time has strictly passed
+    const pastUncompleted = events.filter(
+      evt => !evt.completed && evt.type !== "external" && new Date(evt.end) < now
+    );
+
+    const mapped = pastUncompleted.map(evt => {
+      const tiedGoal = goals.find(
+        g => g.id === evt.goalId || (g.name && evt.title.toLowerCase().includes(g.name.toLowerCase()))
+      );
+
+      const deficit = tiedGoal ? Math.max(0, tiedGoal.weeklyTarget - tiedGoal.completedCount) : 1;
+      const priorityWeight = tiedGoal?.priority === "critical" ? 100 : tiedGoal?.priority === "important" ? 50 : 10;
+      
+      // Calculate how long ago the event ended (in hours)
+      const hoursAgo = Math.max(0, (now.getTime() - new Date(evt.end).getTime()) / (1000 * 3600));
+
+      // Urgency score: higher deficit & priority gets focused first
+      const score = (deficit * 30) + priorityWeight + Math.min(hoursAgo / 24, 30);
+
+      return {
+        event: evt,
+        goal: tiedGoal || {
+          id: "general",
+          name: evt.title,
+          color: "#6366f1",
+          completedCount: 0,
+          weeklyTarget: 1,
+          type: GoalType.PERSONAL,
+          category: "Personal",
+          durationMinutes: 60,
+          timePreference: TimePreference.ANY,
+          createdAt: ""
+        },
+        deficit,
+        hoursAgo,
+        score
+      };
+    });
+
+    mapped.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      // Earliest past event first (chronological catchup)
+      return new Date(a.event.start).getTime() - new Date(b.event.start).getTime();
+    });
+
+    return mapped;
+  }, [events, goals, now]);
+
+  const missedSessionsCount = rankedPastIncompleteSessions.length;
 
   const handleDragStart = (e: React.DragEvent, eventId: string) => {
     e.stopPropagation();
@@ -953,6 +1019,99 @@ export default function CalendarView({
           behavior: smooth ? "smooth" : "auto"
         });
       }
+    }
+  };
+
+  const scrollToHour = (hourDecimal: number, smooth: boolean = true) => {
+    if (!gridScrollRef.current) return;
+    const scrollContainer = gridScrollRef.current;
+    const containerHeight = scrollContainer.clientHeight || 500;
+    const hourPixel = viewMode === "day" ? 96 : 64;
+    const targetTopPixel = (hourDecimal - 8) * hourPixel;
+    const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 3);
+    scrollContainer.scrollTo({
+      top: scrollToPixel,
+      behavior: smooth ? "smooth" : "auto"
+    });
+  };
+
+  const handleFocusMostIncompleteGoal = (indexToFocus?: number) => {
+    if (rankedPastIncompleteSessions.length === 0) {
+      setSpotlightBannerInfo(null);
+      setSpotlightEventId(null);
+      setRebalanceStatus("🎉 No past incomplete sessions! All scheduled sessions up to now are complete.");
+      setTimeout(() => setRebalanceStatus(null), 4000);
+      return;
+    }
+
+    const idx = (indexToFocus !== undefined ? indexToFocus : currentIncompleteIndex) % rankedPastIncompleteSessions.length;
+    const targetItem = rankedPastIncompleteSessions[idx];
+    setCurrentIncompleteIndex((idx + 1) % rankedPastIncompleteSessions.length);
+
+    const { goal, event, deficit } = targetItem;
+    setSpotlightGoalId(goal.id);
+
+    const sDate = new Date(event.start);
+    // Navigate calendar directly to this past session's date
+    setCurrentDate(sDate);
+    onNavigateToDate?.(sDate);
+    setSpotlightEventId(event.id);
+
+    // Smooth scroll to the session time in grid
+    setTimeout(() => {
+      const startDecimal = sDate.getHours() + sDate.getMinutes() / 60;
+      scrollToHour(startDecimal, true);
+    }, 150);
+
+    setSpotlightBannerInfo({
+      goal,
+      event,
+      isOverdue: true,
+      deficit,
+      totalIncompleteCount: rankedPastIncompleteSessions.length,
+      currentIndex: idx
+    });
+  };
+
+  const handleCompleteSpotlightEvent = () => {
+    if (!spotlightBannerInfo) return;
+    const evt = spotlightBannerInfo.event;
+    const g = spotlightBannerInfo.goal;
+
+    if (evt) {
+      if (onEditEvent) {
+        onEditEvent(evt.id, { completed: true });
+      } else {
+        onToggleCompleteEvent(evt.id);
+      }
+    }
+
+    if (g && g.id !== "general" && onEditGoal) {
+      onEditGoal(g.id, {
+        completedCount: g.completedCount + 1
+      });
+    }
+
+    // Auto-advance to next past incomplete session if any remain, otherwise close spotlight
+    setTimeout(() => {
+      const remainingCount = rankedPastIncompleteSessions.filter(item => item.event.id !== evt?.id).length;
+      if (remainingCount > 0) {
+        handleFocusMostIncompleteGoal();
+      } else {
+        setSpotlightBannerInfo(null);
+        setSpotlightEventId(null);
+        setRebalanceStatus("🎉 All past incomplete sessions are completed!");
+        setTimeout(() => setRebalanceStatus(null), 3500);
+      }
+    }, 300);
+  };
+
+  const handleStartSpotlightTimer = () => {
+    if (!spotlightBannerInfo) return;
+    if (spotlightBannerInfo.event) {
+      handleOpenTimerForEvent(spotlightBannerInfo.event);
+    } else if (spotlightBannerInfo.goal && spotlightBannerInfo.goal.id !== "general") {
+      handleOpenTimerForGoal(spotlightBannerInfo.goal);
     }
   };
 
@@ -2015,6 +2174,28 @@ export default function CalendarView({
               <span className="hidden sm:inline">Connect</span>
             </button>
 
+            {/* Start from Incomplete Goals Button */}
+            <button
+              id="focus_incomplete_goal_btn"
+              type="button"
+              onClick={() => handleFocusMostIncompleteGoal()}
+              className={`p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold px-2.5 min-h-[36px] ${
+                rankedPastIncompleteSessions.length > 0
+                  ? "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50 shadow-xs active:scale-95"
+                  : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
+              }`}
+              title="Focus directly on past uncompleted sessions to catch up now without waiting or re-balancing"
+            >
+              <Compass className={`w-3.5 h-3.5 ${rankedPastIncompleteSessions.length > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-500"}`} />
+              <span className="hidden sm:inline">Focus Incomplete</span>
+              <span className="sm:hidden">Focus</span>
+              {rankedPastIncompleteSessions.length > 0 && (
+                <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-xs animate-pulse" title={`${rankedPastIncompleteSessions.length} past incomplete sessions`}>
+                  {rankedPastIncompleteSessions.length}
+                </span>
+              )}
+            </button>
+
             <button
               id="auto_rebalance_btn"
               onClick={handleSmartRebalance}
@@ -2482,6 +2663,104 @@ export default function CalendarView({
         </div>
       )}
 
+      {/* Focus Incomplete Goal Spotlight Banner */}
+      {spotlightBannerInfo && (
+        <div 
+          id="spotlight_incomplete_banner"
+          className="bg-amber-500/15 dark:bg-amber-500/10 border-b border-amber-500/30 px-3 sm:px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2.5 animate-fade-in text-xs shadow-sm z-20"
+        >
+          <div className="flex items-start sm:items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/30">
+              <Compass className="w-4 h-4" />
+            </div>
+            
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-extrabold text-amber-950 dark:text-amber-200 flex items-center gap-1">
+                  <span>Past Incomplete:</span>
+                  <span className="underline decoration-amber-500/50">{spotlightBannerInfo.goal.name}</span>
+                </span>
+                
+                <span className="text-[10px] bg-amber-500/20 text-amber-900 dark:text-amber-300 font-mono font-bold px-2 py-0.5 rounded border border-amber-500/30">
+                  {spotlightBannerInfo.goal.completedCount}/{spotlightBannerInfo.goal.weeklyTarget} done
+                </span>
+
+                <span className="text-[9.5px] bg-rose-500/20 text-rose-800 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">
+                  <Clock className="w-2.5 h-2.5" /> Date Passed (Missed Session)
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-700 dark:text-slate-300 font-medium truncate mt-0.5">
+                {spotlightBannerInfo.event ? (
+                  <>
+                    <span className="font-bold text-slate-900 dark:text-white">"{spotlightBannerInfo.event.title}"</span>
+                    {" • "}
+                    <span>
+                      {new Date(spotlightBannerInfo.event.start).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} at {new Date(spotlightBannerInfo.event.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    {" — Missed session from a past date, ready to complete now without re-balancing!"}
+                  </>
+                ) : null}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
+            {/* Start Timer Now */}
+            <button
+              type="button"
+              id="spotlight_start_timer_btn"
+              onClick={handleStartSpotlightTimer}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition cursor-pointer active:scale-95"
+              title="Start Focus Timer for this session immediately"
+            >
+              <Play className="w-3 h-3 fill-current" />
+              <span>Start Timer</span>
+            </button>
+
+            {/* Mark Completed Now */}
+            {spotlightBannerInfo.event && !spotlightBannerInfo.event.completed && (
+              <button
+                type="button"
+                id="spotlight_mark_done_btn"
+                onClick={handleCompleteSpotlightEvent}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-emerald-600/20 transition cursor-pointer active:scale-95"
+                title="Mark this session completed"
+              >
+                <Check className="w-3 h-3" />
+                <span>Mark Done</span>
+              </button>
+            )}
+
+            {/* Cycle to Next Incomplete Goal */}
+            {spotlightBannerInfo.totalIncompleteCount > 1 && (
+              <button
+                type="button"
+                id="spotlight_next_incomplete_btn"
+                onClick={() => handleFocusMostIncompleteGoal()}
+                className="bg-slate-200 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200 font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 border border-slate-300 dark:border-white/10"
+                title="Focus on next incomplete goal"
+              >
+                <span>Next ({spotlightBannerInfo.currentIndex + 1}/{spotlightBannerInfo.totalIncompleteCount})</span>
+              </button>
+            )}
+
+            {/* Dismiss Banner */}
+            <button
+              type="button"
+              onClick={() => {
+                setSpotlightBannerInfo(null);
+                setSpotlightEventId(null);
+              }}
+              className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg transition cursor-pointer"
+              title="Dismiss banner"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Calendar Render Stage */}
       <div className="flex-1 overflow-y-auto" id="calendar_grid_wrapper" ref={gridScrollRef}>
         
@@ -2623,7 +2902,9 @@ export default function CalendarView({
                     className={`cal-event-card absolute p-2 border border-l-4 rounded-xl text-left cursor-pointer select-none transition-all duration-150 ${
                       draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
                     } ${
-                      isHovered
+                      spotlightEventId === evt.id
+                        ? "shadow-2xl ring-4 ring-amber-400 dark:ring-amber-300 z-[130] scale-[1.03] animate-pulse"
+                        : isHovered
                         ? "shadow-2xl ring-2 ring-indigo-500/80 z-[120] opacity-100 scale-[1.01]"
                         : isAnyHovered
                         ? "opacity-35 z-10 shadow-xs"
@@ -2647,12 +2928,19 @@ export default function CalendarView({
                       <div>
                         {/* Header Row: Title & Quick Timer Button */}
                         <div className="flex items-center justify-between gap-1">
-                          <h4 className={`cal-event-title text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0 ${
-                            evt.completed ? "line-through opacity-60" : ""
-                          }`}>
-                            {getEventIcon(evt)}
-                            <span className="truncate">{evt.title}</span>
-                          </h4>
+                          <div className="flex items-center gap-1 min-w-0">
+                            <h4 className={`cal-event-title text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0 ${
+                              evt.completed ? "line-through opacity-60" : ""
+                            }`}>
+                              {getEventIcon(evt)}
+                              <span className="truncate">{evt.title}</span>
+                            </h4>
+                            {spotlightEventId === evt.id && (
+                              <span className="text-[7.5px] bg-amber-500 text-slate-950 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5">
+                                <Compass className="w-2 h-2" /> TARGET
+                              </span>
+                            )}
+                          </div>
 
                           <div className="flex items-center gap-1 shrink-0">
                             {/* Instant 1-Click Play Timer Button right in card header */}
@@ -2970,7 +3258,9 @@ export default function CalendarView({
                               className={`cal-event-card p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-grab active:cursor-grabbing transition-all border border-l-4 relative ${
                                 draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
                               } ${
-                                isHovered ? "shadow-xl ring-2 ring-indigo-500/80 scale-[1.01]" : ""
+                                spotlightEventId === evt.id
+                                  ? "shadow-2xl ring-4 ring-amber-400 dark:ring-amber-300 scale-[1.02] z-50 animate-pulse"
+                                  : isHovered ? "shadow-xl ring-2 ring-indigo-500/80 scale-[1.01]" : ""
                               }`}
                               style={{
                                 borderLeftColor: colors.borderLeftColor,
@@ -2981,12 +3271,19 @@ export default function CalendarView({
                             >
                               <div className="flex justify-between items-start mb-1.5 gap-2">
                                 <div className="space-y-1">
-                                  <h4 className={`cal-event-title text-xs sm:text-sm font-extrabold flex items-center gap-1.5 ${
-                                    evt.completed ? "line-through opacity-50" : ""
-                                  }`}>
-                                    {getEventIcon(evt)}
-                                    <span>{evt.title}</span>
-                                  </h4>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <h4 className={`cal-event-title text-xs sm:text-sm font-extrabold flex items-center gap-1.5 ${
+                                      evt.completed ? "line-through opacity-50" : ""
+                                    }`}>
+                                      {getEventIcon(evt)}
+                                      <span>{evt.title}</span>
+                                    </h4>
+                                    {spotlightEventId === evt.id && (
+                                      <span className="text-[8px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-0.5 shrink-0">
+                                        <Compass className="w-2.5 h-2.5" /> TARGET GOAL
+                                      </span>
+                                    )}
+                                  </div>
                                   {(() => {
                                     const tiedGoal = goals.find(g => g.id === evt.goalId);
                                     if (!tiedGoal) return null;
@@ -3316,7 +3613,9 @@ export default function CalendarView({
                           id={`event_card_list_${evt.id}`}
                           onClick={() => handleTriggerEditEvent(evt)}
                           className={`p-3.5 sm:p-4 border rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition cursor-pointer ${
-                            isCurrent
+                            spotlightEventId === evt.id
+                              ? "bg-amber-50 dark:bg-amber-500/15 border-amber-400 dark:border-amber-400/60 shadow-xl ring-2 ring-amber-400 scale-[1.01]"
+                              : isCurrent
                               ? "bg-indigo-50 dark:bg-indigo-500/15 border-red-400 dark:border-red-500/50 shadow-lg shadow-red-500/10 ring-1 ring-red-400 dark:ring-red-500/30"
                               : evt.completed
                               ? "bg-slate-50 dark:bg-white/[0.02] border-slate-200 dark:border-white/5 opacity-70"
@@ -3334,6 +3633,11 @@ export default function CalendarView({
                                   {getEventIcon(evt)}
                                   <span className="truncate">{evt.title}</span>
                                 </h4>
+                                {spotlightEventId === evt.id && (
+                                  <span className="text-[9px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0">
+                                    <Compass className="w-3 h-3" /> TARGET GOAL
+                                  </span>
+                                )}
                                 {(() => {
                                   const tiedGoal = goals.find(g => g.id === evt.goalId);
                                   if (!tiedGoal) return null;
