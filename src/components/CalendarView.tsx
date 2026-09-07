@@ -46,6 +46,13 @@ import {
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
+import { 
+  sanitizeAndOptimizeSchedule, 
+  deduplicateDailyGoalEvents, 
+  alignDailyEventsByPriority,
+  findGoalForEvent,
+  getPriorityScore 
+} from "../lib/scheduleOptimizer";
 
 const DEFAULT_AVAILABILITY: AvailabilityWindow[] = [
   { dayOfWeek: 0, startTime: "09:00", endTime: "21:00", active: true },
@@ -71,6 +78,7 @@ interface CalendarViewProps {
   onEditEvent?: (eventId: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => void;
   onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
   onResetAndRegenerateCalendar?: (options?: { clearMode?: "uncompleted_goals" | "all_events"; keepExternal?: boolean }) => void;
+  onAlignPriorities?: () => void;
   targetDate?: Date;
   onNavigateToDate?: (date: Date) => void;
 }
@@ -89,6 +97,7 @@ export default function CalendarView({
   onEditEvent,
   onBulkEditEvents,
   onResetAndRegenerateCalendar,
+  onAlignPriorities,
   targetDate,
   onNavigateToDate
 }: CalendarViewProps) {
@@ -517,7 +526,14 @@ export default function CalendarView({
     let updatedCount = 0;
     const currentEventsList = [...events];
 
-    missedEvents.forEach(evt => {
+    // Prioritize Critical goals > Important goals > Normal goals
+    const sortedMissedEvents = [...missedEvents].sort((a, b) => {
+      const gA = getGoalForEvent(a);
+      const gB = getGoalForEvent(b);
+      return getPriorityScore(gB?.priority) - getPriorityScore(gA?.priority);
+    });
+
+    sortedMissedEvents.forEach(evt => {
       const originalStart = new Date(evt.start);
       const originalEnd = new Date(evt.end);
       const durationMs = originalEnd.getTime() - originalStart.getTime();
@@ -534,6 +550,23 @@ export default function CalendarView({
 
         const searchDay = new Date(currentTime);
         searchDay.setDate(currentTime.getDate() + dayOffset);
+        const searchDayStr = searchDay.toDateString();
+
+        // Enforce strictly 1 session per goal per day:
+        // Do not place this goal on searchDay if it already has a session for this goal
+        const alreadyHasGoalOnDay = currentEventsList.some(other => {
+          if (other.id === evt.id) return false;
+          if (new Date(other.start).toDateString() !== searchDayStr) return false;
+          const otherGoal = getGoalForEvent(other);
+          if (goal && otherGoal && goal.id === otherGoal.id) return true;
+          const cleanGoalName = (goal?.name || "").trim().toLowerCase();
+          const cleanOtherTitle = (other.title || "").trim().toLowerCase();
+          return cleanGoalName && (cleanOtherTitle === cleanGoalName || cleanOtherTitle.includes(cleanGoalName) || cleanGoalName.includes(cleanOtherTitle));
+        });
+
+        if (alreadyHasGoalOnDay) {
+          continue; // Skip day: at most 1 session per goal per day
+        }
 
         let windowsToTry: { startH: number; endH: number }[] = [];
         if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
@@ -591,6 +624,19 @@ export default function CalendarView({
     });
 
     if (updatedCount > 0) {
+      // Re-align days where sessions were added to ensure Critical is before Important
+      const { alignedEvents, changedCount } = alignDailyEventsByPriority(currentEventsList, goals);
+      if (changedCount > 0 && onBulkEditEvents) {
+        const bulkUpdates = alignedEvents
+          .filter(ae => {
+            const orig = events.find(e => e.id === ae.id);
+            return orig && (orig.start !== ae.start || orig.end !== ae.end);
+          })
+          .map(ae => ({ id: ae.id, fields: { start: ae.start, end: ae.end } }));
+        if (bulkUpdates.length > 0) {
+          onBulkEditEvents(bulkUpdates);
+        }
+      }
       setRebalanceStatus(`⚡ Successfully re-balanced ${updatedCount} missed session(s) into your preferred goal time slots!`);
     } else {
       setRebalanceStatus("⚠️ Could not find open slots for all missed sessions. Try adjusting availability or clearing busy times.");
@@ -807,6 +853,10 @@ export default function CalendarView({
       onBulkEditEvents(updates);
     } else if (onEditEvent) {
       updates.forEach(u => onEditEvent(u.id, u.fields));
+    }
+
+    if (onAlignPriorities) {
+      setTimeout(() => onAlignPriorities(), 150);
     }
 
     if (firstShiftedStart) {
@@ -2214,6 +2264,18 @@ export default function CalendarView({
                 </span>
               )}
             </button>
+
+            {onAlignPriorities && (
+              <button
+                id="align_priorities_btn"
+                onClick={onAlignPriorities}
+                className="p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px] bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border-slate-300 dark:border-white/10"
+                title="Strictly align daily sessions by priority (Critical > Important > Normal) and consolidate duplicate sessions"
+              >
+                <ListOrdered className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <span className="hidden sm:inline">Align Priorities</span>
+              </button>
+            )}
 
             {/* Delay Today Quick Trigger */}
             <div className="relative z-50">

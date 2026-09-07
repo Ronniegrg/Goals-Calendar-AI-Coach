@@ -31,6 +31,12 @@ import {
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
+import { 
+  alignDailyEventsByPriority, 
+  deduplicateDailyGoalEvents, 
+  findGoalForEvent, 
+  getPriorityScore 
+} from "../lib/scheduleOptimizer";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -926,11 +932,13 @@ export default function GoalTracker({
         const availDay = availability.find(a => a.dayOfWeek === dayOfWeek);
         if (!availDay || !availDay.active) continue;
 
-        const maxSessionsPerDay = goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1;
+        // Strictly 1 session per day per goal
+        const maxSessionsPerDay = 1;
         const targetDayString = targetDay.toDateString();
 
         const sessionsOnTargetDay = [...fixedEvents, ...newScheduledEvents].filter(evt => {
-          const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+          const matchedGoal = findGoalForEvent(evt, goals);
+          const isThisGoal = (matchedGoal && matchedGoal.id === goal.id) || evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
         }).length;
 
@@ -1035,10 +1043,14 @@ export default function GoalTracker({
     }
 
     if (newScheduledEvents.length > 0) {
-      onBulkAddEvents(newScheduledEvents);
+      const combined = [...fixedEvents, ...newScheduledEvents];
+      const { alignedEvents } = alignDailyEventsByPriority(combined, goals);
+      const alignedNewEvents = alignedEvents.filter(e => newScheduledEvents.some(ne => ne.id === e.id));
+
+      onBulkAddEvents(alignedNewEvents.length > 0 ? alignedNewEvents : newScheduledEvents);
       onAddNotification(
         "Auto-Scheduler Success",
-        `Reprioritized schedule: ${scheduledCount} session(s) mapped with Critical goals scheduled in prime slots!`,
+        `Reprioritized schedule: ${scheduledCount} session(s) mapped with Critical goals strictly scheduled before Important goals!`,
         "success"
       );
     } else {

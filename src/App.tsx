@@ -28,6 +28,13 @@ import AICoach from "./components/AICoach";
 import NotificationsPanel from "./components/NotificationsPanel";
 import FocusTimerModal from "./components/FocusTimerModal";
 import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
+import { 
+  sanitizeAndOptimizeSchedule, 
+  deduplicateDailyGoalEvents, 
+  alignDailyEventsByPriority,
+  findGoalForEvent,
+  getPriorityScore as getSchedulePriorityScore 
+} from "./lib/scheduleOptimizer";
 
 export default function App() {
   // Navigation State
@@ -224,8 +231,12 @@ export default function App() {
             const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
             const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
 
+            // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
+            const cleanEventsRaw = localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
+            const { optimizedEvents: optimizedLocalEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanEventsRaw, localGoalsList);
+
             setGoals(localGoalsList);
-            setEvents(localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
+            setEvents(optimizedLocalEvents);
             if (localAvailability.length > 0) {
               setAvailability(localAvailability);
             } else {
@@ -234,10 +245,14 @@ export default function App() {
             setNotifications(localNotifications);
             setCoachMessages(localCoachMessages);
 
-            // Sync up local user data to cloud database
+            localStorage.setItem("cached_goals", JSON.stringify(localGoalsList));
+            localStorage.setItem("cached_events", JSON.stringify(optimizedLocalEvents));
+            localStorage.setItem("local_last_updated", Date.now().toString());
+
+            // Sync up sanitized local user data to cloud database
             await syncToCloud(
               localGoalsList,
-              localEvents,
+              optimizedLocalEvents,
               localAvailability.length > 0 ? localAvailability : data.availability || [],
               localNotifications,
               localCoachMessages,
@@ -245,8 +260,12 @@ export default function App() {
             );
           } else {
             // Cloud is newer or initial load
+            const cleanCloudEventsRaw = cloudEventsClean.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
+            // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
+            const { optimizedEvents: optimizedCloudEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanCloudEventsRaw, cloudGoalsClean);
+
             setGoals(cloudGoalsClean);
-            setEvents(cloudEventsClean.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") })));
+            setEvents(optimizedCloudEvents);
             setAvailability(data.availability || []);
             setNotifications(data.notifications || []);
             setCoachMessages(data.coachMessages || []);
@@ -256,11 +275,29 @@ export default function App() {
             }
 
             localStorage.setItem("cached_goals", JSON.stringify(cloudGoalsClean));
-            localStorage.setItem("cached_events", JSON.stringify(cloudEventsClean));
+            localStorage.setItem("cached_events", JSON.stringify(optimizedCloudEvents));
             localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
             localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));
             localStorage.setItem("cached_coachMessages", JSON.stringify(data.coachMessages || []));
+            if (data.customTemplates && Array.isArray(data.customTemplates) && data.customTemplates.length > 0) {
+              const localTemplatesRaw = localStorage.getItem("focus_timer_custom_templates_v2");
+              if (!localTemplatesRaw) {
+                localStorage.setItem("focus_timer_custom_templates_v2", JSON.stringify(data.customTemplates));
+              }
+            }
             localStorage.setItem("local_last_updated", Date.now().toString());
+
+            if (duplicatesRemoved > 0 || priorityAdjusted > 0) {
+              // Persist clean deduplicated and priority-aligned schedule to server
+              await syncToCloud(
+                cloudGoalsClean,
+                optimizedCloudEvents,
+                data.availability || [],
+                data.notifications || [],
+                data.coachMessages || [],
+                data.coachPersona || "mentor"
+              );
+            }
           }
           setLastSynced(new Date().toLocaleTimeString());
           setSyncStatus("synced");
@@ -297,6 +334,14 @@ export default function App() {
 
     setSyncStatus("syncing");
     try {
+      let localTemplates: any[] = [];
+      try {
+        const raw = localStorage.getItem("focus_timer_custom_templates_v2");
+        if (raw) localTemplates = JSON.parse(raw);
+      } catch (e) {
+        console.error("Error parsing local custom templates:", e);
+      }
+
       const payload: SyncData = {
         goals: prevGoals,
         events: prevEvents,
@@ -304,7 +349,8 @@ export default function App() {
         notifications: prevNotifications,
         coachMessages: prevCoachMessages,
         userEmail,
-        coachPersona: activePersona
+        coachPersona: activePersona,
+        customTemplates: localTemplates
       };
 
       const res = await fetch("/api/sync", {
@@ -324,6 +370,17 @@ export default function App() {
       setSyncStatus("offline");
     }
   };
+
+  // Sync custom timer templates whenever created, edited, or deleted in FocusTimerModal
+  useEffect(() => {
+    const handleTemplateSync = () => {
+      syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona);
+    };
+    window.addEventListener("sync_focus_templates", handleTemplateSync);
+    return () => {
+      window.removeEventListener("sync_focus_templates", handleTemplateSync);
+    };
+  }, [goals, events, availability, notifications, coachMessages, userEmail, coachPersona]);
 
   // 3. Automated Routine checkers (Checks for overdue items or immediate notifications on mount / tick)
   useEffect(() => {
@@ -408,17 +465,19 @@ export default function App() {
     if (activeGoals.length === 0) return;
 
     // Prioritize Critical goals (3) > Important goals (2) > Normal goals (1)
-    const getPriorityScore = (p?: string) => (p === "critical" ? 3 : p === "important" ? 2 : 1);
-    const sortedGoals = [...activeGoals].sort((a, b) => getPriorityScore(b.priority) - getPriorityScore(a.priority));
+    const sortedGoals = [...activeGoals].sort((a, b) => getSchedulePriorityScore(b.priority) - getSchedulePriorityScore(a.priority));
+
+    // Deduplicate current uncompleted events first (ensures at most 1 session per goal per day)
+    const { deduplicated: deduplicatedEvents, removedCount: dupRemoved } = deduplicateDailyGoalEvents(currentEvents, currentGoals);
 
     // Purge any uncompleted auto-scheduled events that violate their goal's strict time preference
-    let purgedCount = 0;
-    const validEvents = currentEvents.filter(evt => {
+    let purgedCount = dupRemoved;
+    const validEvents = deduplicatedEvents.filter(evt => {
       if (evt.completed || evt.type === "external") return true;
       // Do not purge events that were shifted or delayed by the user
       const isShiftedOrDelayed = evt.notes && (evt.notes.includes("Shifted") || evt.notes.includes("Delayed") || evt.notes.includes("Manual"));
       if (isShiftedOrDelayed) return true;
-      const parentGoal = currentGoals.find(g => g.id === evt.goalId || (evt.title && g.name && evt.title.toLowerCase().includes(g.name.toLowerCase())));
+      const parentGoal = findGoalForEvent(evt, currentGoals);
       if (!parentGoal) return true;
       const isValid = isEventInGoalTimePrefWindow(evt, parentGoal);
       if (!isValid) purgedCount++;
@@ -430,15 +489,18 @@ export default function App() {
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
     sortedGoals.forEach(goal => {
-      const goalNameLower = goal.name.toLowerCase();
+      const goalNameClean = (goal.name || "").trim().toLowerCase();
+      const goalNameLower = goalNameClean;
       const isDailyGoal = goal.weeklyTarget >= 7;
-      const maxSessionsPerDay = isDailyGoal ? 1 : (goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1);
+      // Strictly 1 session per day per goal
+      const maxSessionsPerDay = 1;
       const blockDurationHours = (goal.durationMinutes || 60) / 60;
 
       // Find upcoming uncompleted events for this goal
       const upcomingGoalEvents = validEvents.filter(evt => {
         if (evt.completed) return false;
-        const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+        const matchedGoal = findGoalForEvent(evt, currentGoals);
+        const isThisGoal = (matchedGoal && matchedGoal.id === goal.id) || (evt.goalId === goal.id) || (evt.title && evt.title.toLowerCase().includes(goalNameClean));
         return isThisGoal && new Date(evt.start) >= todayStart;
       }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
@@ -591,14 +653,16 @@ export default function App() {
       }
     });
 
-    if (newScheduledEvents.length > 0 || purgedCount > 0) {
-      const nextEvents = [...newScheduledEvents, ...validEvents];
-      setEvents(nextEvents);
-      syncToCloud(currentGoals, nextEvents, currentAvailability, notifications, coachMessages);
-      if (newScheduledEvents.length > 0) {
+    const combinedEvents = [...newScheduledEvents, ...validEvents];
+    const { alignedEvents, changedCount } = alignDailyEventsByPriority(combinedEvents, currentGoals);
+
+    if (newScheduledEvents.length > 0 || purgedCount > 0 || changedCount > 0) {
+      setEvents(alignedEvents);
+      syncToCloud(currentGoals, alignedEvents, currentAvailability, notifications, coachMessages);
+      if (newScheduledEvents.length > 0 || changedCount > 0) {
         triggerSystemNotification(
           "Auto-Scheduler Sync",
-          `⚡ Auto-Scheduler mapped ${scheduledCount} session(s) strictly aligned with your time window preferences!`,
+          `⚡ Auto-Scheduler optimized: Critical goals prioritized before Important goals, and sessions strictly aligned!`,
           "success"
         );
       }
@@ -1273,6 +1337,26 @@ export default function App() {
     }, 150);
   };
 
+  // Handle Align Priorities & Deduplicate Sessions
+  const handleAlignPrioritiesAndDeduplicate = () => {
+    const { optimizedEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(events, goals);
+    if (duplicatesRemoved > 0 || priorityAdjusted > 0) {
+      setEvents(optimizedEvents);
+      syncToCloud(goals, optimizedEvents, availability, notifications, coachMessages);
+      triggerSystemNotification(
+        "Priority Alignment & Deduplication",
+        `🎯 Schedule strictly aligned! Critical goals (IT Support) prioritized before Important goals (Cybersecurity). Consolidated ${duplicatesRemoved} duplicate session(s).`,
+        "success"
+      );
+    } else {
+      triggerSystemNotification(
+        "Priority Alignment",
+        "✨ All goals are already strictly prioritized (Critical > Important > Normal) with 1 session max per day.",
+        "success"
+      );
+    }
+  };
+
   // Helper to generate dynamic calendar event sessions for a goal
   const generateGoalSessions = (
     goal: Goal,
@@ -1298,7 +1382,8 @@ export default function App() {
         availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
       }
 
-      const maxSessionsPerDay = goal.weeklyTarget >= 7 ? 1 : (goal.weeklyTarget > 7 ? Math.ceil(goal.weeklyTarget / 7) : 1);
+      // Strictly 1 session per day per goal
+      const maxSessionsPerDay = 1;
       const targetDayString = targetDay.toDateString();
 
       const sessionsOnTargetDay = [...existingEvents, ...newEvents].filter(evt => {
@@ -2106,6 +2191,7 @@ export default function App() {
               onEditEvent={handleEditEvent}
               onBulkEditEvents={handleBulkEditEvents}
               onResetAndRegenerateCalendar={handleResetAndRegenerateCalendar}
+              onAlignPriorities={handleAlignPrioritiesAndDeduplicate}
             />
           </div>
         )}

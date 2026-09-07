@@ -30,9 +30,15 @@ import {
   CheckCircle,
   ArrowUp,
   ArrowDown,
-  LayoutTemplate
+  LayoutTemplate,
+  BookmarkPlus,
+  Save,
+  Bookmark,
+  Copy,
+  Edit3,
+  Info
 } from "lucide-react";
-import { SessionSubStep } from "../types";
+import { SessionSubStep, CustomSessionTemplate } from "../types";
 
 export interface ActiveTimerData {
   title: string;
@@ -76,6 +82,36 @@ const SOUND_PREF_KEY = "focus_timer_sound_choice_v2";
 const VOLUME_PREF_KEY = "focus_timer_volume_v2";
 const REPEAT_SOUND_KEY = "focus_timer_repeat_sound_v2";
 const SOUND_ENABLED_KEY = "focus_timer_sound_enabled_v2";
+const CUSTOM_TEMPLATES_KEY = "focus_timer_custom_templates_v2";
+
+export const DEFAULT_CUSTOM_TEMPLATES: CustomSessionTemplate[] = [
+  {
+    id: "tmpl_study_trio_custom",
+    name: "Study Trio",
+    icon: "🎓",
+    description: "Review • Core Practice • Quiz & Notes",
+    steps: [
+      { id: "step_st_1", title: "Concept & Notes Review", durationMinutes: 10, description: "Review foundations" },
+      { id: "step_st_2", title: "Core Deep Practice", durationMinutes: 25, description: "Active problem solving" },
+      { id: "step_st_3", title: "Self-Quiz & Key Takeaways", durationMinutes: 10, description: "Quiz & summarize" }
+    ],
+    createdAt: Date.now() - 86400000
+  },
+  {
+    id: "tmpl_cyber_custom",
+    name: "Cyber Drill",
+    icon: "🛡️",
+    description: "Scope & Recon • Exploit / Patch • Report",
+    steps: [
+      { id: "step_cb_1", title: "Lab Setup & Scope", durationMinutes: 10, description: "Verify environment and targets" },
+      { id: "step_cb_2", title: "Active Hands-on Drill", durationMinutes: 25, description: "Execute drill or labs" },
+      { id: "step_cb_3", title: "Log Findings & Takeaways", durationMinutes: 10, description: "Document lessons & fixes" }
+    ],
+    createdAt: Date.now() - 43200000
+  }
+];
+
+export const TEMPLATE_EMOJI_PRESETS = ["🎯", "🛡️", "💻", "🧠", "⚡", "🎓", "📚", "🔬", "🏋️", "🚀", "⏱️", "📝", "☕", "🧘"];
 
 export const SOUND_OPTIONS: { id: SoundType; name: string; desc: string; icon: string }[] = [
   { id: "tibetan_bell", name: "Tibetan Singing Bowl", desc: "Warm meditative metallic tone with deep harmonics", icon: "🔔" },
@@ -427,6 +463,33 @@ export default function FocusTimerModal({
   const [isTestingSound, setIsTestingSound] = useState<boolean>(false);
   const [isAlarmRinging, setIsAlarmRinging] = useState<boolean>(false);
   const [isGeneratingAiSteps, setIsGeneratingAiSteps] = useState<boolean>(false);
+  
+  // Custom Session Templates state
+  const [customTemplates, setCustomTemplates] = useState<CustomSessionTemplate[]>(() => {
+    try {
+      const raw = localStorage.getItem(CUSTOM_TEMPLATES_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.error("Error loading custom templates:", e);
+    }
+    return DEFAULT_CUSTOM_TEMPLATES;
+  });
+
+  const [templateTab, setTemplateTab] = useState<"presets" | "custom">("presets");
+  const [templateFeedbackMessage, setTemplateFeedbackMessage] = useState<string | null>(null);
+
+  const [templateEditorState, setTemplateEditorState] = useState<{
+    isOpen: boolean;
+    mode: "create_from_current" | "create_blank" | "edit";
+    templateId?: string;
+    name: string;
+    icon: string;
+    description: string;
+    steps: { id: string; title: string; durationMinutes: number; description?: string }[];
+  } | null>(null);
   
   // Phase transition notification banner state
   const [phaseTransitionNotice, setPhaseTransitionNotice] = useState<{
@@ -1135,6 +1198,241 @@ export default function FocusTimerModal({
     }
   };
 
+  const showFeedback = (msg: string) => {
+    setTemplateFeedbackMessage(msg);
+    setTimeout(() => {
+      setTemplateFeedbackMessage((prev) => (prev === msg ? null : prev));
+    }, 3500);
+  };
+
+  const saveCustomTemplates = (templates: CustomSessionTemplate[]) => {
+    setCustomTemplates(templates);
+    try {
+      localStorage.setItem(CUSTOM_TEMPLATES_KEY, JSON.stringify(templates));
+      window.dispatchEvent(new CustomEvent("sync_focus_templates", { detail: templates }));
+    } catch (e) {
+      console.error("Failed to save custom templates:", e);
+    }
+  };
+
+  // Open template builder prefilled with current draft phases
+  const handleOpenSaveCurrentAsTemplate = () => {
+    if (draftSubSteps.length === 0) {
+      showFeedback("Please add at least 1 phase before saving a template.");
+      return;
+    }
+
+    const currentTitle = timerState?.title?.trim() || "Focus";
+    let defaultIcon = "🎯";
+    const lower = (timerState?.title + " " + timerState?.category).toLowerCase();
+    if (lower.includes("cyber") || lower.includes("security") || lower.includes("network")) defaultIcon = "🛡️";
+    else if (lower.includes("code") || lower.includes("dev") || lower.includes("program") || lower.includes("react") || lower.includes("python") || lower.includes("script")) defaultIcon = "💻";
+    else if (lower.includes("workout") || lower.includes("gym") || lower.includes("fitness") || lower.includes("run") || lower.includes("cardio")) defaultIcon = "🏋️";
+    else if (lower.includes("study") || lower.includes("read") || lower.includes("book") || lower.includes("cert") || lower.includes("exam")) defaultIcon = "🎓";
+    else if (lower.includes("math") || lower.includes("science") || lower.includes("chem")) defaultIcon = "🔬";
+
+    const totalMins = draftSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+    const defaultDesc = `${draftSubSteps.length} phases • ${totalMins}m total`;
+
+    setTemplateEditorState({
+      isOpen: true,
+      mode: "create_from_current",
+      name: `${currentTitle} Routine`,
+      icon: defaultIcon,
+      description: defaultDesc,
+      steps: draftSubSteps.map((s, i) => ({
+        id: `tstep_${Date.now()}_${i}`,
+        title: s.title || `Phase ${i + 1}`,
+        durationMinutes: Number(s.durationMinutes) || 10,
+        description: s.description || ""
+      }))
+    });
+  };
+
+  // Open blank template editor
+  const handleOpenCreateBlankTemplate = () => {
+    setTemplateEditorState({
+      isOpen: true,
+      mode: "create_blank",
+      name: "New Focus Routine",
+      icon: "🎯",
+      description: "Custom session breakdown",
+      steps: [
+        { id: `tstep_${Date.now()}_1`, title: "Phase 1: Deep Focus", durationMinutes: 25, description: "Active uninterrupted work" },
+        { id: `tstep_${Date.now()}_2`, title: "Phase 2: Review & Wrap-up", durationMinutes: 5, description: "Summary and action items" }
+      ]
+    });
+  };
+
+  // Open editor for an existing template
+  const handleOpenEditTemplate = (template: CustomSessionTemplate) => {
+    setTemplateEditorState({
+      isOpen: true,
+      mode: "edit",
+      templateId: template.id,
+      name: template.name,
+      icon: template.icon || "🎯",
+      description: template.description || "",
+      steps: template.steps.map((s, i) => ({
+        id: s.id || `tstep_${Date.now()}_${i}`,
+        title: s.title,
+        durationMinutes: Number(s.durationMinutes) || 10,
+        description: s.description || ""
+      }))
+    });
+  };
+
+  // Save template changes from editor
+  const handleSaveTemplateFromEditor = () => {
+    if (!templateEditorState) return;
+    const trimmedName = templateEditorState.name.trim() || "Untitled Template";
+
+    if (templateEditorState.steps.length === 0) {
+      showFeedback("Template must have at least one phase.");
+      return;
+    }
+
+    const cleanSteps = templateEditorState.steps.map((s, idx) => ({
+      id: s.id || `tstep_${Date.now()}_${idx}`,
+      title: s.title.trim() || `Phase ${idx + 1}`,
+      durationMinutes: Math.max(1, Number(s.durationMinutes) || 5),
+      description: s.description?.trim() || ""
+    }));
+
+    if (templateEditorState.mode === "edit" && templateEditorState.templateId) {
+      const updated = customTemplates.map((t) => {
+        if (t.id === templateEditorState.templateId) {
+          return {
+            ...t,
+            name: trimmedName,
+            icon: templateEditorState.icon || "🎯",
+            description: templateEditorState.description.trim() || `${cleanSteps.length} phases`,
+            steps: cleanSteps,
+            updatedAt: Date.now()
+          };
+        }
+        return t;
+      });
+      saveCustomTemplates(updated);
+      showFeedback(`Template "${trimmedName}" updated!`);
+    } else {
+      const newTemplate: CustomSessionTemplate = {
+        id: `tmpl_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: trimmedName,
+        icon: templateEditorState.icon || "🎯",
+        description: templateEditorState.description.trim() || `${cleanSteps.length} phases • ${cleanSteps.reduce((a, b) => a + b.durationMinutes, 0)}m`,
+        steps: cleanSteps,
+        createdAt: Date.now()
+      };
+      saveCustomTemplates([newTemplate, ...customTemplates]);
+      showFeedback(`Saved template "${trimmedName}"!`);
+    }
+
+    setTemplateTab("custom");
+    setTemplateEditorState(null);
+  };
+
+  // Delete template
+  const handleDeleteTemplate = (templateId: string, templateName: string) => {
+    const updated = customTemplates.filter((t) => t.id !== templateId);
+    saveCustomTemplates(updated);
+    showFeedback(`Template "${templateName}" deleted.`);
+    if (templateEditorState?.templateId === templateId) {
+      setTemplateEditorState(null);
+    }
+  };
+
+  // Apply custom template to current draft phases
+  const handleApplyCustomTemplate = (template: CustomSessionTemplate) => {
+    const steps: SessionSubStep[] = template.steps.map((s, idx) => ({
+      id: `step_${Date.now()}_${idx}`,
+      title: s.title,
+      durationMinutes: Number(s.durationMinutes) || 10,
+      description: s.description || ""
+    }));
+    setDraftSubSteps(steps);
+    const totalMins = steps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+    showFeedback(`Loaded "${template.name}" (${totalMins}m across ${steps.length} phases)`);
+  };
+
+  // Import draft phases into template editor
+  const handleImportCurrentPhasesIntoEditor = () => {
+    if (draftSubSteps.length === 0) {
+      showFeedback("No draft phases in builder to import.");
+      return;
+    }
+    setTemplateEditorState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        steps: draftSubSteps.map((s, idx) => ({
+          id: `tstep_${Date.now()}_${idx}`,
+          title: s.title || `Phase ${idx + 1}`,
+          durationMinutes: Number(s.durationMinutes) || 10,
+          description: s.description || ""
+        }))
+      };
+    });
+    showFeedback(`Imported ${draftSubSteps.length} phases from current builder.`);
+  };
+
+  // Template editor sub-step handlers
+  const handleTemplateEditorAddPhase = () => {
+    setTemplateEditorState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        steps: [
+          ...prev.steps,
+          {
+            id: `tstep_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+            title: `Phase ${prev.steps.length + 1}`,
+            durationMinutes: 15
+          }
+        ]
+      };
+    });
+  };
+
+  const handleTemplateEditorRemovePhase = (index: number) => {
+    setTemplateEditorState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        steps: prev.steps.filter((_, i) => i !== index)
+      };
+    });
+  };
+
+  const handleTemplateEditorMovePhase = (index: number, direction: -1 | 1) => {
+    setTemplateEditorState((prev) => {
+      if (!prev) return null;
+      const target = index + direction;
+      if (target < 0 || target >= prev.steps.length) return prev;
+      const copy = [...prev.steps];
+      const temp = copy[index];
+      copy[index] = copy[target];
+      copy[target] = temp;
+      return {
+        ...prev,
+        steps: copy
+      };
+    });
+  };
+
+  const handleTemplateEditorUpdateStep = (index: number, field: "title" | "durationMinutes", value: any) => {
+    setTemplateEditorState((prev) => {
+      if (!prev) return null;
+      const copy = prev.steps.map((s, i) => {
+        if (i === index) {
+          return { ...s, [field]: value };
+        }
+        return s;
+      });
+      return { ...prev, steps: copy };
+    });
+  };
+
   const handleDraftAddPhase = () => {
     setDraftSubSteps((prev) => [
       ...prev,
@@ -1777,256 +2075,616 @@ export default function FocusTimerModal({
         {/* CUSTOM BREAKDOWN BUILDER PANEL */}
         {showCustomBreakdownBuilder && (
           <div className="mb-4 p-3.5 bg-[#0b0e1b] border border-indigo-500/40 rounded-2xl animate-fade-in space-y-3 shadow-xl shadow-indigo-950/40">
+            {/* Header */}
             <div className="flex items-center justify-between border-b border-white/10 pb-2">
               <div className="flex items-center gap-2">
                 <span className="p-1 bg-indigo-500/20 border border-indigo-500/30 rounded-lg text-indigo-400">
                   <Layers className="w-4 h-4" />
                 </span>
                 <div>
-                  <h4 className="text-xs font-extrabold text-white">Custom Phase Breakdown</h4>
-                  <p className="text-[10px] text-slate-400 font-medium">Design structured phases with custom timings</p>
+                  <h4 className="text-xs font-extrabold text-white">
+                    {templateEditorState 
+                      ? (templateEditorState.mode === "edit" ? "Edit Custom Template" : "Save as Custom Template") 
+                      : "Custom Phase Breakdown"}
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-medium">
+                    {templateEditorState 
+                      ? "Configure and store reusable session routines" 
+                      : "Design structured phases with custom timings & reusable templates"}
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setShowCustomBreakdownBuilder(false)}
+                onClick={() => {
+                  if (templateEditorState) {
+                    setTemplateEditorState(null);
+                  } else {
+                    setShowCustomBreakdownBuilder(false);
+                  }
+                }}
                 className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/10 cursor-pointer transition"
-                title="Close editor"
+                title="Close"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Quick Templates Bar */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                <span className="flex items-center gap-1">
-                  <Sparkles className="w-3 h-3 text-amber-400" />
-                  Quick Templates
+            {/* In-builder notification banner */}
+            {templateFeedbackMessage && (
+              <div className="p-2 bg-indigo-600/20 border border-indigo-500/30 rounded-xl text-xs text-indigo-200 flex items-center justify-between gap-2 animate-fade-in">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  {templateFeedbackMessage}
                 </span>
-                <span className="text-[9px] text-slate-500 lowercase font-mono">1-click preset</span>
-              </div>
-              <div className="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
-                  onClick={() => applyTemplate("3phase")}
-                  className="p-1.5 bg-white/5 hover:bg-indigo-600/25 hover:border-indigo-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
+                  onClick={() => setTemplateFeedbackMessage(null)}
+                  className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
                 >
-                  <p className="text-[10px] font-bold text-white group-hover:text-indigo-200">🎓 Study Trio</p>
-                  <p className="text-[9px] text-slate-400 truncate">Review • Core • Quiz</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyTemplate("pomodoro")}
-                  className="p-1.5 bg-white/5 hover:bg-rose-600/25 hover:border-rose-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
-                >
-                  <p className="text-[10px] font-bold text-white group-hover:text-rose-200">🍅 Pomodoro</p>
-                  <p className="text-[9px] text-slate-400 truncate">25m Work • 5m Rest</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyTemplate("2phase")}
-                  className="p-1.5 bg-white/5 hover:bg-amber-600/25 hover:border-amber-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
-                >
-                  <p className="text-[10px] font-bold text-white group-hover:text-amber-200">⚡ Power Sprint</p>
-                  <p className="text-[9px] text-slate-400 truncate">80% Focus • 20% Wrap</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyTemplate("workout")}
-                  className="p-1.5 bg-white/5 hover:bg-emerald-600/25 hover:border-emerald-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
-                >
-                  <p className="text-[10px] font-bold text-white group-hover:text-emerald-200">🏋️ Workout Trio</p>
-                  <p className="text-[9px] text-slate-400 truncate">Warm • Sets • Stretch</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyTemplate("4stage")}
-                  className="p-1.5 bg-white/5 hover:bg-purple-600/25 hover:border-purple-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
-                >
-                  <p className="text-[10px] font-bold text-white group-hover:text-purple-200">🚀 4-Stage Mastery</p>
-                  <p className="text-[9px] text-slate-400 truncate">Primer • Deep • Drill</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleGenerateAiSubSteps}
-                  disabled={isGeneratingAiSteps}
-                  className="p-1.5 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/40 rounded-xl text-left transition cursor-pointer group disabled:opacity-50"
-                >
-                  <p className="text-[10px] font-bold text-indigo-300 group-hover:text-white flex items-center gap-1">
-                    <Wand2 className="w-3 h-3 text-indigo-400" />
-                    AI Generate
-                  </p>
-                  <p className="text-[9px] text-slate-400 truncate">AI Coach Suggestion</p>
+                  <X className="w-3 h-3" />
                 </button>
               </div>
-            </div>
+            )}
 
-            {/* Custom Phase Rows List */}
-            <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-              {draftSubSteps.map((step, idx) => (
-                <div key={step.id || idx} className="p-2 bg-black/40 border border-white/10 rounded-xl flex items-center gap-2">
-                  <div className="flex flex-col items-center justify-center">
-                    <button
-                      type="button"
-                      disabled={idx === 0}
-                      onClick={() => handleDraftMovePhase(idx, -1)}
-                      className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
-                      title="Move Phase Up"
-                    >
-                      <ArrowUp className="w-3 h-3" />
-                    </button>
-                    <span className="text-[10px] font-mono font-bold text-indigo-300">{idx + 1}</span>
-                    <button
-                      type="button"
-                      disabled={idx === draftSubSteps.length - 1}
-                      onClick={() => handleDraftMovePhase(idx, 1)}
-                      className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
-                      title="Move Phase Down"
-                    >
-                      <ArrowDown className="w-3 h-3" />
-                    </button>
-                  </div>
-
-                  <div className="flex-1 min-w-0">
+            {/* TEMPLATE EDITOR VIEW */}
+            {templateEditorState ? (
+              <div className="space-y-3 animate-fade-in">
+                {/* Template Name & Icon */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Template Details
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative group shrink-0">
+                      <span className="w-9 h-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-lg cursor-pointer hover:bg-white/10 transition">
+                        {templateEditorState.icon}
+                      </span>
+                    </div>
                     <input
                       type="text"
-                      value={step.title}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, title: val } : s));
-                      }}
-                      placeholder={`Phase ${idx + 1} Title`}
-                      className="w-full text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-medium"
+                      value={templateEditorState.name}
+                      onChange={(e) => setTemplateEditorState({ ...templateEditorState, name: e.target.value })}
+                      placeholder="Template Name (e.g. Cyber Drill, Deep Study)"
+                      className="flex-1 text-xs bg-white/5 border border-white/10 rounded-xl px-2.5 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-semibold"
                     />
                   </div>
 
-                  {/* Duration Controls */}
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const cur = Number(step.durationMinutes) || 10;
-                        const next = Math.max(1, cur - 5);
-                        setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
-                      }}
-                      className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
-                    >
-                      -
-                    </button>
-                    <input
-                      type="number"
-                      min="1"
-                      max="300"
-                      value={step.durationMinutes}
-                      onChange={(e) => {
-                        const val = Math.max(1, Number(e.target.value) || 1);
-                        setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: val } : s));
-                      }}
-                      className="w-11 text-xs bg-white/5 border border-white/10 rounded-lg px-1 py-1 text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
-                    />
-                    <span className="text-[10px] font-mono text-slate-400">m</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const cur = Number(step.durationMinutes) || 10;
-                        const next = Math.min(300, cur + 5);
-                        setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
-                      }}
-                      className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
-                    >
-                      +
-                    </button>
+                  {/* Emoji Quick Palette */}
+                  <div className="flex items-center gap-1 overflow-x-auto pb-1 pt-0.5 no-scrollbar">
+                    <span className="text-[9px] text-slate-500 font-mono shrink-0 mr-1">Icon:</span>
+                    {TEMPLATE_EMOJI_PRESETS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => setTemplateEditorState({ ...templateEditorState, icon: emoji })}
+                        className={`w-6 h-6 text-xs rounded-lg flex items-center justify-center cursor-pointer transition shrink-0 ${
+                          templateEditorState.icon === emoji
+                            ? "bg-indigo-600/40 border border-indigo-400 text-white scale-110"
+                            : "bg-white/5 hover:bg-white/15 border border-white/5 text-slate-300"
+                        }`}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleDraftRemovePhase(idx)}
-                    className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
-                    title="Delete Phase"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <input
+                    type="text"
+                    value={templateEditorState.description}
+                    onChange={(e) => setTemplateEditorState({ ...templateEditorState, description: e.target.value })}
+                    placeholder="Short description or summary (optional)"
+                    className="w-full text-[11px] bg-white/5 border border-white/10 rounded-xl px-2.5 py-1 text-slate-300 placeholder-slate-500 focus:outline-none focus:border-indigo-400"
+                  />
                 </div>
-              ))}
-            </div>
 
-            {/* Add Phase & Duration Balance Summary */}
-            <div className="space-y-2 pt-1.5 border-t border-white/10">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={handleDraftAddPhase}
-                  className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
-                >
-                  <Plus className="w-3 h-3 text-emerald-400" />
-                  <span>+ Add Phase</span>
-                </button>
+                {/* Template Phase Steps */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span>Template Phases ({templateEditorState.steps.length})</span>
+                    {draftSubSteps.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleImportCurrentPhasesIntoEditor}
+                        className="text-indigo-400 hover:text-indigo-300 text-[9px] font-semibold lowercase font-mono cursor-pointer hover:underline flex items-center gap-1"
+                      >
+                        <Copy className="w-2.5 h-2.5" />
+                        <span>import current phases ({draftSubSteps.length})</span>
+                      </button>
+                    )}
+                  </div>
 
-                {/* Phase Sum vs Timer Target Calculation */}
-                {(() => {
-                  const draftSum = draftSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
-                  const timerMins = timerState ? Math.round(timerState.totalSec / 60) : 60;
-                  const diff = draftSum - timerMins;
-
-                  return (
-                    <div className="flex items-center gap-2 text-[10px] font-mono">
-                      <span className={`font-bold ${diff === 0 ? "text-emerald-400" : "text-amber-400"}`}>
-                        Phases: {draftSum}m / Target: {timerMins}m
-                      </span>
-                      {diff !== 0 && (
-                        <div className="flex items-center gap-1">
+                  <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                    {templateEditorState.steps.map((step, idx) => (
+                      <div key={step.id || idx} className="p-2 bg-black/40 border border-white/10 rounded-xl flex items-center gap-2">
+                        {/* Order controls */}
+                        <div className="flex flex-col items-center justify-center">
                           <button
                             type="button"
-                            onClick={handleAutoScaleToTimer}
-                            className="px-1.5 py-0.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-md text-[9px] font-bold cursor-pointer transition"
-                            title={`Scale phases proportionally to fit ${timerMins}m`}
+                            disabled={idx === 0}
+                            onClick={() => handleTemplateEditorMovePhase(idx, -1)}
+                            className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
                           >
-                            Fit {timerMins}m
+                            <ArrowUp className="w-3 h-3" />
                           </button>
+                          <span className="text-[10px] font-mono font-bold text-indigo-300">{idx + 1}</span>
                           <button
                             type="button"
-                            onClick={handleSyncTimerToPhases}
-                            className="px-1.5 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-md text-[9px] font-bold cursor-pointer transition"
-                            title={`Adjust timer to equal ${draftSum}m`}
+                            disabled={idx === templateEditorState.steps.length - 1}
+                            onClick={() => handleTemplateEditorMovePhase(idx, 1)}
+                            className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
                           >
-                            Set Timer {draftSum}m
+                            <ArrowDown className="w-3 h-3" />
                           </button>
+                        </div>
+
+                        {/* Title input */}
+                        <div className="flex-1 min-w-0">
+                          <input
+                            type="text"
+                            value={step.title}
+                            onChange={(e) => handleTemplateEditorUpdateStep(idx, "title", e.target.value)}
+                            placeholder={`Phase ${idx + 1} Title`}
+                            className="w-full text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-medium"
+                          />
+                        </div>
+
+                        {/* Duration minutes stepper */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const cur = Number(step.durationMinutes) || 10;
+                              handleTemplateEditorUpdateStep(idx, "durationMinutes", Math.max(1, cur - 5));
+                            }}
+                            className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
+                          >
+                            -
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max="300"
+                            value={step.durationMinutes}
+                            onChange={(e) => {
+                              const val = Math.max(1, Number(e.target.value) || 1);
+                              handleTemplateEditorUpdateStep(idx, "durationMinutes", val);
+                            }}
+                            className="w-11 text-xs bg-white/5 border border-white/10 rounded-lg px-1 py-1 text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
+                          />
+                          <span className="text-[10px] font-mono text-slate-400">m</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const cur = Number(step.durationMinutes) || 10;
+                              handleTemplateEditorUpdateStep(idx, "durationMinutes", Math.min(300, cur + 5));
+                            }}
+                            className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
+                          >
+                            +
+                          </button>
+                        </div>
+
+                        {/* Remove Step */}
+                        <button
+                          type="button"
+                          onClick={() => handleTemplateEditorRemovePhase(idx)}
+                          className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTemplateEditorAddPhase}
+                      className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3 text-emerald-400" />
+                      <span>+ Add Phase</span>
+                    </button>
+                    <span className="text-[10px] font-mono text-indigo-300 font-bold">
+                      Total: {templateEditorState.steps.reduce((a, b) => a + (Number(b.durationMinutes) || 0), 0)}m
+                    </span>
+                  </div>
+                </div>
+
+                {/* Template Editor Footer */}
+                <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                  <div>
+                    {templateEditorState.mode === "edit" && templateEditorState.templateId && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTemplate(templateEditorState.templateId!, templateEditorState.name)}
+                        className="px-2 py-1 text-rose-400/80 hover:text-rose-300 text-[10px] font-bold cursor-pointer hover:bg-rose-500/10 rounded-md transition flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTemplateEditorState(null)}
+                      className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold rounded-xl border border-white/10 cursor-pointer transition"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveTemplateFromEditor}
+                      className="px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer transition flex items-center gap-1.5 active:scale-95"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>Save Template</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* STANDARD BREAKDOWN BUILDER VIEW */
+              <div className="space-y-3">
+                {/* Templates Selector (Presets vs Custom Saved Templates) */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center p-0.5 bg-black/40 border border-white/10 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => setTemplateTab("presets")}
+                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer flex items-center gap-1.5 ${
+                          templateTab === "presets"
+                            ? "bg-indigo-600 text-white shadow-sm"
+                            : "text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        <Sparkles className="w-3 h-3 text-amber-300" />
+                        <span>Presets</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTemplateTab("custom")}
+                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer flex items-center gap-1.5 ${
+                          templateTab === "custom"
+                            ? "bg-indigo-600 text-white shadow-sm"
+                            : "text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        <Bookmark className="w-3 h-3 text-indigo-300" />
+                        <span>My Templates ({customTemplates.length})</span>
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleOpenCreateBlankTemplate}
+                      className="px-2 py-1 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-lg text-[10px] font-bold border border-white/10 transition flex items-center gap-1 cursor-pointer"
+                      title="Create new custom template"
+                    >
+                      <Plus className="w-3 h-3 text-indigo-400" />
+                      <span>New Template</span>
+                    </button>
+                  </div>
+
+                  {/* Preset Templates Grid */}
+                  {templateTab === "presets" && (
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => applyTemplate("3phase")}
+                        className="p-1.5 bg-white/5 hover:bg-indigo-600/25 hover:border-indigo-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
+                      >
+                        <p className="text-[10px] font-bold text-white group-hover:text-indigo-200">🎓 Study Trio</p>
+                        <p className="text-[9px] text-slate-400 truncate">Review • Core • Quiz</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyTemplate("pomodoro")}
+                        className="p-1.5 bg-white/5 hover:bg-rose-600/25 hover:border-rose-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
+                      >
+                        <p className="text-[10px] font-bold text-white group-hover:text-rose-200">🍅 Pomodoro</p>
+                        <p className="text-[9px] text-slate-400 truncate">25m Work • 5m Rest</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyTemplate("2phase")}
+                        className="p-1.5 bg-white/5 hover:bg-amber-600/25 hover:border-amber-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
+                      >
+                        <p className="text-[10px] font-bold text-white group-hover:text-amber-200">⚡ Power Sprint</p>
+                        <p className="text-[9px] text-slate-400 truncate">80% Focus • 20% Wrap</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyTemplate("workout")}
+                        className="p-1.5 bg-white/5 hover:bg-emerald-600/25 hover:border-emerald-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
+                      >
+                        <p className="text-[10px] font-bold text-white group-hover:text-emerald-200">🏋️ Workout Trio</p>
+                        <p className="text-[9px] text-slate-400 truncate">Warm • Sets • Stretch</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyTemplate("4stage")}
+                        className="p-1.5 bg-white/5 hover:bg-purple-600/25 hover:border-purple-400/50 border border-white/10 rounded-xl text-left transition cursor-pointer group"
+                      >
+                        <p className="text-[10px] font-bold text-white group-hover:text-purple-200">🚀 4-Stage Mastery</p>
+                        <p className="text-[9px] text-slate-400 truncate">Primer • Deep • Drill</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleGenerateAiSubSteps}
+                        disabled={isGeneratingAiSteps}
+                        className="p-1.5 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/40 rounded-xl text-left transition cursor-pointer group disabled:opacity-50"
+                      >
+                        <p className="text-[10px] font-bold text-indigo-300 group-hover:text-white flex items-center gap-1">
+                          <Wand2 className="w-3 h-3 text-indigo-400" />
+                          AI Generate
+                        </p>
+                        <p className="text-[9px] text-slate-400 truncate">AI Coach Suggestion</p>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Custom Stored Templates Grid */}
+                  {templateTab === "custom" && (
+                    <div className="space-y-1.5">
+                      {customTemplates.length === 0 ? (
+                        <div className="p-3 bg-black/30 border border-dashed border-white/10 rounded-xl text-center">
+                          <BookmarkPlus className="w-5 h-5 text-indigo-400 mx-auto mb-1 opacity-70" />
+                          <p className="text-xs font-semibold text-slate-300">No custom templates yet</p>
+                          <p className="text-[10px] text-slate-400 mb-2">Build your preferred phase breakdown below, then click "Save as Template".</p>
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleOpenSaveCurrentAsTemplate}
+                              disabled={draftSubSteps.length === 0}
+                              className="px-2.5 py-1 bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-indigo-200 text-[10px] font-bold rounded-lg cursor-pointer transition disabled:opacity-40"
+                            >
+                              Save Current Phases
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleOpenCreateBlankTemplate}
+                              className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-[10px] font-bold rounded-lg cursor-pointer transition"
+                            >
+                              Create Blank Template
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto pr-1">
+                          {customTemplates.map((tmpl) => {
+                            const stepCount = tmpl.steps?.length || 0;
+                            const durationSum = tmpl.steps?.reduce((a, b) => a + (Number(b.durationMinutes) || 0), 0) || 0;
+                            return (
+                              <div
+                                key={tmpl.id}
+                                className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-indigo-400/40 rounded-xl flex items-center justify-between gap-1.5 transition group"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => handleApplyCustomTemplate(tmpl)}
+                                  className="flex-1 text-left min-w-0 cursor-pointer"
+                                  title={`Apply "${tmpl.name}" (${durationSum}m)`}
+                                >
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-sm shrink-0">{tmpl.icon || "🎯"}</span>
+                                    <p className="text-[11px] font-bold text-white group-hover:text-indigo-200 truncate">
+                                      {tmpl.name}
+                                    </p>
+                                  </div>
+                                  <p className="text-[9px] text-slate-400 truncate pl-5">
+                                    {stepCount} phases • {durationSum}m total
+                                  </p>
+                                </button>
+                                <div className="flex items-center gap-0.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditTemplate(tmpl)}
+                                    className="p-1 text-slate-400 hover:text-indigo-300 hover:bg-indigo-500/20 rounded-md transition cursor-pointer"
+                                    title="Edit template"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteTemplate(tmpl.id, tmpl.name)}
+                                    className="p-1 text-slate-400 hover:text-rose-400 hover:bg-rose-500/20 rounded-md transition cursor-pointer"
+                                    title="Delete template"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
-                  );
-                })()}
-              </div>
+                  )}
+                </div>
 
-              {/* Main Save / Apply / Clear Controls */}
-              <div className="flex items-center justify-between pt-1 gap-2">
-                <button
-                  type="button"
-                  onClick={handleClearSubSteps}
-                  className="px-2 py-1 text-rose-400/80 hover:text-rose-300 text-[10px] font-bold cursor-pointer hover:bg-rose-500/10 rounded-md transition"
-                >
-                  Clear Phases
-                </button>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setShowCustomBreakdownBuilder(false)}
-                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold rounded-xl border border-white/10 cursor-pointer transition"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleApplyCustomBreakdown}
-                    className="px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer transition flex items-center gap-1.5 active:scale-95"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Apply Breakdown</span>
-                  </button>
+                {/* Custom Phase Rows List */}
+                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                  {draftSubSteps.map((step, idx) => (
+                    <div key={step.id || idx} className="p-2 bg-black/40 border border-white/10 rounded-xl flex items-center gap-2">
+                      <div className="flex flex-col items-center justify-center">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => handleDraftMovePhase(idx, -1)}
+                          className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
+                          title="Move Phase Up"
+                        >
+                          <ArrowUp className="w-3 h-3" />
+                        </button>
+                        <span className="text-[10px] font-mono font-bold text-indigo-300">{idx + 1}</span>
+                        <button
+                          type="button"
+                          disabled={idx === draftSubSteps.length - 1}
+                          onClick={() => handleDraftMovePhase(idx, 1)}
+                          className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
+                          title="Move Phase Down"
+                        >
+                          <ArrowDown className="w-3 h-3" />
+                        </button>
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <input
+                          type="text"
+                          value={step.title}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, title: val } : s));
+                          }}
+                          placeholder={`Phase ${idx + 1} Title`}
+                          className="w-full text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-medium"
+                        />
+                      </div>
+
+                      {/* Duration Controls */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const cur = Number(step.durationMinutes) || 10;
+                            const next = Math.max(1, cur - 5);
+                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
+                          }}
+                          className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="300"
+                          value={step.durationMinutes}
+                          onChange={(e) => {
+                            const val = Math.max(1, Number(e.target.value) || 1);
+                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: val } : s));
+                          }}
+                          className="w-11 text-xs bg-white/5 border border-white/10 rounded-lg px-1 py-1 text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
+                        />
+                        <span className="text-[10px] font-mono text-slate-400">m</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const cur = Number(step.durationMinutes) || 10;
+                            const next = Math.min(300, cur + 5);
+                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
+                          }}
+                          className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
+                        >
+                          +
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDraftRemovePhase(idx)}
+                        className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
+                        title="Delete Phase"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add Phase & Duration Balance Summary */}
+                <div className="space-y-2 pt-1.5 border-t border-white/10">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleDraftAddPhase}
+                      className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3 text-emerald-400" />
+                      <span>+ Add Phase</span>
+                    </button>
+
+                    {/* Phase Sum vs Timer Target Calculation */}
+                    {(() => {
+                      const draftSum = draftSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+                      const timerMins = timerState ? Math.round(timerState.totalSec / 60) : 60;
+                      const diff = draftSum - timerMins;
+
+                      return (
+                        <div className="flex items-center gap-2 text-[10px] font-mono">
+                          <span className={`font-bold ${diff === 0 ? "text-emerald-400" : "text-amber-400"}`}>
+                            Phases: {draftSum}m / Target: {timerMins}m
+                          </span>
+                          {diff !== 0 && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={handleAutoScaleToTimer}
+                                className="px-1.5 py-0.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-md text-[9px] font-bold cursor-pointer transition"
+                                title={`Scale phases proportionally to fit ${timerMins}m`}
+                              >
+                                Fit {timerMins}m
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleSyncTimerToPhases}
+                                className="px-1.5 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-md text-[9px] font-bold cursor-pointer transition"
+                                title={`Adjust timer to equal ${draftSum}m`}
+                              >
+                                Set Timer {draftSum}m
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Main Save / Apply / Clear Controls */}
+                  <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleClearSubSteps}
+                        className="px-2 py-1 text-rose-400/80 hover:text-rose-300 text-[10px] font-bold cursor-pointer hover:bg-rose-500/10 rounded-md transition"
+                      >
+                        Clear Phases
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleOpenSaveCurrentAsTemplate}
+                        disabled={draftSubSteps.length === 0}
+                        className="px-2.5 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-lg text-[10px] font-bold cursor-pointer transition flex items-center gap-1 disabled:opacity-40"
+                        title="Save current breakdown as a reusable template"
+                      >
+                        <BookmarkPlus className="w-3 h-3" />
+                        <span>Save as Template</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowCustomBreakdownBuilder(false)}
+                        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold rounded-xl border border-white/10 cursor-pointer transition"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleApplyCustomBreakdown}
+                        className="px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer transition flex items-center gap-1.5 active:scale-95"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Apply Breakdown</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 

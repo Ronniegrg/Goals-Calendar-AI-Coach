@@ -95,6 +95,21 @@ export interface CoachMessage {
   timestamp: string;
 }
 
+export interface CustomSessionTemplate {
+  id: string;
+  name: string;
+  icon?: string;
+  description?: string;
+  steps: {
+    id?: string;
+    title: string;
+    durationMinutes: number;
+    description?: string;
+  }[];
+  createdAt: number;
+  updatedAt?: number;
+}
+
 export interface SyncData {
   goals: Goal[];
   events: CalendarEvent[];
@@ -104,4 +119,5 @@ export interface SyncData {
   userEmail: string;
   lastSyncedAt?: string;
   coachPersona?: "mentor" | "drill" | "data";
+  customTemplates?: CustomSessionTemplate[];
 }
