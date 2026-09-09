@@ -26,7 +26,8 @@ import {
   Layers,
   Trash2
 } from "lucide-react";
-import { CoachMessage, Goal, CalendarEvent, AvailabilityWindow, GoalType, TimePreference } from "../types";
+import { CoachMessage, Goal, CalendarEvent, AvailabilityWindow, GoalType, TimePreference, UserEnergyProfile } from "../types";
+import GoalRecommendationEngine from "./GoalRecommendationEngine";
 
 export interface ParsedGoalAction {
   action: "create_goal" | "update_goal" | "delete_goal";
@@ -277,6 +278,9 @@ interface AICoachProps {
   onAddGoal?: (goal: Omit<Goal, "id" | "completedCount" | "createdAt">) => void;
   onEditGoal?: (goalId: string, updatedFields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
   onDeleteGoal?: (goalId: string) => void;
+  userEnergyProfile?: UserEnergyProfile;
+  onBulkAddEvents?: (newEvents: CalendarEvent[]) => void;
+  onAddNotification?: (title: string, message: string, type: any) => void;
 }
 
 interface DigestData {
@@ -299,9 +303,12 @@ export default function AICoach({
   onApplyEnergySchedule,
   onAddGoal,
   onEditGoal,
-  onDeleteGoal
+  onDeleteGoal,
+  userEnergyProfile,
+  onBulkAddEvents,
+  onAddNotification
 }: AICoachProps) {
-  const [activeSubTab, setActiveSubTab] = useState<"chat" | "digest" | "energy">("chat");
+  const [activeSubTab, setActiveSubTab] = useState<"chat" | "digest" | "energy" | "recommendations">("chat");
   const [appliedGoalActions, setAppliedGoalActions] = useState<Record<string, boolean>>({});
 
   // Chat State
@@ -545,6 +552,19 @@ export default function AICoach({
             <Zap className="w-4 h-4 text-emerald-300" />
             <span>Smart Energy Scheduling</span>
           </button>
+
+          <button
+            onClick={() => setActiveSubTab("recommendations")}
+            id="coach_tab_recommendations"
+            className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
+              activeSubTab === "recommendations"
+                ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20"
+                : "text-slate-300 hover:text-white hover:bg-white/5"
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+            <span>Goal & Routine Recommendations</span>
+          </button>
         </div>
 
         <div className="text-[11px] text-slate-400 font-mono px-3 py-1 bg-black/25 rounded-xl border border-white/5 flex items-center gap-2">
@@ -599,6 +619,20 @@ export default function AICoach({
                   <div>
                     <span className="font-bold text-slate-200 block text-[11px]">Suggest Study Strategies</span>
                     <span className="text-[9px] text-slate-400">Pomodoro & memory techniques</span>
+                  </div>
+                </button>
+
+                <button
+                  id="coach_recommend_goals_btn"
+                  onClick={() => setActiveSubTab("recommendations")}
+                  className="w-full text-left text-xs bg-indigo-950/30 hover:bg-indigo-900/40 border border-indigo-500/30 hover:border-indigo-400/50 p-3 rounded-xl transition flex items-center gap-2.5 cursor-pointer"
+                >
+                  <div className="p-1.5 bg-indigo-500/20 text-indigo-300 rounded-lg">
+                    <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-indigo-200 block text-[11px]">Recommend Routines & Study Blocks</span>
+                    <span className="text-[9px] text-indigo-300/80">Pattern & energy profile engine</span>
                   </div>
                 </button>
               </div>
@@ -1114,6 +1148,21 @@ export default function AICoach({
             </div>
           ) : null}
 
+        </div>
+      )}
+
+      {/* 4. GOAL & ROUTINE RECOMMENDATION ENGINE SUB-TAB */}
+      {activeSubTab === "recommendations" && (
+        <div className="space-y-6">
+          <GoalRecommendationEngine
+            goals={goals}
+            events={events}
+            availability={availability}
+            energyProfile={userEnergyProfile}
+            onAddGoal={onAddGoal}
+            onBulkAddEvents={onBulkAddEvents}
+            onAddNotification={onAddNotification}
+          />
         </div>
       )}
 

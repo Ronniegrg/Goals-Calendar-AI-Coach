@@ -19,6 +19,27 @@ export enum TimePreference {
 
 export type GoalPriority = "critical" | "important" | "normal";
 
+export type EnergyLevel = "deep_focus" | "moderate" | "light_recharge";
+
+export interface EnergyZone {
+  id: string;
+  name: string;
+  startHour: number; // Decimal hours, e.g. 8.5 = 08:30
+  endHour: number;   // Decimal hours, e.g. 12.0 = 12:00
+  level: EnergyLevel;
+  description?: string;
+}
+
+export type Chronotype = "early_bird" | "steady" | "night_owl" | "custom";
+
+export interface UserEnergyProfile {
+  chronotype: Chronotype;
+  zones: EnergyZone[];
+  slumpProtection: boolean; // avoid placing deep_focus tasks during low energy slump hours
+  autoBufferMinutes: number; // buffer between back-to-back heavy sessions
+  maxDailyDeepFocusHours: number; // cognitive load ceiling (e.g. 4.0 hours)
+}
+
 export interface SubTask {
   id: string;
   title: string;
@@ -52,6 +73,7 @@ export interface Goal {
   lastSessionNote?: string;
   lastSessionNoteDate?: string;
   priority?: GoalPriority;
+  energyLevel?: EnergyLevel; // deep_focus | moderate | light_recharge
   isPaused?: boolean;
   pauseReason?: string;
   pauseUntil?: string;
@@ -69,6 +91,7 @@ export interface CalendarEvent {
   notes?: string;
   completionNote?: string;
   icon?: string;
+  energyLevel?: EnergyLevel;
   subSteps?: SessionSubStep[];
 }
 
@@ -110,6 +133,46 @@ export interface CustomSessionTemplate {
   updatedAt?: number;
 }
 
+export interface GoalRecommendation {
+  id: string;
+  name: string;
+  type: GoalType;
+  category: string;
+  recommendationType: "study_block" | "routine";
+  weeklyTarget: number;
+  durationMinutes: number;
+  timePreference: TimePreference;
+  priority: GoalPriority;
+  energyLevel: EnergyLevel;
+  color: string;
+  icon?: string;
+  badge: string;
+  patternInsight: string;
+  energyProfileMatch: string;
+  expectedOutcome: string;
+  subSteps?: SessionSubStep[];
+  confidenceScore: number;
+  suggestedScheduleDays?: number[]; // 0=Sun, 1=Mon, ..., 6=Sat
+}
+
+export interface RecommendationEngineResponse {
+  recommendations: GoalRecommendation[];
+  patternSummary: {
+    completionRate: number;
+    completedCount: number;
+    totalTarget: number;
+    cognitiveLoadDailyAvgHours: number;
+    cognitiveLoadCeilingHours: number;
+    chronotype: string;
+    chronotypeName: string;
+    peakEnergyWindow: string;
+    slumpWindow: string;
+    strengths: string[];
+    gaps: string[];
+  };
+  aiGenerated: boolean;
+}
+
 export interface SyncData {
   goals: Goal[];
   events: CalendarEvent[];
@@ -120,4 +183,5 @@ export interface SyncData {
   lastSyncedAt?: string;
   coachPersona?: "mentor" | "drill" | "data";
   customTemplates?: CustomSessionTemplate[];
+  userEnergyProfile?: UserEnergyProfile;
 }

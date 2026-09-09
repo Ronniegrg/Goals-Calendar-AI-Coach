@@ -28,7 +28,7 @@ import {
   CalendarOff,
   ArrowRight
 } from "lucide-react";
-import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority } from "../types";
+import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority, EnergyLevel, UserEnergyProfile } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
 import { 
@@ -37,6 +37,9 @@ import {
   findGoalForEvent, 
   getPriorityScore 
 } from "../lib/scheduleOptimizer";
+import { inferGoalEnergyLevel, getEnergyBadgeData } from "../lib/energyProfile";
+import { Brain, Zap, BatteryCharging } from "lucide-react";
+import GoalRecommendationEngine from "./GoalRecommendationEngine";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -49,6 +52,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.MORNING,
     color: "#3b82f6",
     priority: "critical" as GoalPriority,
+    energyLevel: "deep_focus" as EnergyLevel,
     description: "Submit applications, tailor resumes, and connect with recruiters."
   },
   {
@@ -60,6 +64,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.EVENING,
     color: "#3b82f6",
     priority: "critical" as GoalPriority,
+    energyLevel: "deep_focus" as EnergyLevel,
     description: "Master Python syntax, data structures, async workflows, and AI model integrations."
   },
   {
@@ -71,6 +76,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.AFTERNOON,
     color: "#8b5cf6",
     priority: "critical" as GoalPriority,
+    energyLevel: "deep_focus" as EnergyLevel,
     description: "Practice technical challenges and mock behavioral sessions."
   },
   {
@@ -82,6 +88,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.MORNING,
     color: "#f43f5e",
     priority: "important" as GoalPriority,
+    energyLevel: "moderate" as EnergyLevel,
     description: "Build stamina with walk-run sequences 3x a week."
   },
   {
@@ -93,6 +100,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.AFTERNOON,
     color: "#06b6d4",
     priority: "important" as GoalPriority,
+    energyLevel: "deep_focus" as EnergyLevel,
     description: "Deep-dive intensive learning sessions."
   },
   {
@@ -104,6 +112,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.EVENING,
     color: "#ec4899",
     priority: "normal" as GoalPriority,
+    energyLevel: "deep_focus" as EnergyLevel,
     description: "Design modules, write clean code, and ship features."
   },
   {
@@ -115,6 +124,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.AFTERNOON,
     color: "#10b981",
     priority: "normal" as GoalPriority,
+    energyLevel: "light_recharge" as EnergyLevel,
     description: "Deep clean spaces, digital decluttering, and organizing."
   },
   {
@@ -126,6 +136,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.EVENING,
     color: "#f59e0b",
     priority: "normal" as GoalPriority,
+    energyLevel: "light_recharge" as EnergyLevel,
     description: "Immersive reading to broaden professional and life acumen."
   },
   {
@@ -137,6 +148,7 @@ const PRESET_TEMPLATES = [
     timePreference: TimePreference.EVENING,
     color: "#eab308",
     priority: "important" as GoalPriority,
+    energyLevel: "deep_focus" as EnergyLevel,
     description: "Ethical hacking, threat analysis, SIEM lab practice, and Security+ certification prep."
   }
 ];
@@ -159,6 +171,8 @@ interface GoalTrackerProps {
   onCompleteSession?: (eventId?: string, goalId?: string, note?: string) => void;
   onPauseGoal?: (goalId: string, pauseReason: string, pauseUntil?: string, clearFutureEvents?: boolean) => void;
   onResumeGoal?: (goalId: string) => void;
+  energyProfile?: UserEnergyProfile;
+  onOpenEnergyModal?: () => void;
 }
 
 export default function GoalTracker({
@@ -178,7 +192,9 @@ export default function GoalTracker({
   onToggleAutoSchedule,
   onCompleteSession,
   onPauseGoal,
-  onResumeGoal
+  onResumeGoal,
+  energyProfile,
+  onOpenEnergyModal
 }: GoalTrackerProps) {
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
@@ -198,6 +214,9 @@ export default function GoalTracker({
 
   // Status Filter in Catalog ("all" | "active" | "on_hold")
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "on_hold">("all");
+
+  // AI Recommendation Engine state
+  const [showRecommendations, setShowRecommendations] = useState<boolean>(true);
 
   // In-card transient feedback for shift / schedule actions
   const [shiftFeedback, setShiftFeedback] = useState<Record<string, { message: string; timestamp: number }>>({});
@@ -642,6 +661,7 @@ export default function GoalTracker({
   const [color, setColor] = useState("#f43f5e");
   const [icon, setIcon] = useState("target");
   const [priority, setPriority] = useState<GoalPriority>("normal");
+  const [energyLevel, setEnergyLevel] = useState<EnergyLevel>("moderate");
 
   // Catalog filter and sort state
   const [priorityFilter, setPriorityFilter] = useState<"all" | GoalPriority>("all");
@@ -662,11 +682,35 @@ export default function GoalTracker({
     setCustomTimeEnd("16:00");
     setColor(preset.color);
     setPriority(preset.priority || "normal");
+    setEnergyLevel(preset.energyLevel || "moderate");
     setIcon(preset.type === GoalType.WORKOUT ? "dumbbell" : preset.type === GoalType.STUDY ? "book" : preset.type === GoalType.JOB_SEARCH ? "briefcase" : preset.type === GoalType.SIDE_PROJECT ? "laptop" : preset.type === GoalType.ROUTINE ? "coffee" : "smile");
     setEditingGoalId(null);
     setShowAddGoal(true);
     
     // Smooth scroll down to the form anchor
+    setTimeout(() => {
+      document.getElementById("add_goal_form_anchor")?.scrollIntoView({ behavior: "smooth" });
+      document.getElementById("goal_name_input")?.focus();
+    }, 100);
+  };
+
+  const handleCustomizeRecommendation = (rec: Partial<Goal>) => {
+    setFormError(null);
+    setName(rec.name || "");
+    setType(rec.type || GoalType.STUDY);
+    setCategory(rec.category || "");
+    setWeeklyTarget(rec.weeklyTarget || 3);
+    setIsCustomTarget(false);
+    setDurationMinutes(rec.durationMinutes || 45);
+    setIsCustomDuration(false);
+    setTimePreference(rec.timePreference || TimePreference.MORNING);
+    setColor(rec.color || "#6366f1");
+    setPriority(rec.priority || "normal");
+    setEnergyLevel(rec.energyLevel || "deep_focus");
+    setIcon(rec.icon || (rec.type === GoalType.STUDY ? "book" : "target"));
+    setEditingGoalId(null);
+    setShowAddGoal(true);
+
     setTimeout(() => {
       document.getElementById("add_goal_form_anchor")?.scrollIntoView({ behavior: "smooth" });
       document.getElementById("goal_name_input")?.focus();
@@ -718,12 +762,13 @@ export default function GoalTracker({
         customTimeEnd: customEndVal,
         color,
         icon,
-        priority
+        priority,
+        energyLevel
       });
 
       onAddNotification(
         "Goal Updated Successfully",
-        `Goal "${name}" (${priority.toUpperCase()} priority) was updated successfully.`,
+        `Goal "${name}" (${priority.toUpperCase()} priority, ${energyLevel.replace("_", " ").toUpperCase()}) updated.`,
         "success"
       );
     } else {
@@ -745,12 +790,13 @@ export default function GoalTracker({
         customTimeEnd: customEndVal,
         color,
         icon,
-        priority
+        priority,
+        energyLevel
       });
 
       onAddNotification(
         "Goal Created Successfully",
-        `New goal "${name}" (${priority.toUpperCase()} priority) added! Press 'Run Smart Auto-Scheduler' to plot slots.`,
+        `New goal "${name}" (${priority.toUpperCase()} priority, ${energyLevel.replace("_", " ").toUpperCase()}) added!`,
         "success"
       );
     }
@@ -769,6 +815,7 @@ export default function GoalTracker({
     setCustomTimeEnd("16:00");
     setIcon("target");
     setPriority("normal");
+    setEnergyLevel("moderate");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -789,6 +836,7 @@ export default function GoalTracker({
       setColor("#f43f5e");
       setIcon("target");
       setPriority("normal");
+      setEnergyLevel("moderate");
       setShowAddGoal(true);
     } else {
       setShowAddGoal((prev) => !prev);
@@ -811,6 +859,7 @@ export default function GoalTracker({
     setTimePreference(TimePreference.ANY);
     setIcon("target");
     setPriority("normal");
+    setEnergyLevel("moderate");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -843,6 +892,7 @@ export default function GoalTracker({
     setColor(g.color);
     setIcon(g.icon || "target");
     setPriority(g.priority || "normal");
+    setEnergyLevel(g.energyLevel || inferGoalEnergyLevel(g));
     setShowAddGoal(true);
     
     // Smooth scroll to catalog header form
@@ -1113,14 +1163,84 @@ export default function GoalTracker({
             <h3 className="font-sans font-semibold text-white text-base">Active Routine & Focus Goals</h3>
             <p className="text-xs text-slate-300 font-medium">Define target frequencies, duration windows, and options.</p>
           </div>
-          <button
-            id="toggle_add_goal_form_btn"
-            onClick={handleAddNewGoalClick}
-            className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/20 text-indigo-300 px-3.5 py-1.5 rounded-xl font-bold flex items-center gap-1 transition cursor-pointer"
-          >
-            <Plus className="w-4 h-4" /> Add New Goal
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="toggle_ai_recommendations_btn"
+              onClick={() => setShowRecommendations(prev => !prev)}
+              className={`text-xs px-3.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${
+                showRecommendations 
+                  ? "bg-indigo-600 text-white shadow-indigo-600/30" 
+                  : "bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-200"
+              }`}
+              title="AI Goal Recommendation Engine: smart study blocks and routines grounded in your completion patterns and energy profiles"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-300 animate-pulse" />
+              <span>AI Recommendations</span>
+              <span className="px-1.5 py-0.2 bg-white/20 rounded text-[9px] font-bold">New</span>
+            </button>
+
+            {onOpenEnergyModal && (
+              <button
+                type="button"
+                id="open_energy_profile_btn"
+                onClick={onOpenEnergyModal}
+                className="text-xs bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 text-purple-200 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                title="Configure energy chronotype and cognitive load preferences"
+              >
+                <Brain className="w-3.5 h-3.5 text-purple-400" />
+                <span>Bio-Energy Curves</span>
+                {energyProfile?.slumpProtection && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Slump Shield Active" />
+                )}
+              </button>
+            )}
+            <button
+              id="toggle_add_goal_form_btn"
+              onClick={handleAddNewGoalClick}
+              className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/20 text-indigo-300 px-3.5 py-1.5 rounded-xl font-bold flex items-center gap-1 transition cursor-pointer"
+            >
+              <Plus className="w-4 h-4" /> Add New Goal
+            </button>
+          </div>
         </div>
+
+        {/* AI Goal & Routine Recommendation Engine */}
+        {showRecommendations && (
+          <div className="mb-6">
+            <GoalRecommendationEngine
+              goals={goals}
+              events={events}
+              availability={availability}
+              energyProfile={energyProfile}
+              onAddGoal={onAddGoal}
+              onBulkAddEvents={onBulkAddEvents}
+              onAddNotification={onAddNotification}
+              onCustomizeGoal={handleCustomizeRecommendation}
+              onClose={() => setShowRecommendations(false)}
+            />
+          </div>
+        )}
+
+        {!showRecommendations && (
+          <div className="mb-5 p-3.5 bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/50 border border-indigo-500/20 rounded-xl flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-indigo-500/20 text-indigo-300 rounded-lg border border-indigo-500/30">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <strong className="text-xs text-white block">AI Goal & Routine Recommendations Available</strong>
+                <span className="text-[11px] text-slate-300">Discover new routines or study blocks matched to your completion trends and energy profile.</span>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowRecommendations(true)}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg transition shrink-0 cursor-pointer shadow-sm"
+            >
+              Explore Recommendations
+            </button>
+          </div>
+        )}
 
         {/* Preset Goal Quick-Add Templates Slider */}
         <div id="goal_presets_slider" className="mb-5 bg-white/5 border border-white/10 p-4 rounded-xl">
@@ -1428,6 +1548,52 @@ export default function GoalTracker({
                   </button>
                 </div>
               </div>
+
+              {/* Cognitive & Energy Intensity Selector */}
+              <div className="space-y-1 mt-2">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-between">
+                  <span className="flex items-center gap-1"><Brain className="w-3 h-3 text-purple-400" /> Cognitive & Energy Load</span>
+                  <span className="text-[9px] font-normal text-purple-300/80">Bio-aligns with peak or slump zones</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEnergyLevel("deep_focus")}
+                    className={`px-2.5 py-2 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      energyLevel === "deep_focus"
+                        ? "bg-purple-600/25 border-purple-500 text-purple-200 ring-2 ring-purple-500/30"
+                        : "bg-black/20 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                    }`}
+                  >
+                    <Brain className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                    <span className="truncate">Deep Focus</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEnergyLevel("moderate")}
+                    className={`px-2.5 py-2 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      energyLevel === "moderate"
+                        ? "bg-sky-600/25 border-sky-500 text-sky-200 ring-2 ring-sky-500/30"
+                        : "bg-black/20 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                    }`}
+                  >
+                    <Zap className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    <span className="truncate">Steady Flow</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEnergyLevel("light_recharge")}
+                    className={`px-2.5 py-2 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      energyLevel === "light_recharge"
+                        ? "bg-emerald-600/25 border-emerald-500 text-emerald-200 ring-2 ring-emerald-500/30"
+                        : "bg-black/20 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                    }`}
+                  >
+                    <BatteryCharging className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="truncate">Recharge</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Goal Icon Selector */}
@@ -1683,6 +1849,18 @@ export default function GoalTracker({
                           {gPriority === "normal" && <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />}
                           {gPriority.toUpperCase()}
                         </span>
+
+                        {/* Cognitive Energy Load Badge */}
+                        {(() => {
+                          const eLvl = g.energyLevel || inferGoalEnergyLevel(g);
+                          const eBadge = getEnergyBadgeData(eLvl);
+                          return (
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border ${eBadge.bg}`}>
+                              <span>{eBadge.icon}</span>
+                              <span className="truncate">{eBadge.shortLabel}</span>
+                            </span>
+                          );
+                        })()}
                       </div>
 
                       <div className="flex items-center gap-1.5">

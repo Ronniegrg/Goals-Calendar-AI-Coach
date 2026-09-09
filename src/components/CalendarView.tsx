@@ -41,7 +41,10 @@ import {
   ListOrdered,
   Minus,
   Loader2,
-  Compass
+  Compass,
+  Brain,
+  Zap,
+  BatteryCharging
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -53,6 +56,14 @@ import {
   findGoalForEvent,
   getPriorityScore 
 } from "../lib/scheduleOptimizer";
+import { 
+  UserEnergyProfile, 
+  DEFAULT_USER_ENERGY_PROFILE,
+  calculateEventEnergyFit, 
+  getDailyCognitiveLoad, 
+  getEnergyBadgeData,
+  inferGoalEnergyLevel 
+} from "../lib/energyProfile";
 
 const DEFAULT_AVAILABILITY: AvailabilityWindow[] = [
   { dayOfWeek: 0, startTime: "09:00", endTime: "21:00", active: true },
@@ -81,6 +92,8 @@ interface CalendarViewProps {
   onAlignPriorities?: () => void;
   targetDate?: Date;
   onNavigateToDate?: (date: Date) => void;
+  energyProfile?: UserEnergyProfile;
+  onOpenEnergyModal?: () => void;
 }
 
 export default function CalendarView({
@@ -99,7 +112,9 @@ export default function CalendarView({
   onResetAndRegenerateCalendar,
   onAlignPriorities,
   targetDate,
-  onNavigateToDate
+  onNavigateToDate,
+  energyProfile = DEFAULT_USER_ENERGY_PROFILE,
+  onOpenEnergyModal
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -2130,106 +2145,138 @@ export default function CalendarView({
   return (
     <div id="calendar_section_card" className="bg-white/95 dark:bg-white/5 backdrop-blur-md border border-slate-200 dark:border-white/10 rounded-2xl shadow-xl overflow-hidden flex flex-col min-h-[600px] h-auto md:h-[750px] text-slate-900 dark:text-white">
       
-      {/* Calendar Header toolbar */}
-      <div className="p-3 sm:p-4 border-b border-slate-200 dark:border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-100/70 dark:bg-white/5">
-        <div className="flex items-center justify-between w-full sm:w-auto gap-3">
-          <div className="flex items-center gap-2">
-            <CalendarIcon className="w-5 h-5 text-indigo-600 dark:text-indigo-400" id="header_cal_icon" />
-            <h2 id="calendar_title_header" className="font-sans font-extrabold text-slate-950 dark:text-white text-base sm:text-lg tracking-tight">Schedule</h2>
-            <span className="text-[11px] sm:text-xs bg-slate-200 dark:bg-white/10 text-slate-800 dark:text-slate-200 px-2.5 py-0.5 rounded-full font-extrabold" id="total_schedule_count">
-              {events.length} {events.length === 1 ? "Event" : "Events"}
-            </span>
+      {/* Calendar Header toolbar: Two-tier structure preventing collisions and overlapping */}
+      <div className="border-b border-slate-200 dark:border-white/10 bg-slate-100/70 dark:bg-white/5">
+        {/* Tier 1: Main Header Toolbar (Schedule title, View switcher, Date navigation, Date display, Primary Creation CTAs) */}
+        <div className="p-3 sm:px-4 sm:py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200/80 dark:border-white/5">
+          {/* Left: Schedule Title + Event Count Badge + View Mode Switcher */}
+          <div className="flex items-center justify-between md:justify-start gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <CalendarIcon className="w-5 h-5 text-indigo-600 dark:text-indigo-400" id="header_cal_icon" />
+              <h2 id="calendar_title_header" className="font-sans font-extrabold text-slate-950 dark:text-white text-base sm:text-lg tracking-tight">Schedule</h2>
+              <span className="text-[11px] sm:text-xs bg-slate-200 dark:bg-white/10 text-slate-800 dark:text-slate-200 px-2.5 py-0.5 rounded-full font-extrabold" id="total_schedule_count">
+                {events.length} {events.length === 1 ? "Event" : "Events"}
+              </span>
+            </div>
+
+            {/* View Mode Switcher */}
+            <div className="bg-slate-200/80 dark:bg-white/10 border border-slate-300 dark:border-white/10 p-1 rounded-xl flex items-center shadow-inner">
+              {(["week", "day", "list"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  id={`view_btn_${mode}`}
+                  onClick={() => setViewMode(mode)}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-bold capitalize transition cursor-pointer min-h-[34px] min-w-[50px] flex items-center justify-center ${
+                    viewMode === mode 
+                      ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-extrabold" 
+                      : "text-slate-800 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-300/50 dark:hover:bg-white/5"
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* View Mode Toggle for Mobile & Desktop */}
-          <div className="bg-slate-200/80 dark:bg-white/10 border border-slate-300 dark:border-white/10 p-1 rounded-xl flex items-center shadow-inner">
-            {(["week", "day", "list"] as const).map((mode) => (
-              <button
-                key={mode}
-                id={`view_btn_${mode}`}
-                onClick={() => setViewMode(mode)}
-                className={`text-xs px-2.5 sm:px-3 py-1.5 rounded-lg font-bold capitalize transition cursor-pointer min-h-[36px] min-w-[48px] flex items-center justify-center ${
-                  viewMode === mode 
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-extrabold" 
-                    : "text-slate-800 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-300/50 dark:hover:bg-white/5"
-                }`}
+          {/* Right: Date Navigation + Date Label + Primary Action Buttons */}
+          <div className="flex items-center justify-between md:justify-end gap-2.5 flex-wrap">
+            {/* Date Navigation */}
+            <div className="flex items-center gap-1 bg-slate-200/80 dark:bg-white/5 border border-slate-300 dark:border-white/10 p-1 rounded-xl shadow-xs">
+              <button 
+                id="nav_prev_btn"
+                onClick={handlePrev} 
+                className="p-1.5 rounded-lg hover:bg-slate-300/60 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer min-h-[34px] min-w-[34px] flex items-center justify-center"
+                title="Previous"
               >
-                {mode}
+                <ChevronLeft className="w-4 h-4" />
               </button>
-            ))}
+              <button 
+                id="nav_today_btn"
+                onClick={handleToday} 
+                className="text-xs font-bold px-2.5 py-1.5 rounded-lg hover:bg-slate-300/60 dark:hover:bg-white/10 text-slate-900 dark:text-white transition cursor-pointer min-h-[34px] flex items-center"
+              >
+                Today
+              </button>
+              <button 
+                id="nav_focus_now_btn"
+                type="button"
+                onClick={() => {
+                  setCurrentDate(new Date());
+                  setNow(new Date());
+                  setTimeout(() => scrollToCurrentTimeLine(true), 50);
+                }} 
+                className="text-xs font-extrabold px-2.5 py-1.5 rounded-lg bg-red-100 dark:bg-red-500/20 text-red-900 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-500/30 border border-red-300 dark:border-red-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 min-h-[34px]"
+                title="Focus current time line in calendar"
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
+                </span>
+                <span>Focus</span>
+              </button>
+              <button 
+                id="nav_next_btn"
+                onClick={handleNext} 
+                className="p-1.5 rounded-lg hover:bg-slate-300/60 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer min-h-[34px] min-w-[34px] flex items-center justify-center"
+                title="Next"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Date Display */}
+            <div id="calendar_label_header" className="text-sm sm:text-base font-extrabold text-slate-950 dark:text-white font-display px-2 whitespace-nowrap">
+              {getHeaderLabel()}
+            </div>
+
+            {/* Primary Action Buttons: + Goal and + Event */}
+            <div className="flex items-center gap-2">
+              <button
+                id="open_add_goal_modal_btn"
+                onClick={handleOpenAddGoal}
+                className="bg-emerald-100 dark:bg-emerald-600/20 hover:bg-emerald-200 dark:hover:bg-emerald-600/30 text-emerald-900 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-all min-h-[34px] whitespace-nowrap"
+                title="Create a new routine goal"
+              >
+                <Target className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>+ Goal</span>
+              </button>
+
+              <button
+                id="open_add_event_modal_btn"
+                onClick={() => setShowAddModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/20 cursor-pointer transition-all min-h-[34px] whitespace-nowrap"
+                title="Add calendar event"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Event</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Navigation & Actions Row */}
-        <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 w-full sm:w-auto pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-200 dark:border-white/5">
-          {/* Date Navigation */}
-          <div className="flex items-center gap-1 bg-slate-200/80 dark:bg-white/5 border border-slate-300 dark:border-white/10 p-1 rounded-xl shadow-xs">
-            <button 
-              id="nav_prev_btn"
-              onClick={handlePrev} 
-              className="p-1.5 rounded-lg hover:bg-slate-300/60 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
-              title="Previous"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <button 
-              id="nav_today_btn"
-              onClick={handleToday} 
-              className="text-xs font-bold px-2.5 py-1.5 rounded-lg hover:bg-slate-300/60 dark:hover:bg-white/10 text-slate-900 dark:text-white transition cursor-pointer min-h-[36px] flex items-center"
-            >
-              Today
-            </button>
-            <button 
-              id="nav_focus_now_btn"
-              type="button"
-              onClick={() => {
-                setCurrentDate(new Date());
-                setNow(new Date());
-                setTimeout(() => scrollToCurrentTimeLine(true), 50);
-              }} 
-              className="text-xs font-extrabold px-2.5 py-1.5 rounded-lg bg-red-100 dark:bg-red-500/20 text-red-900 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-500/30 border border-red-300 dark:border-red-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 min-h-[36px]"
-              title="Focus current time line in calendar"
-            >
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
-              </span>
-              <span>Focus</span>
-            </button>
-            <button 
-              id="nav_next_btn"
-              onClick={handleNext} 
-              className="p-1.5 rounded-lg hover:bg-slate-300/60 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
-              title="Next"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div id="calendar_label_header" className="text-sm sm:text-base font-extrabold text-slate-950 dark:text-white text-center font-display shrink-0 px-2">
-            {getHeaderLabel()}
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0 ml-auto sm:ml-0">
+        {/* Tier 2: Smart Schedule Toolbar (Connect, Focus Incomplete, Re-balance, Priorities, Bio-Energy, Delay, Regenerate) */}
+        <div className="px-3 sm:px-4 py-2 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-start gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 shrink-0 flex-nowrap sm:flex-wrap">
+            {/* Sync Feeds */}
             <button
               id="open_sync_sidebar_btn"
               onClick={(e) => {
                 e.stopPropagation();
                 setShowSyncPanel(prev => !prev);
               }}
-              className="p-2 border border-slate-300 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px]"
+              className="p-1.5 sm:px-2.5 sm:py-1.5 border border-slate-300 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] whitespace-nowrap shrink-0"
               title="External Calendar Feeds"
             >
               <Link2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Connect</span>
+              <span>Connect</span>
             </button>
 
-            {/* Start from Incomplete Goals Button */}
+            {/* Focus Incomplete Goal Button */}
             <button
               id="focus_incomplete_goal_btn"
               type="button"
               onClick={() => handleFocusMostIncompleteGoal()}
-              className={`p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold px-2.5 min-h-[36px] ${
+              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 ${
                 rankedPastIncompleteSessions.length > 0
                   ? "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50 shadow-xs active:scale-95"
                   : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
@@ -2237,8 +2284,7 @@ export default function CalendarView({
               title="Focus directly on past uncompleted sessions to catch up now without waiting or re-balancing"
             >
               <Compass className={`w-3.5 h-3.5 ${rankedPastIncompleteSessions.length > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-500"}`} />
-              <span className="hidden sm:inline">Focus Incomplete</span>
-              <span className="sm:hidden">Focus</span>
+              <span>Focus Incomplete</span>
               {rankedPastIncompleteSessions.length > 0 && (
                 <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-xs animate-pulse" title={`${rankedPastIncompleteSessions.length} past incomplete sessions`}>
                   {rankedPastIncompleteSessions.length}
@@ -2246,10 +2292,11 @@ export default function CalendarView({
               )}
             </button>
 
+            {/* Auto Re-balance */}
             <button
               id="auto_rebalance_btn"
               onClick={handleSmartRebalance}
-              className={`p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px] ${
+              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] whitespace-nowrap shrink-0 ${
                 missedSessionsCount > 0
                   ? "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-500/30 shadow-md shadow-amber-500/10 animate-pulse font-bold"
                   : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border-slate-300 dark:border-white/10"
@@ -2257,7 +2304,7 @@ export default function CalendarView({
               title="Shift missed sessions to upcoming free time slots automatically"
             >
               <RotateCw className={`w-3.5 h-3.5 ${missedSessionsCount > 0 ? "text-amber-600 dark:text-amber-400" : "text-indigo-600 dark:text-indigo-400"}`} />
-              <span className="hidden sm:inline">Re-balance</span>
+              <span>Re-balance</span>
               {missedSessionsCount > 0 && (
                 <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full">
                   {missedSessionsCount}
@@ -2265,20 +2312,38 @@ export default function CalendarView({
               )}
             </button>
 
+            {/* Align Priorities */}
             {onAlignPriorities && (
               <button
                 id="align_priorities_btn"
                 onClick={onAlignPriorities}
-                className="p-2 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold px-2.5 min-h-[36px] bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border-slate-300 dark:border-white/10"
-                title="Strictly align daily sessions by priority (Critical > Important > Normal) and consolidate duplicate sessions"
+                className="p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border-slate-300 dark:border-white/10 whitespace-nowrap shrink-0"
+                title="Strictly align daily sessions by priority and circadian energy rhythm"
               >
                 <ListOrdered className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                <span className="hidden sm:inline">Align Priorities</span>
+                <span>Align Priorities</span>
+              </button>
+            )}
+
+            {/* Bio-Energy Modal */}
+            {onOpenEnergyModal && (
+              <button
+                id="cal_energy_profile_btn"
+                type="button"
+                onClick={onOpenEnergyModal}
+                className="p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] bg-purple-50 dark:bg-purple-950/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 text-purple-900 dark:text-purple-300 border-purple-300 dark:border-purple-500/30 shadow-xs whitespace-nowrap shrink-0"
+                title={`Configure energy chronotype (${energyProfile.chronotype}), slump protection, and cognitive buffers`}
+              >
+                <Brain className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                <span>Bio-Energy</span>
+                {energyProfile.slumpProtection && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Slump Shield Active" />
+                )}
               </button>
             )}
 
             {/* Delay Today Quick Trigger */}
-            <div className="relative z-50">
+            <div className="relative z-50 shrink-0">
               <button
                 id="delay_today_btn"
                 type="button"
@@ -2286,15 +2351,15 @@ export default function CalendarView({
                   e.stopPropagation();
                   setShowDelayTodayMenu(prev => !prev);
                 }}
-                className="p-2 border border-amber-300 dark:border-amber-500/30 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold px-2.5 min-h-[36px]"
+                className="p-1.5 sm:px-2.5 sm:py-1.5 border border-amber-300 dark:border-amber-500/30 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap"
                 title="Shift today's remaining uncompleted sessions forward if running late"
               >
                 <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                <span className="hidden sm:inline">Delay Today</span>
+                <span>Delay Today</span>
               </button>
               {showDelayTodayMenu && (
                 <div 
-                  className="absolute right-0 mt-2 w-52 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left animate-fade-in space-y-1"
+                  className="absolute left-0 sm:left-auto sm:right-0 mt-2 w-52 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left animate-fade-in space-y-1"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
@@ -2407,31 +2472,11 @@ export default function CalendarView({
               id="reset_regenerate_calendar_btn"
               type="button"
               onClick={() => setShowResetModal(true)}
-              className="p-2 border border-purple-300 dark:border-purple-500/30 bg-purple-100 dark:bg-purple-500/15 hover:bg-purple-200 dark:hover:bg-purple-500/25 text-purple-900 dark:text-purple-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold px-2.5 min-h-[36px]"
+              className="p-1.5 sm:px-2.5 sm:py-1.5 border border-purple-300 dark:border-purple-500/30 bg-purple-100 dark:bg-purple-500/15 hover:bg-purple-200 dark:hover:bg-purple-500/25 text-purple-900 dark:text-purple-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0"
               title="Reset & Regenerate calendar schedule from active goals"
             >
               <RefreshCw className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-              <span className="hidden lg:inline">Regenerate</span>
-              <span className="lg:hidden">Reset</span>
-            </button>
-
-            <button
-              id="open_add_goal_modal_btn"
-              onClick={handleOpenAddGoal}
-              className="bg-emerald-100 dark:bg-emerald-600/20 hover:bg-emerald-200 dark:hover:bg-emerald-600/30 text-emerald-900 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all min-h-[36px]"
-              title="Create a new routine goal"
-            >
-              <Target className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>+ Goal</span>
-            </button>
-
-            <button
-              id="open_add_event_modal_btn"
-              onClick={() => setShowAddModal(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1 shadow-md shadow-indigo-600/20 cursor-pointer transition-all min-h-[36px]"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ Event</span>
+              <span>Regenerate</span>
             </button>
           </div>
         </div>
@@ -2855,6 +2900,30 @@ export default function CalendarView({
                     }`}>
                       {day.getDate()}
                     </div>
+
+                    {/* Daily Cognitive Load & Bio-Energy Status */}
+                    {(() => {
+                      const dayEvents = events.filter(e => isSameDay(new Date(e.start), day));
+                      if (dayEvents.length === 0) return null;
+                      const load = getDailyCognitiveLoad(day, events, goals, energyProfile);
+                      return (
+                        <div className="mt-1 flex items-center justify-center">
+                          <span 
+                            className={`text-[8.5px] font-mono px-1.5 py-0.2 rounded-full border font-bold flex items-center gap-0.5 ${
+                              load.status === "overloaded"
+                                ? "bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse"
+                                : load.status === "optimal"
+                                ? "bg-purple-500/20 text-purple-300 border-purple-500/40"
+                                : "bg-slate-500/15 text-slate-400 border-white/10"
+                            }`}
+                            title={`Daily Cognitive Strain: ${load.deepFocusHours}h deep focus / ${energyProfile.maxDailyDeepFocusHours || 4}h max target. Status: ${load.status.toUpperCase()}`}
+                          >
+                            <span>{load.deepFocusHours > 0 ? `${load.deepFocusHours}h` : "0h"}</span>
+                            <Brain className="w-2.5 h-2.5 shrink-0 opacity-80" />
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -3056,6 +3125,34 @@ export default function CalendarView({
                           <span className="opacity-60">-</span>
                           <span>{evtEnd.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                         </p>
+
+                        {/* Bio-Energy & Slump Protection Fit Badge */}
+                        {(() => {
+                          const tiedGoal = goals.find(g => g.id === evt.goalId);
+                          const fit = calculateEventEnergyFit(evt, tiedGoal, energyProfile);
+                          if (fit.isSlumpConflict || fit.status === "conflict") {
+                            return (
+                              <span 
+                                className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-900 dark:text-amber-200 border border-amber-500/40 inline-flex items-center gap-1 mt-0.5 animate-pulse"
+                                title={fit.message}
+                              >
+                                <span>⚠️</span>
+                                <span className="truncate">Slump Conflict</span>
+                              </span>
+                            );
+                          } else if (fit.isPeakMatch || fit.status === "ideal") {
+                            return (
+                              <span 
+                                className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-purple-500/25 text-purple-900 dark:text-purple-200 border border-purple-500/40 inline-flex items-center gap-1 mt-0.5"
+                                title={fit.message}
+                              >
+                                <span>🎯</span>
+                                <span className="truncate">Peak Focus</span>
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
 
                         {evt.completionNote && (
                           <p className="text-[8px] text-amber-700 dark:text-amber-300 font-bold italic truncate bg-amber-500/15 dark:bg-amber-500/10 px-1 py-0.5 rounded mt-0.5 border border-amber-500/30 dark:border-amber-500/20" title={`Completion Note: ${evt.completionNote}`}>

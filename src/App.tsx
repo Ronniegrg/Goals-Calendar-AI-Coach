@@ -19,7 +19,9 @@ import {
   AlertTriangle,
   Clock,
   X,
-  ArrowRight
+  ArrowRight,
+  Brain,
+  Zap
 } from "lucide-react";
 import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
@@ -27,6 +29,7 @@ import ProgressDashboard from "./components/ProgressDashboard";
 import AICoach from "./components/AICoach";
 import NotificationsPanel from "./components/NotificationsPanel";
 import FocusTimerModal from "./components/FocusTimerModal";
+import EnergyProfileModal from "./components/EnergyProfileModal";
 import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
@@ -35,6 +38,7 @@ import {
   findGoalForEvent,
   getPriorityScore as getSchedulePriorityScore 
 } from "./lib/scheduleOptimizer";
+import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProfile";
 
 export default function App() {
   // Navigation State
@@ -108,6 +112,18 @@ export default function App() {
     const val = localStorage.getItem("alert_push_enabled");
     return val !== "false";
   });
+
+  // Energy & Chronotype Profile State
+  const [energyProfile, setEnergyProfile] = useState<UserEnergyProfile>(() => {
+    try {
+      const saved = localStorage.getItem("user_energy_profile");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error("Failed to parse cached energy profile:", e);
+    }
+    return DEFAULT_USER_ENERGY_PROFILE;
+  });
+  const [showEnergyModal, setShowEnergyModal] = useState<boolean>(false);
 
   // Auto Dark/Light Theme State Engine (Default: Auto Mode)
   const [themeMode, setThemeMode] = useState<"auto" | "dark" | "light">(() => {
@@ -654,15 +670,19 @@ export default function App() {
     });
 
     const combinedEvents = [...newScheduledEvents, ...validEvents];
-    const { alignedEvents, changedCount } = alignDailyEventsByPriority(combinedEvents, currentGoals);
+    const { alignedEvents, changedCount, slumpAdjusted, buffersAdded } = alignDailyEventsByPriority(combinedEvents, currentGoals, energyProfile);
 
     if (newScheduledEvents.length > 0 || purgedCount > 0 || changedCount > 0) {
       setEvents(alignedEvents);
       syncToCloud(currentGoals, alignedEvents, currentAvailability, notifications, coachMessages);
       if (newScheduledEvents.length > 0 || changedCount > 0) {
+        const extraDetails: string[] = [];
+        if (slumpAdjusted && slumpAdjusted > 0) extraDetails.push(`${slumpAdjusted} slump-shielded`);
+        if (buffersAdded && buffersAdded > 0) extraDetails.push(`${buffersAdded} recovery buffers`);
+        const detailSuffix = extraDetails.length > 0 ? ` (${extraDetails.join(", ")})` : "";
         triggerSystemNotification(
           "Auto-Scheduler Sync",
-          `⚡ Auto-Scheduler optimized: Critical goals prioritized before Important goals, and sessions strictly aligned!`,
+          `⚡ Bio-Energy optimized: Critical goals prioritized, tasks aligned with ${energyProfile.chronotype} rhythms${detailSuffix}!`,
           "success"
         );
       }
@@ -1339,19 +1359,25 @@ export default function App() {
 
   // Handle Align Priorities & Deduplicate Sessions
   const handleAlignPrioritiesAndDeduplicate = () => {
-    const { optimizedEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(events, goals);
-    if (duplicatesRemoved > 0 || priorityAdjusted > 0) {
+    const { optimizedEvents, duplicatesRemoved, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, energyProfile);
+    if (duplicatesRemoved > 0 || priorityAdjusted > 0 || (slumpAdjusted && slumpAdjusted > 0) || (buffersAdded && buffersAdded > 0)) {
       setEvents(optimizedEvents);
       syncToCloud(goals, optimizedEvents, availability, notifications, coachMessages);
+      const changesList: string[] = [];
+      if (priorityAdjusted > 0) changesList.push(`${priorityAdjusted} priority re-aligned`);
+      if (slumpAdjusted && slumpAdjusted > 0) changesList.push(`${slumpAdjusted} shifted from slump hours`);
+      if (buffersAdded && buffersAdded > 0) changesList.push(`${buffersAdded} recovery buffers inserted`);
+      if (duplicatesRemoved > 0) changesList.push(`${duplicatesRemoved} duplicates removed`);
+
       triggerSystemNotification(
-        "Priority Alignment & Deduplication",
-        `🎯 Schedule strictly aligned! Critical goals (IT Support) prioritized before Important goals (Cybersecurity). Consolidated ${duplicatesRemoved} duplicate session(s).`,
+        "Priority & Bio-Energy Alignment",
+        `🎯 Schedule strictly aligned by priority & ${energyProfile.chronotype} energy curves: ${changesList.join(", ")}.`,
         "success"
       );
     } else {
       triggerSystemNotification(
-        "Priority Alignment",
-        "✨ All goals are already strictly prioritized (Critical > Important > Normal) with 1 session max per day.",
+        "Priority & Bio-Energy Alignment",
+        `✨ All goals are already strictly prioritized and aligned with your ${energyProfile.chronotype} circadian rhythms.`,
         "success"
       );
     }
@@ -1978,6 +2004,22 @@ export default function App() {
 
           {/* Sync indicator & Auto Theme toggle widget */}
           <div className="flex items-center gap-2 sm:gap-4 text-xs font-medium" id="sync_status_anchor_indicators">
+            {/* Bio-Energy Chronotype Quick Button */}
+            <button
+              type="button"
+              id="app_energy_profile_btn"
+              onClick={() => setShowEnergyModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border border-purple-500/40 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 cursor-pointer transition shadow-xs"
+              title="Configure energy chronotype, slump shield, and cognitive load"
+            >
+              <Brain className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+              <span className="hidden sm:inline">Energy:</span>
+              <span className="capitalize">{energyProfile.chronotype}</span>
+              {energyProfile.slumpProtection && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Slump Shield Active" />
+              )}
+            </button>
+
             {/* Auto-Toggle Theme Button */}
             <button
               type="button"
@@ -2192,6 +2234,8 @@ export default function App() {
               onBulkEditEvents={handleBulkEditEvents}
               onResetAndRegenerateCalendar={handleResetAndRegenerateCalendar}
               onAlignPriorities={handleAlignPrioritiesAndDeduplicate}
+              energyProfile={energyProfile}
+              onOpenEnergyModal={() => setShowEnergyModal(true)}
             />
           </div>
         )}
@@ -2223,6 +2267,8 @@ export default function App() {
             onCompleteSession={handleCompleteTimerSession}
             onPauseGoal={handlePauseGoal}
             onResumeGoal={handleResumeGoal}
+            energyProfile={energyProfile}
+            onOpenEnergyModal={() => setShowEnergyModal(true)}
           />
         )}
 
@@ -2250,6 +2296,9 @@ export default function App() {
             onAddGoal={handleAddGoal}
             onEditGoal={handleEditGoal}
             onDeleteGoal={handleDeleteGoal}
+            userEnergyProfile={energyProfile}
+            onBulkAddEvents={handleBulkAddEvents}
+            onAddNotification={triggerSystemNotification}
             onApplyEnergySchedule={(newEvts) => {
               const updatedEvents = [...events, ...newEvts];
               setEvents(updatedEvents);
@@ -2383,6 +2432,40 @@ export default function App() {
         onCompleteSession={handleCompleteTimerSession}
         onExtendEventDuration={handleExtendEventDuration}
       />
+
+      {/* Energy & Cognitive Load Profile Modal */}
+      {showEnergyModal && (
+        <EnergyProfileModal
+          isOpen={showEnergyModal}
+          onClose={() => setShowEnergyModal(false)}
+          profile={energyProfile}
+          onSaveProfile={(newProfile) => {
+            setEnergyProfile(newProfile);
+            try {
+              localStorage.setItem("user_energy_profile", JSON.stringify(newProfile));
+            } catch (e) {
+              console.error("Failed to save energy profile:", e);
+            }
+
+            // Immediately re-align active schedule with new chronotype & slump preferences
+            const { optimizedEvents, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, newProfile);
+            setEvents(optimizedEvents);
+            syncToCloud(goals, optimizedEvents, availability, notifications, coachMessages);
+
+            const details: string[] = [];
+            if (slumpAdjusted && slumpAdjusted > 0) details.push(`${slumpAdjusted} tasks shifted from energy slumps`);
+            if (buffersAdded && buffersAdded > 0) details.push(`${buffersAdded} recovery buffers inserted`);
+            if (priorityAdjusted > 0) details.push(`${priorityAdjusted} priority re-aligned`);
+
+            const feedback = details.length > 0 ? ` (${details.join(", ")})` : "";
+            triggerSystemNotification(
+              "Energy Rhythm Saved",
+              `⚡ Active Chronotype set to ${newProfile.chronotype.toUpperCase()}${feedback}. Calendar dynamically optimized!`,
+              "success"
+            );
+          }}
+        />
+      )}
 
       {/* Global Interactive Floating Toast Notification */}
       {activeToast && (

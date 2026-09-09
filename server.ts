@@ -47,7 +47,7 @@ async function generateWithFallback(params: {
   if (!key) return null;
 
   const ai = getAi();
-  const primaryModel = params.primaryModel || "gemini-3.7-flash";
+  const primaryModel = params.primaryModel || "gemini-3.8-flash";
   const fallbackModel = params.fallbackModel || "gemini-3.1-flash-lite";
 
   try {
@@ -824,6 +824,334 @@ app.post("/api/coach/energy-schedule", async (req, res) => {
     newEvents,
     categorizedGoals
   });
+});
+
+// 7. AI-DRIVEN GOAL & ROUTINE RECOMMENDATION ENGINE
+app.post("/api/coach/recommend-goals", async (req, res) => {
+  const { 
+    goals = [], 
+    events = [], 
+    availability = [], 
+    energyProfile = null,
+    categoryFilter = "all", // "all" | "study" | "routine"
+    customPrompt = "" 
+  } = req.body;
+
+  const keyAvailable = !!process.env.GEMINI_API_KEY;
+
+  // Extract quantitative completion patterns
+  const completedEvents = events.filter((e: any) => e.completed);
+  const totalScheduled = events.length;
+  const overallCompletionRate = totalScheduled > 0 
+    ? Math.round((completedEvents.length / totalScheduled) * 100) 
+    : (goals.length > 0 ? Math.round(goals.reduce((acc: number, g: any) => acc + (g.completedCount > 0 ? 1 : 0), 0) / goals.length * 100) : 78);
+
+  const chronotype = energyProfile?.chronotype || "steady";
+  const chronotypeName = 
+    chronotype === "early_bird" ? "Early Bird (Lark)" :
+    chronotype === "night_owl" ? "Night Owl (Wolf)" :
+    chronotype === "custom" ? "Custom Chronotype" : "Steady Performer";
+
+  const peakWindow = 
+    chronotype === "early_bird" ? "05:30 - 10:30 AM" :
+    chronotype === "night_owl" ? "03:30 - 06:30 PM & 07:00 - 10:30 PM" :
+    "08:30 AM - 12:30 PM";
+
+  const slumpWindow = 
+    chronotype === "early_bird" ? "01:00 - 03:30 PM" :
+    chronotype === "night_owl" ? "08:00 - 11:30 AM" :
+    "12:30 - 02:30 PM";
+
+  // Goal types analysis
+  const studyGoals = goals.filter((g: any) => g.type === "study" || g.type === "job_search" || g.type === "side_project");
+  const routineGoals = goals.filter((g: any) => g.type === "workout" || g.type === "routine" || g.type === "personal");
+
+  const studyCompletedTotal = studyGoals.reduce((acc: number, g: any) => acc + (g.completedCount || 0), 0);
+  const routineCompletedTotal = routineGoals.reduce((acc: number, g: any) => acc + (g.completedCount || 0), 0);
+
+  const maxDailyCeiling = energyProfile?.maxDailyDeepFocusHours || 4.0;
+  
+  // Calculate approximate current daily deep focus hours
+  const totalWeeklyDeepFocusMinutes = studyGoals
+    .filter((g: any) => g.energyLevel === "deep_focus" || !g.energyLevel)
+    .reduce((acc: number, g: any) => acc + ((g.weeklyTarget || 3) * (g.durationMinutes || 60)), 0);
+  const dailyAvgDeepFocusHours = Number((totalWeeklyDeepFocusMinutes / (7 * 60)).toFixed(1));
+
+  // Heuristic Fallback Generator (Produces realistic, high quality, personalized recommendations)
+  function generateHeuristicRecommendations() {
+    const recs: any[] = [];
+
+    // Study Block 1: Technical Mastery or Deep Problem Solving based on chronotype
+    if (categoryFilter === "all" || categoryFilter === "study") {
+      const hasPythonOrCode = goals.some((g: any) => 
+        (g.name || "").toLowerCase().includes("python") || 
+        (g.name || "").toLowerCase().includes("code") || 
+        (g.name || "").toLowerCase().includes("react")
+      );
+      
+      const studyBlockTimePref = chronotype === "early_bird" ? "early_morning" : chronotype === "night_owl" ? "evening" : "morning";
+
+      if (hasPythonOrCode) {
+        recs.push({
+          id: "rec_sys_design",
+          name: "System Architecture & Algorithmic Problem Solving",
+          type: "study",
+          category: "Computer Science",
+          recommendationType: "study_block",
+          weeklyTarget: 3,
+          durationMinutes: 45,
+          timePreference: studyBlockTimePref,
+          priority: "critical",
+          energyLevel: "deep_focus",
+          color: "#6366f1",
+          icon: "code",
+          badge: "🔥 High Momentum Progression",
+          patternInsight: `Your ${overallCompletionRate}% completion consistency shows high cognitive readiness. Adding a dedicated 45-min Deep Dive block builds on your coding momentum without exceeding your ${maxDailyCeiling}h daily deep focus ceiling.`,
+          energyProfileMatch: `Targeted exclusively during your ${chronotypeName} Peak Focus zone (${peakWindow}). Slump-protected from midday circadian dips.`,
+          expectedOutcome: "Accelerates technical problem-solving speed and structural system design comprehension by +35%.",
+          subSteps: [
+            { id: "s1", title: "Problem Specification & Constraint Analysis", durationMinutes: 10, description: "Analyze requirements, inputs/outputs, edge cases and time/space complexity bounds." },
+            { id: "s2", title: "Core Implementation & Active Coding", durationMinutes: 25, description: "Write clean, modular code without consulting hints or solutions." },
+            { id: "s3", title: "Complexity Verification & Mistake Journal", durationMinutes: 10, description: "Trace execution step-by-step and record key takeaways." }
+          ],
+          confidenceScore: 96,
+          suggestedScheduleDays: [1, 3, 5] // Mon, Wed, Fri
+        });
+      } else {
+        recs.push({
+          id: "rec_deep_study",
+          name: "Deep Conceptual Focus Sprint",
+          type: "study",
+          category: "Deep Learning",
+          recommendationType: "study_block",
+          weeklyTarget: 3,
+          durationMinutes: 45,
+          timePreference: studyBlockTimePref,
+          priority: "critical",
+          energyLevel: "deep_focus",
+          color: "#3b82f6",
+          icon: "brain",
+          badge: "🧠 Prime Cognitive Block",
+          patternInsight: `Structured at 45 minutes to optimize neurochemical focus before cognitive fatigue sets in. Aligned with your active availability window.`,
+          energyProfileMatch: `Scheduled during your ${chronotypeName} peak alertness window (${peakWindow}) with zero slump overlap.`,
+          expectedOutcome: "Maximizes deep conceptual comprehension and retention with spaced retrieval.",
+          subSteps: [
+            { id: "s1", title: "Active Recall & Prerequisite Primer", durationMinutes: 10, description: "Self-test on previous concepts without notes." },
+            { id: "s2", title: "Uninterrupted Deep Practice", durationMinutes: 25, description: "Tackle the most demanding conceptual challenge." },
+            { id: "s3", title: "Feynman Synthesis & Summary", durationMinutes: 10, description: "Summarize key ideas in simple language in notes." }
+          ],
+          confidenceScore: 94,
+          suggestedScheduleDays: [1, 3, 5]
+        });
+      }
+
+      // Study Block 2: Spaced Retrieval / Micro-Sprint (High efficiency, moderate load)
+      recs.push({
+        id: "rec_spaced_recall",
+        name: "Rapid Spaced Retrieval & Flashcards",
+        type: "study",
+        category: "Skill Retention",
+        recommendationType: "study_block",
+        weeklyTarget: 4,
+        durationMinutes: 25,
+        timePreference: chronotype === "night_owl" ? "afternoon" : "morning",
+        priority: "important",
+        energyLevel: "moderate",
+        color: "#06b6d4",
+        icon: "book-open",
+        badge: "⚡ High Efficiency Micro-Sprint",
+        patternInsight: "Bite-sized 25-minute interval lowers activation friction and reinforces long-term memory retention across busy weekdays.",
+        energyProfileMatch: "Fits comfortably into your moderate flow window without draining prime analytical energy reserves.",
+        expectedOutcome: "Boosts long-term memory retention by up to 40% through daily active recall cycles.",
+        subSteps: [
+          { id: "s1", title: "Diagnostic Self-Quiz", durationMinutes: 10, description: "Rapid testing on high-frequency questions." },
+          { id: "s2", title: "Targeted Weak-Spot Review", durationMinutes: 15, description: "Review only the concepts missed during the quiz." }
+        ],
+        confidenceScore: 92,
+        suggestedScheduleDays: [1, 2, 4, 5]
+      });
+    }
+
+    // Routine 1: Slump Recovery & Mobility (Protects against burnout)
+    if (categoryFilter === "all" || categoryFilter === "routine") {
+      const routineTimePref = chronotype === "early_bird" ? "afternoon" : chronotype === "night_owl" ? "early_morning" : "afternoon";
+
+      recs.push({
+        id: "rec_slump_recovery",
+        name: "Midday Slump Shield & Mobility Walk",
+        type: "routine",
+        category: "Circadian Wellness",
+        recommendationType: "routine",
+        weeklyTarget: 5,
+        durationMinutes: 30,
+        timePreference: routineTimePref,
+        priority: "important",
+        energyLevel: "light_recharge",
+        color: "#10b981",
+        icon: "activity",
+        badge: "🔋 Circadian Slump Shield",
+        patternInsight: studyGoals.length > routineGoals.length
+          ? "You have heavy cognitive study commitments. A dedicated recharge routine prevents afternoon focus collapse and mental burnout."
+          : "Maintains continuous physical and mental circulation during circadian low points.",
+        energyProfileMatch: `Strategically mapped to your ${chronotypeName} biological dip (${slumpWindow}). Protects prime focus hours by diverting fatigue into active movement.`,
+        expectedOutcome: "Restores alertness by 28% without caffeine, resets posture, and clears cognitive fog.",
+        subSteps: [
+          { id: "s1", title: "Spine & Hip Mobility Stretches", durationMinutes: 8, description: "Decompress lower back and open tight hip flexors." },
+          { id: "s2", title: "Brisk Outdoor Sunlight Walk", durationMinutes: 17, description: "Natural light exposure resets circadian clock and boosts dopamine." },
+          { id: "s3", title: "Hydration & Mental Decompression", durationMinutes: 5, description: "Drink water and prepare mental focus for afternoon flow." }
+        ],
+        confidenceScore: 95,
+        suggestedScheduleDays: [1, 2, 3, 4, 5]
+      });
+
+      // Routine 2: Evening Wind-Down / Primer
+      recs.push({
+        id: "rec_evening_sunset",
+        name: "Screen-Free Evening Decompression & Prep",
+        type: "routine",
+        category: "Sleep & Recovery",
+        recommendationType: "routine",
+        weeklyTarget: 5,
+        durationMinutes: 20,
+        timePreference: "night",
+        priority: "normal",
+        energyLevel: "light_recharge",
+        color: "#8b5cf6",
+        icon: "moon",
+        badge: "🌙 Restorative Wind-Down",
+        patternInsight: "Consistent completion patterns depend heavily on deep sleep recovery. Closing screens 45 mins before sleep accelerates next-day alertness.",
+        energyProfileMatch: `Placed in your Night Wind-Down recharge window, protecting your ${chronotypeName} sleep architecture.`,
+        expectedOutcome: "Improves slow-wave sleep quality and ensures higher waking focus for tomorrow's morning sessions.",
+        subSteps: [
+          { id: "s1", title: "Tomorrow's Schedule & Goal Staging", durationMinutes: 5, description: "Review calendar and stage study materials on desk." },
+          { id: "s2", title: "Screen Sunset & Dim Lighting", durationMinutes: 5, description: "Turn off blue-light devices and dim bedroom lamps." },
+          { id: "s3", title: "Light Reading or Static Stretching", durationMinutes: 10, description: "Gentle physical relaxation to lower heart rate." }
+        ],
+        confidenceScore: 91,
+        suggestedScheduleDays: [0, 1, 2, 3, 4]
+      });
+    }
+
+    return {
+      recommendations: recs,
+      patternSummary: {
+        completionRate: overallCompletionRate,
+        completedCount: completedEvents.length,
+        totalTarget: goals.reduce((acc: number, g: any) => acc + (g.weeklyTarget || 0), 0),
+        cognitiveLoadDailyAvgHours: dailyAvgDeepFocusHours,
+        cognitiveLoadCeilingHours: maxDailyCeiling,
+        chronotype,
+        chronotypeName,
+        peakEnergyWindow: peakWindow,
+        slumpWindow,
+        strengths: [
+          `Strong ${overallCompletionRate}% completion rate shows solid routine adherence.`,
+          `Peak energy alignment with ${chronotypeName} rhythm (${peakWindow}) is well utilized.`
+        ],
+        gaps: [
+          studyGoals.length > 0 && routineGoals.length === 0 
+            ? "High cognitive study density without dedicated recovery or mobility routines."
+            : `Ensure afternoon slump window (${slumpWindow}) is shielded from heavy analytical tasks.`,
+          `Current deep focus is at ${dailyAvgDeepFocusHours}h / ${maxDailyCeiling}h daily ceiling, leaving room for structured 30-45m blocks.`
+        ]
+      },
+      aiGenerated: false
+    };
+  }
+
+  if (!keyAvailable) {
+    await new Promise((r) => setTimeout(r, 500));
+    return res.json(generateHeuristicRecommendations());
+  }
+
+  // Real Gemini Model Request
+  try {
+    const systemPrompt = `You are a world-class Productivity & Cognitive Science AI.
+Your mission is to analyze the user's current goal completion patterns, chronotype, cognitive load capacity, and energy zones to recommend 3 to 4 targeted new goals:
+- Study Blocks: Intensive or micro deep-work sessions (e.g. System Design, Data Structures, Technical Sprints, Spaced Retrieval) placed in their PEAK energy windows.
+- Routines: Restorative, circadian, or habit-stacking routines (e.g. Midday Slump Shield Walk, Morning Primer, Screen-Free Sunset) placed in MODERATE or LIGHT RECHARGE windows.
+
+Respect their chronotype (${chronotypeName}):
+- Peak Energy: ${peakWindow}
+- Slump/Valley: ${slumpWindow}
+- Max Daily Deep Focus Ceiling: ${maxDailyCeiling} hours (Current estimate: ${dailyAvgDeepFocusHours} hours/day).
+
+Return JSON with this EXACT structure:
+{
+  "recommendations": [
+    {
+      "id": "rec_1",
+      "name": "Specific Name of Goal or Routine",
+      "type": "study" | "workout" | "routine" | "side_project" | "personal" | "job_search",
+      "category": "Category Name",
+      "recommendationType": "study_block" | "routine",
+      "weeklyTarget": 3,
+      "durationMinutes": 45,
+      "timePreference": "morning" | "afternoon" | "evening" | "early_morning" | "night",
+      "priority": "critical" | "important" | "normal",
+      "energyLevel": "deep_focus" | "moderate" | "light_recharge",
+      "color": "#6366f1",
+      "icon": "code",
+      "badge": "🔥 High Momentum Progression",
+      "patternInsight": "Clear explanation referencing their actual completion rate and consistency.",
+      "energyProfileMatch": "Specific explanation of how this maps to their chronotype peak or slump protection.",
+      "expectedOutcome": "Clear cognitive, physical, or habit benefit.",
+      "subSteps": [
+        { "id": "s1", "title": "Phase 1 Name", "durationMinutes": 10, "description": "Phase 1 details" },
+        { "id": "s2", "title": "Phase 2 Name", "durationMinutes": 25, "description": "Phase 2 details" },
+        { "id": "s3", "title": "Phase 3 Name", "durationMinutes": 10, "description": "Phase 3 details" }
+      ],
+      "confidenceScore": 95,
+      "suggestedScheduleDays": [1, 3, 5]
+    }
+  ],
+  "patternSummary": {
+    "completionRate": ${overallCompletionRate},
+    "completedCount": ${completedEvents.length},
+    "totalTarget": ${goals.reduce((acc: number, g: any) => acc + (g.weeklyTarget || 0), 0)},
+    "cognitiveLoadDailyAvgHours": ${dailyAvgDeepFocusHours},
+    "cognitiveLoadCeilingHours": ${maxDailyCeiling},
+    "chronotype": "${chronotype}",
+    "chronotypeName": "${chronotypeName}",
+    "peakEnergyWindow": "${peakWindow}",
+    "slumpWindow": "${slumpWindow}",
+    "strengths": ["string", "string"],
+    "gaps": ["string", "string"]
+  }
+}
+Return ONLY valid JSON. No markdown ticks.`;
+
+    const userPrompt = `User Goals: ${JSON.stringify(goals, null, 2)}
+User Completed/Scheduled Events: ${JSON.stringify(events, null, 2)}
+Energy Profile: ${JSON.stringify(energyProfile, null, 2)}
+Filter Requested: ${categoryFilter}
+Custom Focus/Request: ${customPrompt || "None"}`;
+
+    const result = await generateWithFallback({
+      primaryModel: "gemini-3.8-flash",
+      fallbackModel: "gemini-3.1-flash-lite",
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.4,
+        responseMimeType: "application/json"
+      }
+    });
+
+    if (result && result.text) {
+      const parsed = JSON.parse(result.text.trim());
+      if (parsed && Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0) {
+        parsed.aiGenerated = true;
+        return res.json(parsed);
+      }
+    }
+
+    const fallback = generateHeuristicRecommendations();
+    return res.json(fallback);
+  } catch (err: any) {
+    console.warn("Recommendation engine Gemini notice:", err?.message || err);
+    return res.json(generateHeuristicRecommendations());
+  }
 });
 
 // Serve frontend assets
