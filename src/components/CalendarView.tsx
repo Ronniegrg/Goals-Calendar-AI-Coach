@@ -348,6 +348,7 @@ export default function CalendarView({
     totalIncompleteCount: number;
     currentIndex: number;
   } | null>(null);
+  const lastHandledCompletedEventId = useRef<string | null>(null);
 
   // Ranked past incomplete sessions (strictly uncompleted sessions on past dates/times: new Date(evt.end) < now)
   const rankedPastIncompleteSessions = useMemo(() => {
@@ -1101,7 +1102,9 @@ export default function CalendarView({
   };
 
   const handleFocusMostIncompleteGoal = (indexToFocus?: number) => {
-    if (rankedPastIncompleteSessions.length === 0) {
+    const activePastIncomplete = rankedPastIncompleteSessions.filter(item => !item.event.completed);
+
+    if (activePastIncomplete.length === 0) {
       setSpotlightBannerInfo(null);
       setSpotlightEventId(null);
       setRebalanceStatus("🎉 No past incomplete sessions! All scheduled sessions up to now are complete.");
@@ -1109,9 +1112,9 @@ export default function CalendarView({
       return;
     }
 
-    const idx = (indexToFocus !== undefined ? indexToFocus : currentIncompleteIndex) % rankedPastIncompleteSessions.length;
-    const targetItem = rankedPastIncompleteSessions[idx];
-    setCurrentIncompleteIndex((idx + 1) % rankedPastIncompleteSessions.length);
+    const idx = (indexToFocus !== undefined ? indexToFocus : currentIncompleteIndex) % activePastIncomplete.length;
+    const targetItem = activePastIncomplete[idx];
+    setCurrentIncompleteIndex((idx + 1) % activePastIncomplete.length);
 
     const { goal, event, deficit } = targetItem;
     setSpotlightGoalId(goal.id);
@@ -1133,43 +1136,120 @@ export default function CalendarView({
       event,
       isOverdue: true,
       deficit,
-      totalIncompleteCount: rankedPastIncompleteSessions.length,
+      totalIncompleteCount: activePastIncomplete.length,
       currentIndex: idx
     });
   };
 
+  const advanceToNextIncompleteTarget = (completedEvtId?: string) => {
+    if (completedEvtId) {
+      lastHandledCompletedEventId.current = completedEvtId;
+    }
+
+    // 1. Mark completed if not already completed
+    if (completedEvtId) {
+      const evt = events.find(e => e.id === completedEvtId) || spotlightBannerInfo?.event;
+      if (evt && !evt.completed) {
+        if (onEditEvent) {
+          onEditEvent(evt.id, { completed: true });
+        } else {
+          onToggleCompleteEvent(evt.id);
+        }
+      }
+      const tiedGoalId = evt?.goalId || (spotlightBannerInfo?.goal && spotlightBannerInfo.goal.id !== "general" ? spotlightBannerInfo.goal.id : undefined);
+      if (tiedGoalId && onEditGoal) {
+        const g = goals.find(item => item.id === tiedGoalId);
+        if (g) {
+          onEditGoal(g.id, {
+            completedCount: g.completedCount + 1
+          });
+        }
+      }
+    }
+
+    // 2. Find remaining past incomplete items strictly excluding the completed event
+    const remaining = rankedPastIncompleteSessions.filter(
+      item => item.event.id !== completedEvtId && !item.event.completed
+    );
+
+    if (remaining.length > 0) {
+      // Immediately switch to the next incomplete target
+      const nextIndex = spotlightBannerInfo && spotlightBannerInfo.currentIndex < remaining.length 
+        ? spotlightBannerInfo.currentIndex 
+        : 0;
+      const nextTarget = remaining[nextIndex];
+
+      setSpotlightGoalId(nextTarget.goal.id);
+      setSpotlightEventId(nextTarget.event.id);
+      setCurrentIncompleteIndex((nextIndex + 1) % remaining.length);
+
+      const sDate = new Date(nextTarget.event.start);
+      setCurrentDate(sDate);
+      onNavigateToDate?.(sDate);
+
+      // Smooth scroll to the next target's hour
+      const startDecimal = sDate.getHours() + sDate.getMinutes() / 60;
+      setTimeout(() => {
+        scrollToHour(startDecimal, true);
+      }, 50);
+
+      setSpotlightBannerInfo({
+        goal: nextTarget.goal,
+        event: nextTarget.event,
+        isOverdue: true,
+        deficit: nextTarget.deficit,
+        totalIncompleteCount: remaining.length,
+        currentIndex: nextIndex
+      });
+
+      setRebalanceStatus(`✅ Target finished! Switched immediately to next incomplete session: "${nextTarget.event.title}"`);
+      setTimeout(() => setRebalanceStatus(null), 3000);
+    } else {
+      // All past incomplete sessions completed!
+      setSpotlightBannerInfo(null);
+      setSpotlightEventId(null);
+      setRebalanceStatus("🎉 All past incomplete sessions are completed!");
+      setTimeout(() => setRebalanceStatus(null), 3500);
+    }
+  };
+
   const handleCompleteSpotlightEvent = () => {
     if (!spotlightBannerInfo) return;
-    const evt = spotlightBannerInfo.event;
-    const g = spotlightBannerInfo.goal;
-
-    if (evt) {
-      if (onEditEvent) {
-        onEditEvent(evt.id, { completed: true });
-      } else {
-        onToggleCompleteEvent(evt.id);
-      }
-    }
-
-    if (g && g.id !== "general" && onEditGoal) {
-      onEditGoal(g.id, {
-        completedCount: g.completedCount + 1
-      });
-    }
-
-    // Auto-advance to next past incomplete session if any remain, otherwise close spotlight
-    setTimeout(() => {
-      const remainingCount = rankedPastIncompleteSessions.filter(item => item.event.id !== evt?.id).length;
-      if (remainingCount > 0) {
-        handleFocusMostIncompleteGoal();
-      } else {
-        setSpotlightBannerInfo(null);
-        setSpotlightEventId(null);
-        setRebalanceStatus("🎉 All past incomplete sessions are completed!");
-        setTimeout(() => setRebalanceStatus(null), 3500);
-      }
-    }, 300);
+    advanceToNextIncompleteTarget(spotlightBannerInfo.event?.id);
   };
+
+  // When an event displayed in the spotlight banner is completed externally (e.g. from event card or list)
+  useEffect(() => {
+    if (!spotlightBannerInfo?.event) return;
+    const currentEvt = events.find(e => e.id === spotlightBannerInfo.event?.id);
+    if (currentEvt && currentEvt.completed) {
+      if (lastHandledCompletedEventId.current !== currentEvt.id) {
+        advanceToNextIncompleteTarget(currentEvt.id);
+      }
+    }
+  }, [events, spotlightBannerInfo]);
+
+  // Listen for focus session completion events (e.g. from FocusTimerModal finish button)
+  useEffect(() => {
+    const handleFocusSessionCompleted = (e: Event) => {
+      const customEvt = e as CustomEvent<{ eventId?: string; goalId?: string; title?: string }>;
+      const finishedEventId = customEvt.detail?.eventId;
+      const finishedGoalId = customEvt.detail?.goalId;
+
+      if (spotlightBannerInfo) {
+        const isMatchingEvt = finishedEventId && spotlightBannerInfo.event?.id === finishedEventId;
+        const isMatchingGoal = finishedGoalId && spotlightBannerInfo.goal?.id === finishedGoalId;
+        if (isMatchingEvt || isMatchingGoal) {
+          advanceToNextIncompleteTarget(finishedEventId || spotlightBannerInfo.event?.id);
+        }
+      }
+    };
+
+    window.addEventListener("focus_session_completed", handleFocusSessionCompleted);
+    return () => {
+      window.removeEventListener("focus_session_completed", handleFocusSessionCompleted);
+    };
+  }, [spotlightBannerInfo, rankedPastIncompleteSessions]);
 
   const handleStartSpotlightTimer = () => {
     if (!spotlightBannerInfo) return;
@@ -2825,17 +2905,18 @@ export default function CalendarView({
               <span>Start Timer</span>
             </button>
 
-            {/* Mark Completed Now */}
+            {/* Finish Target */}
             {spotlightBannerInfo.event && !spotlightBannerInfo.event.completed && (
               <button
                 type="button"
-                id="spotlight_mark_done_btn"
+                id="spotlight_finish_target_btn"
+                data-testid="spotlight_mark_done_btn"
                 onClick={handleCompleteSpotlightEvent}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-emerald-600/20 transition cursor-pointer active:scale-95"
-                title="Mark this session completed"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-md shadow-emerald-600/20 transition cursor-pointer active:scale-95"
+                title="Finish this target and immediately switch to the next past incomplete session"
               >
-                <Check className="w-3 h-3" />
-                <span>Mark Done</span>
+                <Check className="w-3.5 h-3.5" />
+                <span>Finish</span>
               </button>
             )}
 
@@ -2844,7 +2925,10 @@ export default function CalendarView({
               <button
                 type="button"
                 id="spotlight_next_incomplete_btn"
-                onClick={() => handleFocusMostIncompleteGoal()}
+                onClick={() => {
+                  const nextIdx = (spotlightBannerInfo.currentIndex + 1) % spotlightBannerInfo.totalIncompleteCount;
+                  handleFocusMostIncompleteGoal(nextIdx);
+                }}
                 className="bg-slate-200 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200 font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 border border-slate-300 dark:border-white/10"
                 title="Focus on next incomplete goal"
               >

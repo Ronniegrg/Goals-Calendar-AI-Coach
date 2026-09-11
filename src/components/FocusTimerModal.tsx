@@ -894,6 +894,16 @@ export default function FocusTimerModal({
         if (onCompleteRef.current) {
           onCompleteRef.current(completedEventId, completedGoalId, completedNote);
         }
+        try {
+          window.dispatchEvent(new CustomEvent("focus_session_completed", {
+            detail: {
+              eventId: completedEventId,
+              goalId: completedGoalId,
+              title: finishedTitle,
+              note: completedNote
+            }
+          }));
+        } catch {}
       }
     }, 1000);
 
@@ -1034,6 +1044,16 @@ export default function FocusTimerModal({
     triggerCompletionBell(timerState.title);
     onCompleteRef.current(timerState.eventId, timerState.goalId, timerState.sessionTakeawayNote.trim() || undefined);
     clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
+    try {
+      window.dispatchEvent(new CustomEvent("focus_session_completed", {
+        detail: {
+          eventId: timerState.eventId,
+          goalId: timerState.goalId,
+          title: timerState.title,
+          note: timerState.sessionTakeawayNote.trim() || undefined
+        }
+      }));
+    } catch {}
     updateTimerState(() => null);
     if (propOnClose) propOnClose();
   };
