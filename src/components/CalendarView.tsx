@@ -392,11 +392,24 @@ export default function CalendarView({
     });
 
     mapped.sort((a, b) => {
+      // 1. Primary sort: Chronological date order (earliest calendar day first, e.g. Sep 9 before Sep 10)
+      const aStartDate = new Date(a.event.start);
+      const bStartDate = new Date(b.event.start);
+      
+      const aDayTimestamp = new Date(aStartDate.getFullYear(), aStartDate.getMonth(), aStartDate.getDate()).getTime();
+      const bDayTimestamp = new Date(bStartDate.getFullYear(), bStartDate.getMonth(), bStartDate.getDate()).getTime();
+
+      if (aDayTimestamp !== bDayTimestamp) {
+        return aDayTimestamp - bDayTimestamp;
+      }
+
+      // 2. Secondary sort for sessions missed on the SAME day: higher urgency & deficit score first
       if (b.score !== a.score) {
         return b.score - a.score;
       }
-      // Earliest past event first (chronological catchup)
-      return new Date(a.event.start).getTime() - new Date(b.event.start).getTime();
+
+      // 3. Tertiary sort: earlier time of day
+      return aStartDate.getTime() - bStartDate.getTime();
     });
 
     return mapped;
