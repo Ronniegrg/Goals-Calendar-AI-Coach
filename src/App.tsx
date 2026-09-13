@@ -1580,6 +1580,29 @@ export default function App() {
       g.id === goalId ? updatedGoal : g
     );
 
+    const hasStructuralChanges = 
+      updatedFields.name !== undefined ||
+      updatedFields.type !== undefined ||
+      updatedFields.icon !== undefined ||
+      updatedFields.timePreference !== undefined ||
+      updatedFields.customTimeStart !== undefined ||
+      updatedFields.customTimeEnd !== undefined ||
+      updatedFields.durationMinutes !== undefined ||
+      (updatedFields.weeklyTarget !== undefined && updatedFields.weeklyTarget !== targetGoal.weeklyTarget);
+
+    if (!hasStructuralChanges) {
+      setGoals(nextGoals);
+      if (updatedFields.lastSessionNote && updatedFields.lastSessionNote !== targetGoal.lastSessionNote) {
+        triggerSystemNotification(
+          "📝 Next Session Carryover Saved",
+          `Updated prep note for "${updatedGoal.name}": "${updatedFields.lastSessionNote}"`,
+          "motivation"
+        );
+      }
+      syncToCloud(nextGoals, events, availability, notifications, coachMessages);
+      return;
+    }
+
     // 1. Synchronize tied event attributes and reschedule uncompleted events if timePreference or duration changed
     let nextEvents = events.map(evt => {
       if (evt.goalId === goalId) {

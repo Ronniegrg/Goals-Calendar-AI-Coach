@@ -340,6 +340,7 @@ export default function CalendarView({
   const [spotlightEventId, setSpotlightEventId] = useState<string | null>(null);
   const [spotlightGoalId, setSpotlightGoalId] = useState<string | null>(null);
   const [currentIncompleteIndex, setCurrentIncompleteIndex] = useState<number>(0);
+  const [currentTodayGoalIndex, setCurrentTodayGoalIndex] = useState<number>(0);
   const [spotlightBannerInfo, setSpotlightBannerInfo] = useState<{
     goal: Goal;
     event?: CalendarEvent;
@@ -347,6 +348,7 @@ export default function CalendarView({
     deficit: number;
     totalIncompleteCount: number;
     currentIndex: number;
+    isTodayFocus?: boolean;
   } | null>(null);
   const lastHandledCompletedEventId = useRef<string | null>(null);
 
@@ -392,28 +394,46 @@ export default function CalendarView({
     });
 
     mapped.sort((a, b) => {
-      // 1. Primary sort: Chronological date order (earliest calendar day first, e.g. Sep 9 before Sep 10)
-      const aStartDate = new Date(a.event.start);
-      const bStartDate = new Date(b.event.start);
-      
-      const aDayTimestamp = new Date(aStartDate.getFullYear(), aStartDate.getMonth(), aStartDate.getDate()).getTime();
-      const bDayTimestamp = new Date(bStartDate.getFullYear(), bStartDate.getMonth(), bStartDate.getDate()).getTime();
+      // 1. Strict chronological order: Earlier scheduled sessions come FIRST
+      // (e.g. 7:00 PM Python strictly before 9:00 PM Keyboard typing)
+      const aTime = new Date(a.event.start).getTime();
+      const bTime = new Date(b.event.start).getTime();
 
-      if (aDayTimestamp !== bDayTimestamp) {
-        return aDayTimestamp - bDayTimestamp;
+      if (aTime !== bTime) {
+        return aTime - bTime;
       }
 
-      // 2. Secondary sort for sessions missed on the SAME day: higher urgency & deficit score first
+      // 2. Secondary tie-breaker if scheduled at the exact same time: higher deficit & priority score
       if (b.score !== a.score) {
         return b.score - a.score;
       }
 
-      // 3. Tertiary sort: earlier time of day
-      return aStartDate.getTime() - bStartDate.getTime();
+      return 0;
     });
 
     return mapped;
   }, [events, goals, now]);
+
+  // Chronological goal sessions scheduled for today
+  const todayGoalSessions = useMemo(() => {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayTimestamp = today.getTime();
+    const tomorrowTimestamp = todayTimestamp + 24 * 3600 * 1000;
+
+    const todayEvents = events.filter(evt => {
+      if (evt.type === "external") return false;
+      const s = new Date(evt.start).getTime();
+      return s >= todayTimestamp && s < tomorrowTimestamp;
+    });
+
+    todayEvents.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    return todayEvents;
+  }, [events, now]);
+
+  const todayFirstGoal = useMemo(() => {
+    if (todayGoalSessions.length === 0) return null;
+    return todayGoalSessions.find(e => !e.completed) || todayGoalSessions[0];
+  }, [todayGoalSessions]);
 
   const missedSessionsCount = rankedPastIncompleteSessions.length;
 
@@ -1154,7 +1174,73 @@ export default function CalendarView({
     });
   };
 
-  const advanceToNextIncompleteTarget = (completedEvtId?: string) => {
+  const handleFocusTodayFirstGoal = (indexToFocus?: number) => {
+    if (todayGoalSessions.length === 0) {
+      setSpotlightBannerInfo(null);
+      setSpotlightEventId(null);
+      setRebalanceStatus("📅 No goal sessions scheduled for today! Click + Goal or + Event to add one.");
+      setTimeout(() => setRebalanceStatus(null), 4000);
+      return;
+    }
+
+    let targetIndex = 0;
+    if (indexToFocus !== undefined) {
+      targetIndex = indexToFocus % todayGoalSessions.length;
+    } else {
+      // Pick first uncompleted goal session today, or the first scheduled one
+      const firstUncompletedIdx = todayGoalSessions.findIndex(e => !e.completed);
+      targetIndex = firstUncompletedIdx !== -1 ? firstUncompletedIdx : 0;
+    }
+
+    const targetEvt = todayGoalSessions[targetIndex];
+    setCurrentTodayGoalIndex((targetIndex + 1) % todayGoalSessions.length);
+
+    const tiedGoal = goals.find(
+      g => g.id === targetEvt.goalId || (g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase()))
+    ) || {
+      id: targetEvt.goalId || "today-goal",
+      name: targetEvt.title,
+      color: "#10b981",
+      completedCount: 0,
+      weeklyTarget: 1,
+      type: GoalType.PERSONAL,
+      category: "Personal",
+      durationMinutes: 60,
+      timePreference: TimePreference.ANY,
+      createdAt: ""
+    };
+
+    setSpotlightGoalId(tiedGoal.id);
+    setSpotlightEventId(targetEvt.id);
+
+    // Navigate to today's date
+    const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    setCurrentDate(todayDate);
+    onNavigateToDate?.(todayDate);
+
+    // Smooth scroll to the target session hour in grid
+    const sDate = new Date(targetEvt.start);
+    const startDecimal = sDate.getHours() + sDate.getMinutes() / 60;
+    setTimeout(() => {
+      scrollToHour(startDecimal, true);
+    }, 120);
+
+    setSpotlightBannerInfo({
+      goal: tiedGoal,
+      event: targetEvt,
+      isOverdue: false,
+      deficit: Math.max(0, tiedGoal.weeklyTarget - tiedGoal.completedCount),
+      totalIncompleteCount: todayGoalSessions.length,
+      currentIndex: targetIndex,
+      isTodayFocus: true
+    });
+
+    const timeStr = sDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    setRebalanceStatus(`🎯 Focused on today's ${targetIndex === 0 ? "first" : "next"} goal: "${targetEvt.title}" at ${timeStr}`);
+    setTimeout(() => setRebalanceStatus(null), 3500);
+  };
+
+  const advanceToNextTodayGoal = (completedEvtId?: string) => {
     if (completedEvtId) {
       lastHandledCompletedEventId.current = completedEvtId;
     }
@@ -1169,13 +1255,111 @@ export default function CalendarView({
           onToggleCompleteEvent(evt.id);
         }
       }
-      const tiedGoalId = evt?.goalId || (spotlightBannerInfo?.goal && spotlightBannerInfo.goal.id !== "general" ? spotlightBannerInfo.goal.id : undefined);
-      if (tiedGoalId && onEditGoal) {
-        const g = goals.find(item => item.id === tiedGoalId);
-        if (g) {
-          onEditGoal(g.id, {
-            completedCount: g.completedCount + 1
-          });
+    }
+
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const todayEnd = todayStart + 24 * 3600 * 1000;
+
+    // Filter all goal sessions scheduled for today in chronological order
+    const allToday = events
+      .filter(e => {
+        if (e.type === "external") return false;
+        const s = new Date(e.start).getTime();
+        return s >= todayStart && s < todayEnd;
+      })
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    // Remaining uncompleted goal sessions today, strictly excluding the one just finished
+    const remainingToday = allToday.filter(e => e.id !== completedEvtId && !e.completed);
+
+    if (remainingToday.length > 0) {
+      // Find the next target chronologically after the completed goal, or wrap around
+      const completedIdx = allToday.findIndex(e => e.id === completedEvtId);
+      let nextTarget: CalendarEvent | undefined;
+
+      if (completedIdx !== -1) {
+        nextTarget = allToday.slice(completedIdx + 1).find(e => e.id !== completedEvtId && !e.completed);
+      }
+      if (!nextTarget) {
+        nextTarget = remainingToday[0];
+      }
+
+      const nextIndex = allToday.findIndex(e => e.id === nextTarget!.id);
+
+      const tiedGoal = goals.find(
+        g => g.id === nextTarget!.goalId || (g.name && nextTarget!.title.toLowerCase().includes(g.name.toLowerCase()))
+      ) || {
+        id: nextTarget!.goalId || "today-goal",
+        name: nextTarget!.title,
+        color: "#10b981",
+        completedCount: 0,
+        weeklyTarget: 1,
+        type: GoalType.PERSONAL,
+        category: "Personal",
+        durationMinutes: 60,
+        timePreference: TimePreference.ANY,
+        createdAt: ""
+      };
+
+      setSpotlightGoalId(tiedGoal.id);
+      setSpotlightEventId(nextTarget!.id);
+      setCurrentTodayGoalIndex((nextIndex + 1) % allToday.length);
+
+      // Navigate to today's date
+      const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      setCurrentDate(todayDate);
+      onNavigateToDate?.(todayDate);
+
+      // Smooth scroll to the next target's hour
+      const sDate = new Date(nextTarget!.start);
+      const startDecimal = sDate.getHours() + sDate.getMinutes() / 60;
+      setTimeout(() => {
+        scrollToHour(startDecimal, true);
+      }, 80);
+
+      setSpotlightBannerInfo({
+        goal: tiedGoal,
+        event: nextTarget!,
+        isOverdue: false,
+        deficit: Math.max(0, tiedGoal.weeklyTarget - tiedGoal.completedCount),
+        totalIncompleteCount: allToday.length,
+        currentIndex: nextIndex !== -1 ? nextIndex : 0,
+        isTodayFocus: true
+      });
+
+      const timeStr = sDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const completedEvt = events.find(e => e.id === completedEvtId);
+      const completedTitle = completedEvt?.title ? `"${completedEvt.title}"` : "Goal";
+      setRebalanceStatus(`✅ ${completedTitle} finished! Switched immediately to next today's goal: "${nextTarget!.title}" at ${timeStr}`);
+      setTimeout(() => setRebalanceStatus(null), 3500);
+    } else {
+      // All goals scheduled for today completed!
+      setSpotlightBannerInfo(null);
+      setSpotlightEventId(null);
+      setRebalanceStatus("🎉 Fantastic! All scheduled goals for today are completed!");
+      setTimeout(() => setRebalanceStatus(null), 4000);
+    }
+  };
+
+  const advanceToNextIncompleteTarget = (completedEvtId?: string) => {
+    if (completedEvtId) {
+      lastHandledCompletedEventId.current = completedEvtId;
+    }
+
+    // If currently focusing today's goals, delegate directly to advanceToNextTodayGoal
+    if (spotlightBannerInfo?.isTodayFocus) {
+      advanceToNextTodayGoal(completedEvtId);
+      return;
+    }
+
+    // 1. Mark completed if not already completed
+    if (completedEvtId) {
+      const evt = events.find(e => e.id === completedEvtId) || spotlightBannerInfo?.event;
+      if (evt && !evt.completed) {
+        if (onEditEvent) {
+          onEditEvent(evt.id, { completed: true });
+        } else {
+          onToggleCompleteEvent(evt.id);
         }
       }
     }
@@ -1186,11 +1370,9 @@ export default function CalendarView({
     );
 
     if (remaining.length > 0) {
-      // Immediately switch to the next incomplete target
-      const nextIndex = spotlightBannerInfo && spotlightBannerInfo.currentIndex < remaining.length 
-        ? spotlightBannerInfo.currentIndex 
-        : 0;
-      const nextTarget = remaining[nextIndex];
+      // Immediately switch to the earliest remaining incomplete target in chronological order
+      const nextIndex = 0;
+      const nextTarget = remaining[0];
 
       setSpotlightGoalId(nextTarget.goal.id);
       setSpotlightEventId(nextTarget.event.id);
@@ -1228,7 +1410,11 @@ export default function CalendarView({
 
   const handleCompleteSpotlightEvent = () => {
     if (!spotlightBannerInfo) return;
-    advanceToNextIncompleteTarget(spotlightBannerInfo.event?.id);
+    if (spotlightBannerInfo.isTodayFocus) {
+      advanceToNextTodayGoal(spotlightBannerInfo.event?.id);
+    } else {
+      advanceToNextIncompleteTarget(spotlightBannerInfo.event?.id);
+    }
   };
 
   // When an event displayed in the spotlight banner is completed externally (e.g. from event card or list)
@@ -1237,10 +1423,14 @@ export default function CalendarView({
     const currentEvt = events.find(e => e.id === spotlightBannerInfo.event?.id);
     if (currentEvt && currentEvt.completed) {
       if (lastHandledCompletedEventId.current !== currentEvt.id) {
-        advanceToNextIncompleteTarget(currentEvt.id);
+        if (spotlightBannerInfo.isTodayFocus) {
+          advanceToNextTodayGoal(currentEvt.id);
+        } else {
+          advanceToNextIncompleteTarget(currentEvt.id);
+        }
       }
     }
-  }, [events, spotlightBannerInfo]);
+  }, [events, spotlightBannerInfo, now]);
 
   // Listen for focus session completion events (e.g. from FocusTimerModal finish button)
   useEffect(() => {
@@ -1248,6 +1438,31 @@ export default function CalendarView({
       const customEvt = e as CustomEvent<{ eventId?: string; goalId?: string; title?: string }>;
       const finishedEventId = customEvt.detail?.eventId;
       const finishedGoalId = customEvt.detail?.goalId;
+
+      // Determine whether this finished event was scheduled for today
+      let isToday = Boolean(spotlightBannerInfo?.isTodayFocus);
+      if (!isToday && finishedEventId) {
+        const targetEvt = events.find(ev => ev.id === finishedEventId);
+        if (targetEvt) {
+          const s = new Date(targetEvt.start);
+          isToday = s.getFullYear() === now.getFullYear() && s.getMonth() === now.getMonth() && s.getDate() === now.getDate();
+        }
+      } else if (!isToday && finishedGoalId) {
+        const todayStr = new Date().toDateString();
+        const g = goals.find(item => item.id === finishedGoalId);
+        const matchingEvt = events.find(ev =>
+          (ev.goalId === finishedGoalId || (g && ev.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
+          new Date(ev.start).toDateString() === todayStr
+        );
+        if (matchingEvt) {
+          isToday = true;
+        }
+      }
+
+      if (isToday) {
+        advanceToNextTodayGoal(finishedEventId || spotlightBannerInfo?.event?.id);
+        return;
+      }
 
       if (spotlightBannerInfo) {
         const isMatchingEvt = finishedEventId && spotlightBannerInfo.event?.id === finishedEventId;
@@ -1262,7 +1477,7 @@ export default function CalendarView({
     return () => {
       window.removeEventListener("focus_session_completed", handleFocusSessionCompleted);
     };
-  }, [spotlightBannerInfo, rankedPastIncompleteSessions]);
+  }, [spotlightBannerInfo, rankedPastIncompleteSessions, events, goals, now]);
 
   const handleStartSpotlightTimer = () => {
     if (!spotlightBannerInfo) return;
@@ -2385,6 +2600,31 @@ export default function CalendarView({
               )}
             </button>
 
+            {/* Focus Today's First Goal Button */}
+            <button
+              id="focus_today_first_goal_btn"
+              type="button"
+              onClick={() => handleFocusTodayFirstGoal()}
+              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 ${
+                todayFirstGoal
+                  ? "bg-emerald-100 dark:bg-emerald-500/20 hover:bg-emerald-200 dark:hover:bg-emerald-500/30 text-emerald-950 dark:text-emerald-200 border-emerald-400/80 dark:border-emerald-500/50 shadow-xs active:scale-95"
+                  : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
+              }`}
+              title={
+                todayFirstGoal
+                  ? `Jump directly to today's first goal: "${todayFirstGoal.title}" (${new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})`
+                  : "Focus today's first scheduled goal session"
+              }
+            >
+              <Target className={`w-3.5 h-3.5 ${todayFirstGoal ? "text-emerald-600 dark:text-emerald-400" : "text-slate-500"}`} />
+              <span>Focus Today's First Goal</span>
+              {todayFirstGoal && (
+                <span className="bg-emerald-600 text-white text-[9.5px] font-mono font-black px-1.5 py-0.2 rounded-md shadow-xs" title={`Scheduled at ${new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}>
+                  {new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                </span>
+              )}
+            </button>
+
             {/* Auto Re-balance */}
             <button
               id="auto_rebalance_btn"
@@ -2833,7 +3073,7 @@ export default function CalendarView({
                 title={`${g.name} (${g.completedCount}/${g.weeklyTarget} completed this week) - Click to start focus timer`}
               >
                 <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-1 ring-black/10 dark:ring-white/30" style={{ backgroundColor: g.color }} />
-                <span className="truncate max-w-[140px]">{g.name}</span>
+                <span className="truncate max-w-[140px] font-semibold">{g.name}</span>
                 <span className="goal-target-counter text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shadow-2xs shrink-0 tracking-tight bg-white/80 dark:bg-black/40 border border-black/5 dark:border-white/10 text-slate-700 dark:text-slate-300">
                   {g.completedCount}/{g.weeklyTarget}
                 </span>
@@ -2867,38 +3107,62 @@ export default function CalendarView({
       {spotlightBannerInfo && (
         <div 
           id="spotlight_incomplete_banner"
-          className="bg-amber-500/15 dark:bg-amber-500/10 border-b border-amber-500/30 px-3 sm:px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2.5 animate-fade-in text-xs shadow-sm z-20"
+          className={`border-b px-3 sm:px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2.5 animate-fade-in text-xs shadow-sm z-20 ${
+            spotlightBannerInfo.isTodayFocus
+              ? "bg-emerald-500/15 dark:bg-emerald-500/10 border-emerald-500/30"
+              : "bg-amber-500/15 dark:bg-amber-500/10 border-amber-500/30"
+          }`}
         >
           <div className="flex items-start sm:items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/30">
-              <Compass className="w-4 h-4" />
+            <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 border ${
+              spotlightBannerInfo.isTodayFocus
+                ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"
+                : "bg-amber-500/20 text-amber-700 dark:text-amber-400 border-amber-500/30"
+            }`}>
+              {spotlightBannerInfo.isTodayFocus ? <Target className="w-4 h-4" /> : <Compass className="w-4 h-4" />}
             </div>
             
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-extrabold text-amber-950 dark:text-amber-200 flex items-center gap-1">
-                  <span>Past Incomplete:</span>
-                  <span className="underline decoration-amber-500/50">{spotlightBannerInfo.goal.name}</span>
+                <span className={`font-extrabold flex items-center gap-1 ${
+                  spotlightBannerInfo.isTodayFocus
+                    ? "text-emerald-950 dark:text-emerald-200"
+                    : "text-amber-950 dark:text-amber-200"
+                }`}>
+                  <span>{spotlightBannerInfo.isTodayFocus ? "Today's Goal:" : "Past Incomplete:"}</span>
+                  <span className={`underline ${spotlightBannerInfo.isTodayFocus ? "decoration-emerald-500/50" : "decoration-amber-500/50"}`}>{spotlightBannerInfo.goal.name}</span>
                 </span>
                 
-                <span className="text-[10px] bg-amber-500/20 text-amber-900 dark:text-amber-300 font-mono font-bold px-2 py-0.5 rounded border border-amber-500/30">
+                <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                  spotlightBannerInfo.isTodayFocus
+                    ? "bg-emerald-500/20 text-emerald-900 dark:text-emerald-300 border-emerald-500/30"
+                    : "bg-amber-500/20 text-amber-900 dark:text-amber-300 border-amber-500/30"
+                }`}>
                   {spotlightBannerInfo.goal.completedCount}/{spotlightBannerInfo.goal.weeklyTarget} done
                 </span>
 
-                <span className="text-[9.5px] bg-rose-500/20 text-rose-800 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">
-                  <Clock className="w-2.5 h-2.5" /> Date Passed (Missed Session)
-                </span>
+                {spotlightBannerInfo.isTodayFocus ? (
+                  <span className="text-[9.5px] bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 font-extrabold px-2 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1">
+                    <Sparkles className="w-2.5 h-2.5" /> Scheduled for Today
+                  </span>
+                ) : (
+                  <span className="text-[9.5px] bg-rose-500/20 text-rose-800 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5" /> Date Passed (Missed Session)
+                  </span>
+                )}
               </div>
 
               <p className="text-[11px] text-slate-700 dark:text-slate-300 font-medium truncate mt-0.5">
                 {spotlightBannerInfo.event ? (
                   <>
-                    <span className="font-bold text-slate-900 dark:text-white">"{spotlightBannerInfo.event.title}"</span>
+                    <span className={`font-bold text-slate-900 dark:text-white ${spotlightBannerInfo.event.completed ? "line-through opacity-60 decoration-slate-900 dark:decoration-white decoration-[1.5px]" : ""}`}>"{spotlightBannerInfo.event.title}"</span>
                     {" • "}
                     <span>
                       {new Date(spotlightBannerInfo.event.start).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} at {new Date(spotlightBannerInfo.event.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </span>
-                    {" — Missed session from a past date, ready to complete now without re-balancing!"}
+                    {spotlightBannerInfo.isTodayFocus
+                      ? " — Scheduled goal session for today, ready to focus or start!"
+                      : " — Missed session from a past date, ready to complete now without re-balancing!"}
                   </>
                 ) : null}
               </p>
@@ -2926,24 +3190,28 @@ export default function CalendarView({
                 data-testid="spotlight_mark_done_btn"
                 onClick={handleCompleteSpotlightEvent}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-md shadow-emerald-600/20 transition cursor-pointer active:scale-95"
-                title="Finish this target and immediately switch to the next past incomplete session"
+                title="Finish this target"
               >
                 <Check className="w-3.5 h-3.5" />
                 <span>Finish</span>
               </button>
             )}
 
-            {/* Cycle to Next Incomplete Goal */}
+            {/* Cycle to Next Goal */}
             {spotlightBannerInfo.totalIncompleteCount > 1 && (
               <button
                 type="button"
                 id="spotlight_next_incomplete_btn"
                 onClick={() => {
                   const nextIdx = (spotlightBannerInfo.currentIndex + 1) % spotlightBannerInfo.totalIncompleteCount;
-                  handleFocusMostIncompleteGoal(nextIdx);
+                  if (spotlightBannerInfo.isTodayFocus) {
+                    handleFocusTodayFirstGoal(nextIdx);
+                  } else {
+                    handleFocusMostIncompleteGoal(nextIdx);
+                  }
                 }}
                 className="bg-slate-200 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200 font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 border border-slate-300 dark:border-white/10"
-                title="Focus on next incomplete goal"
+                title={spotlightBannerInfo.isTodayFocus ? "Focus on next goal scheduled for today" : "Focus on next incomplete goal"}
               >
                 <span>Next ({spotlightBannerInfo.currentIndex + 1}/{spotlightBannerInfo.totalIncompleteCount})</span>
               </button>
@@ -3157,11 +3425,9 @@ export default function CalendarView({
                         {/* Header Row: Title & Quick Timer Button */}
                         <div className="flex items-center justify-between gap-1">
                           <div className="flex items-center gap-1 min-w-0">
-                            <h4 className={`cal-event-title text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0 ${
-                              evt.completed ? "line-through opacity-60" : ""
-                            }`}>
+                            <h4 className="cal-event-title text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0">
                               {getEventIcon(evt)}
-                              <span className="truncate">{evt.title}</span>
+                              <span className={`truncate ${evt.completed ? "line-through opacity-60 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""}`}>{evt.title}</span>
                             </h4>
                             {spotlightEventId === evt.id && (
                               <span className="text-[7.5px] bg-amber-500 text-slate-950 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5">
@@ -3198,7 +3464,9 @@ export default function CalendarView({
                           if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
                           return (
                             <span
-                              className="text-[8.5px] font-extrabold px-1.5 py-0.5 rounded border border-black/10 dark:border-white/20 truncate max-w-full inline-flex items-center gap-1 mt-0.5 shadow-2xs"
+                              className={`text-[8.5px] font-extrabold px-1.5 py-0.5 rounded border border-black/10 dark:border-white/20 truncate max-w-full inline-flex items-center gap-1 mt-0.5 shadow-2xs ${
+                                evt.completed ? "line-through opacity-70 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""
+                              }`}
                               style={{ 
                                 backgroundColor: getSolidBgFromColor(tiedGoal.color, isLightMode ? 0.2 : 0.45, isLightMode),
                                 color: isLightMode ? "#0f172a" : "#ffffff"
@@ -3528,11 +3796,9 @@ export default function CalendarView({
                               <div className="flex justify-between items-start mb-1.5 gap-2">
                                 <div className="space-y-1">
                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                    <h4 className={`cal-event-title text-xs sm:text-sm font-extrabold flex items-center gap-1.5 ${
-                                      evt.completed ? "line-through opacity-50" : ""
-                                    }`}>
+                                    <h4 className="cal-event-title text-xs sm:text-sm font-extrabold flex items-center gap-1.5">
                                       {getEventIcon(evt)}
-                                      <span>{evt.title}</span>
+                                      <span className={evt.completed ? "line-through opacity-60 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""}>{evt.title}</span>
                                     </h4>
                                     {spotlightEventId === evt.id && (
                                       <span className="text-[8px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-0.5 shrink-0">
@@ -3546,7 +3812,9 @@ export default function CalendarView({
                                     if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
                                     return (
                                       <span
-                                        className="text-[10px] font-extrabold px-2 py-0.5 rounded-md border border-black/10 dark:border-white/20 shadow-2xs inline-flex items-center gap-1"
+                                        className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border border-black/10 dark:border-white/20 shadow-2xs inline-flex items-center gap-1 ${
+                                          evt.completed ? "line-through opacity-70 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""
+                                        }`}
                                         style={{ 
                                           backgroundColor: getSolidBgFromColor(tiedGoal.color, isLightMode ? 0.2 : 0.45, isLightMode),
                                           color: isLightMode ? "#0f172a" : "#ffffff"
@@ -3885,9 +4153,9 @@ export default function CalendarView({
                             />
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
-                                <h4 className={`text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5 truncate ${evt.completed ? "line-through opacity-75" : ""}`}>
+                                <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5 truncate">
                                   {getEventIcon(evt)}
-                                  <span className="truncate">{evt.title}</span>
+                                  <span className={`truncate ${evt.completed ? "line-through opacity-60 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""}`}>{evt.title}</span>
                                 </h4>
                                 {spotlightEventId === evt.id && (
                                   <span className="text-[9px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0">
@@ -3900,7 +4168,9 @@ export default function CalendarView({
                                   if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
                                   return (
                                     <span
-                                      className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-md border flex items-center gap-1 shrink-0 shadow-xs"
+                                      className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-md border flex items-center gap-1 shrink-0 shadow-xs ${
+                                        evt.completed ? "line-through opacity-70 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""
+                                      }`}
                                       style={{
                                         backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.35),
                                         borderColor: getSolidBgFromColor(tiedGoal.color, 0.6),

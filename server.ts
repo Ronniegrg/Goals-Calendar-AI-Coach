@@ -33,9 +33,13 @@ function getAi(): GoogleGenAI {
 }
 
 /**
- * Resilient Gemini Content Generator with multi-model fallback and transient error handling.
- * If the primary model (e.g. gemini-3.7-flash) returns 503 (high demand) or 429, it gracefully
- * attempts fallback with gemini-3.1-flash-lite / gemini-flash-latest before returning null for local heuristic fallbacks.
+ * Resilient Gemini Content Generator with multi-tier model fallback.
+ * Automatically cascades through:
+ * 1. Primary Model (defaults to gemini-3.8-flash)
+ * 2. Stable Alias (gemini-flash-latest)
+ * 3. High-throughput Lite (gemini-3.1-flash-lite)
+ * If cloud models encounter temporary demand spikes (503/429), it smoothly
+ * transitions down the tier chain before engaging the local heuristic intelligence.
  */
 async function generateWithFallback(params: {
   contents: any;
@@ -47,35 +51,46 @@ async function generateWithFallback(params: {
   if (!key) return null;
 
   const ai = getAi();
-  const primaryModel = params.primaryModel || "gemini-3.8-flash";
-  const fallbackModel = params.fallbackModel || "gemini-3.1-flash-lite";
+  
+  const modelChain = [
+    params.primaryModel || "gemini-3.8-flash",
+    "gemini-flash-latest",
+    params.fallbackModel || "gemini-3.1-flash-lite"
+  ];
+  const uniqueModels = Array.from(new Set(modelChain));
 
-  try {
-    const result = await ai.models.generateContent({
-      model: primaryModel,
-      contents: params.contents,
-      config: params.config
-    });
-    if (result && result.text) {
-      return result;
-    }
-  } catch (primaryErr: any) {
-    const errMsg = primaryErr?.message || String(primaryErr);
-    console.warn(`Primary Gemini model (${primaryModel}) unavailable: ${errMsg}. Attempting fallback with ${fallbackModel}...`);
-    
+  for (let i = 0; i < uniqueModels.length; i++) {
+    const model = uniqueModels[i];
     try {
-      // Brief pause before fallback attempt
-      await new Promise((r) => setTimeout(r, 250));
-      const fallbackResult = await ai.models.generateContent({
-        model: fallbackModel,
+      let timer: any;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after 7000ms`)), 7000);
+      });
+
+      const apiPromise = ai.models.generateContent({
+        model,
         contents: params.contents,
         config: params.config
       });
-      if (fallbackResult && fallbackResult.text) {
-        return fallbackResult;
+
+      const result = await Promise.race([apiPromise, timeoutPromise]) as any;
+      clearTimeout(timer);
+
+      if (result && result.text) {
+        return result;
       }
-    } catch (fallbackErr: any) {
-      console.warn(`Fallback Gemini model (${fallbackModel}) unavailable: ${fallbackErr?.message || fallbackErr}. Engaging local smart heuristic generator.`);
+    } catch (err: any) {
+      const isLast = i === uniqueModels.length - 1;
+      const status = err?.status || err?.code || (err?.message?.includes("503") ? 503 : undefined);
+      const isDemandSpike = status === 503 || status === 429 || err?.message?.includes("high demand") || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("timeout");
+
+      if (!isLast) {
+        const nextModel = uniqueModels[i + 1];
+        console.log(`[AI Service] Model ${model} ${isDemandSpike ? "busy (high demand 503/timeout)" : "unavailable"}. Transitioning gracefully to ${nextModel}...`);
+        await new Promise((r) => setTimeout(r, 200));
+      } else {
+        console.log(`[AI Service] All cloud models currently experiencing temporary demand spike. Transitioning to local heuristic intelligence.`);
+      }
     }
   }
 
@@ -380,7 +395,7 @@ ${JSON.stringify(availability, null, 2)}`;
     const userPrompt = prompt || "Analyze my current routine and suggest 3 direct optimizations to boost my weekly consistency and completion rate.";
 
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.7-flash",
+      primaryModel: "gemini-3.8-flash",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
@@ -514,7 +529,7 @@ Return ONLY valid JSON. No markdown syntax wrapper.`;
 
     const userPrompt = `Goals: ${JSON.stringify(goals)}\nCompleted/Scheduled Events: ${JSON.stringify(events)}`;
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.7-flash",
+      primaryModel: "gemini-3.8-flash",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
@@ -711,7 +726,7 @@ Return ONLY valid JSON. No markdown ticks.`;
     const userPrompt = `Goal Name: "${goalName}"\nType: "${goalType}"\nCategory: "${category}"\nTotal Session Duration: ${targetDur} minutes\nDifficulty / Focus: "${difficulty}"`;
 
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.7-flash",
+      primaryModel: "gemini-3.8-flash",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
