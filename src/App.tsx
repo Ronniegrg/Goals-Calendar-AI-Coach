@@ -2299,6 +2299,12 @@ export default function App() {
           <ProgressDashboard 
             goals={goals}
             events={events}
+            onNavigateToDate={(targetDate?: Date) => {
+              if (targetDate) {
+                setCalendarTargetDate(targetDate);
+              }
+              setActiveTab("calendar");
+            }}
           />
         )}
 

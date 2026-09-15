@@ -10,7 +10,8 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Initialize Gemini client lazily
 let aiClient: GoogleGenAI | null = null;
@@ -46,11 +47,13 @@ async function generateWithFallback(params: {
   config?: any;
   primaryModel?: string;
   fallbackModel?: string;
+  timeoutMs?: number;
 }): Promise<any | null> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
 
   const ai = getAi();
+  const requestTimeout = params.timeoutMs || 4500;
   
   const modelChain = [
     params.primaryModel || "gemini-3.8-flash",
@@ -64,7 +67,7 @@ async function generateWithFallback(params: {
     try {
       let timer: any;
       const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after 7000ms`)), 7000);
+        timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after ${requestTimeout}ms`)), requestTimeout);
       });
 
       const apiPromise = ai.models.generateContent({

@@ -40,6 +40,7 @@ import {
 import { inferGoalEnergyLevel, getEnergyBadgeData } from "../lib/energyProfile";
 import { Brain, Zap, BatteryCharging } from "lucide-react";
 import GoalRecommendationEngine from "./GoalRecommendationEngine";
+import HabitConsistencyHeatmap from "./HabitConsistencyHeatmap";
 
 // Premium Goal Quick-Add Templates Presets
 const PRESET_TEMPLATES = [
@@ -666,6 +667,7 @@ export default function GoalTracker({
   // Catalog filter and sort state
   const [priorityFilter, setPriorityFilter] = useState<"all" | GoalPriority>("all");
   const [sortByPriority, setSortByPriority] = useState<boolean>(true);
+  const [showConsistencyHeatmap, setShowConsistencyHeatmap] = useState<boolean>(false);
 
   const handleApplyPresetTemplate = (preset: typeof PRESET_TEMPLATES[number]) => {
     setFormError(null);
@@ -1716,14 +1718,45 @@ export default function GoalTracker({
               </div>
             </div>
 
-            <button
-              onClick={() => setSortByPriority(prev => !prev)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 transition cursor-pointer"
-              title="Toggle Priority Sorting"
-            >
-              <ArrowUpDown className="w-3 h-3 text-indigo-400" />
-              <span>{sortByPriority ? "Sorted by Priority (Top First)" : "Standard Order"}</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                id="toggle_goal_consistency_heatmap_btn"
+                onClick={() => setShowConsistencyHeatmap(prev => !prev)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium border transition cursor-pointer ${
+                  showConsistencyHeatmap 
+                    ? "bg-emerald-600 text-white border-emerald-500 shadow-sm ring-1 ring-emerald-400" 
+                    : "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10"
+                }`}
+                title="Toggle GitHub-style Habit Consistency Matrix"
+              >
+                <Activity className="w-3 h-3 text-emerald-400" />
+                <span>{showConsistencyHeatmap ? "Hide Heatmap" : "Habit Heatmap"}</span>
+              </button>
+
+              <button
+                onClick={() => setSortByPriority(prev => !prev)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 transition cursor-pointer"
+                title="Toggle Priority Sorting"
+              >
+                <ArrowUpDown className="w-3 h-3 text-indigo-400" />
+                <span>{sortByPriority ? "Sorted by Priority (Top First)" : "Standard Order"}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Collapsible GitHub-Style Habit Consistency Heatmap */}
+        {showConsistencyHeatmap && goals.length > 0 && (
+          <div className="mb-4 animate-fade-in">
+            <HabitConsistencyHeatmap 
+              goals={goals}
+              events={events}
+              onNavigateToDate={onNavigateToCalendar}
+              title="Habit Consistency Heatmap"
+              subtitle="GitHub-style visual activity matrix tracking habit streaks and routine consistency"
+              showGoalFilter={true}
+            />
           </div>
         )}
 

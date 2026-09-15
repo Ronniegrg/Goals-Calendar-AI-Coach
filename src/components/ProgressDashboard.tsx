@@ -40,13 +40,15 @@ import {
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
+import HabitConsistencyHeatmap from "./HabitConsistencyHeatmap";
 
 interface ProgressDashboardProps {
   goals: Goal[];
   events: CalendarEvent[];
+  onNavigateToDate?: (date: Date) => void;
 }
 
-export default function ProgressDashboard({ goals, events }: ProgressDashboardProps) {
+export default function ProgressDashboard({ goals, events, onNavigateToDate }: ProgressDashboardProps) {
   const [selectedHeatmapDay, setSelectedHeatmapDay] = useState<number | null>(null);
 
   // 1. Calculate general numbers
@@ -419,124 +421,15 @@ export default function ProgressDashboard({ goals, events }: ProgressDashboardPr
 
       </div>
 
-      {/* SECTION 2: GITHUB-STYLE 30-DAY HABIT HEATMAP */}
-      <div id="github_habit_heatmap_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-2 border-b border-white/10">
-          <div>
-            <h3 className="font-sans font-semibold text-white text-sm flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-emerald-400" />
-              GitHub-Style 30-Day Habit Heatmap
-            </h3>
-            <p className="text-[11px] text-slate-300 mt-0.5 font-medium leading-tight">
-              A visual 30-day activity matrix tracking daily completed goal blocks & consistency streaks.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300">
-            <div className="bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-xl flex items-center gap-1.5 font-medium">
-              <Flame className="w-3.5 h-3.5 text-rose-400" />
-              <span>Streak: <strong className="text-white">{currentStreak} days</strong></span>
-            </div>
-            <div className="bg-indigo-500/10 border border-indigo-500/20 px-3 py-1 rounded-xl flex items-center gap-1.5 font-medium">
-              <CheckCircle className="w-3.5 h-3.5 text-indigo-400" />
-              <span>30-Day Total: <strong className="text-white">{completedEvents.length} done</strong></span>
-            </div>
-          </div>
-        </div>
-
-        {/* Heatmap Grid & Legend */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-            <span>Past 30 Days Activity Log</span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px]">Less</span>
-              <span className="w-3.5 h-3.5 rounded bg-slate-900/80 border border-white/5" title="0 Sessions" />
-              <span className="w-3.5 h-3.5 rounded bg-emerald-950 border border-emerald-800/40" title="1 Session" />
-              <span className="w-3.5 h-3.5 rounded bg-emerald-700/80 border border-emerald-600/50" title="2 Sessions" />
-              <span className="w-3.5 h-3.5 rounded bg-emerald-500 border border-emerald-400 shadow-sm shadow-emerald-500/30" title="3+ Sessions" />
-              <span className="text-[10px]">More Focus</span>
-            </div>
-          </div>
-
-          {/* 30-Day Heatmap Grid */}
-          <div className="grid grid-cols-6 sm:grid-cols-10 lg:grid-cols-15 gap-2.5 pt-1" id="heatmap_grid_blocks">
-            {past30Days.map((item) => {
-              let colorClass = "bg-slate-900/80 border-white/5 hover:border-white/20 text-slate-500";
-              if (item.count === 1) {
-                colorClass = "bg-emerald-950 border-emerald-800/50 text-emerald-300 hover:bg-emerald-900";
-              } else if (item.count === 2) {
-                colorClass = "bg-emerald-700/80 border-emerald-600/60 text-white hover:bg-emerald-600";
-              } else if (item.count >= 3) {
-                colorClass = "bg-emerald-500 border-emerald-400 text-white shadow-md shadow-emerald-500/30 hover:bg-emerald-400";
-              }
-
-              const isSelected = selectedHeatmapDay === item.index;
-
-              return (
-                <div
-                  key={item.index}
-                  onClick={() => setSelectedHeatmapDay(isSelected ? null : item.index)}
-                  className={`relative group flex flex-col items-center p-2 rounded-xl border transition-all cursor-pointer ${colorClass} ${
-                    isSelected ? "ring-2 ring-emerald-400 scale-105 z-20" : ""
-                  }`}
-                  id={`heatmap_tile_${item.index}`}
-                >
-                  <span className="text-[10px] font-mono font-bold leading-none">{item.date.getDate()}</span>
-                  <span className="text-[8px] font-sans font-medium opacity-75 mt-0.5">{item.dayOfWeek}</span>
-
-                  {item.count > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-emerald-400 text-black text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow">
-                      {item.count}
-                    </span>
-                  )}
-
-                  {/* Hover Tooltip showing completed goal breakdown */}
-                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col bg-[#0b0f19] border border-white/20 text-white p-2.5 rounded-xl shadow-2xl z-30 min-w-[150px] max-w-[220px] text-left pointer-events-none animate-fade-in">
-                    <p className="text-[10px] font-bold text-emerald-400 mb-1 border-b border-white/10 pb-1">
-                      {item.dateStr} ({item.dayOfWeek})
-                    </p>
-                    {item.count === 0 ? (
-                      <p className="text-[10px] text-slate-400 italic">No goal sessions logged</p>
-                    ) : (
-                      <div className="space-y-1 text-[10px]">
-                        <p className="font-semibold text-slate-300">Completed ({item.count}):</p>
-                        <ul className="list-disc list-inside space-y-0.5 text-slate-200">
-                          {item.goalsCompleted.map((title, gIdx) => (
-                            <li key={gIdx} className="truncate">{title}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Selected day drilldown details */}
-          {selectedHeatmapDay !== null && (
-            <div className="mt-3 bg-white/5 border border-white/10 p-3 rounded-xl flex items-center justify-between text-xs text-slate-200 animate-fade-in">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-400" />
-                <div>
-                  <span className="font-bold text-white">{past30Days[selectedHeatmapDay].dateStr}: </span>
-                  <span>
-                    {past30Days[selectedHeatmapDay].count === 0 
-                      ? "Rest Day (0 completed sessions)" 
-                      : `Log of completed sessions: ${past30Days[selectedHeatmapDay].goalsCompleted.join(", ")}`}
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedHeatmapDay(null)}
-                className="text-slate-400 hover:text-white text-xs font-bold px-2 py-1 rounded bg-white/5"
-              >
-                Close
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
+      {/* SECTION 2: GITHUB-STYLE HABIT CONSISTENCY HEATMAP */}
+      <HabitConsistencyHeatmap 
+        goals={goals} 
+        events={events} 
+        onNavigateToDate={onNavigateToDate} 
+        title="GitHub-Style Habit Consistency Matrix"
+        subtitle="Visual contribution matrix tracking daily routine completions, intensity streaks, and habit adherence"
+        showGoalFilter={true}
+      />
 
       {/* SECTION 3: MILESTONE & STREAK BADGES */}
       <div id="milestone_streak_badges_card" className="bg-white/5 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-xl space-y-4">
