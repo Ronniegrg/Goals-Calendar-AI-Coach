@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Calendar as CalendarIcon, 
   Layers, 
@@ -30,6 +30,8 @@ import AICoach from "./components/AICoach";
 import NotificationsPanel from "./components/NotificationsPanel";
 import FocusTimerModal from "./components/FocusTimerModal";
 import EnergyProfileModal from "./components/EnergyProfileModal";
+import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
+import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
@@ -204,193 +206,285 @@ export default function App() {
     };
   }, [themeMode]);
 
-  // 1. Initial Data load from cloud sync server with localStorage self-healing fallback
-  useEffect(() => {
-    const fetchData = async () => {
-      setSyncStatus("syncing");
-      try {
-        const res = await fetch(`/api/sync?email=${encodeURIComponent(userEmail)}`);
-        if (res.ok) {
-          const data: SyncData & { lastSyncedAt?: string } = await res.json();
-          
-          const localLastUpdated = Number(localStorage.getItem("local_last_updated") || "0");
-          const cloudLastSynced = data.lastSyncedAt ? new Date(data.lastSyncedAt).getTime() : 0;
-          
-          const cachedGoalsRaw = localStorage.getItem("cached_goals");
-          const cachedGoalsParsed = cachedGoalsRaw ? JSON.parse(cachedGoalsRaw) : null;
-          const localGoalsList = Array.isArray(cachedGoalsParsed)
-            ? cachedGoalsParsed.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id))
-            : [];
-          const hasLocalData = cachedGoalsRaw !== null;
+  // Synchronous local persistence + Debounced Cloud Synchronization with auto-retry and offline resilience
+  const syncDebounceTimerRef = useRef<any>(null);
+  const isSyncingRef = useRef<boolean>(false);
+  const pendingSyncDataRef = useRef<SyncData | null>(null);
 
-          if (data.coachPersona) {
-            setCoachPersona(data.coachPersona);
-            localStorage.setItem("coach_persona", data.coachPersona);
-          }
+  const executeCloudPost = async (payload: SyncData, retryCount = 0): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 9000);
 
-          // Clean legacy default goals from cloud data as well
-          const cloudGoalsClean = Array.isArray(data.goals)
-            ? data.goals.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id))
-            : [];
-          const cloudEventsClean = Array.isArray(data.events)
-            ? data.events.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id))
-            : [];
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
 
-          if (hasLocalData && localLastUpdated > cloudLastSynced) {
-            console.log("Local cache is newer than cloud. Syncing user custom goals to server...");
-            
-            const localEventsRaw = JSON.parse(localStorage.getItem("cached_events") || "[]");
-            const localEvents = Array.isArray(localEventsRaw)
-              ? localEventsRaw.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id))
-              : [];
-            const localAvailability = JSON.parse(localStorage.getItem("cached_availability") || "[]");
-            const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
-            const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
-
-            // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
-            const cleanEventsRaw = localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
-            const { optimizedEvents: optimizedLocalEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanEventsRaw, localGoalsList);
-
-            setGoals(localGoalsList);
-            setEvents(optimizedLocalEvents);
-            if (localAvailability.length > 0) {
-              setAvailability(localAvailability);
-            } else {
-              setAvailability(data.availability || []);
-            }
-            setNotifications(localNotifications);
-            setCoachMessages(localCoachMessages);
-
-            localStorage.setItem("cached_goals", JSON.stringify(localGoalsList));
-            localStorage.setItem("cached_events", JSON.stringify(optimizedLocalEvents));
-            localStorage.setItem("local_last_updated", Date.now().toString());
-
-            // Sync up sanitized local user data to cloud database
-            await syncToCloud(
-              localGoalsList,
-              optimizedLocalEvents,
-              localAvailability.length > 0 ? localAvailability : data.availability || [],
-              localNotifications,
-              localCoachMessages,
-              (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor"
-            );
-          } else {
-            // Cloud is newer or initial load
-            const cleanCloudEventsRaw = cloudEventsClean.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
-            // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
-            const { optimizedEvents: optimizedCloudEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanCloudEventsRaw, cloudGoalsClean);
-
-            setGoals(cloudGoalsClean);
-            setEvents(optimizedCloudEvents);
-            setAvailability(data.availability || []);
-            setNotifications(data.notifications || []);
-            setCoachMessages(data.coachMessages || []);
-            if (data.coachPersona) {
-              setCoachPersona(data.coachPersona);
-              localStorage.setItem("coach_persona", data.coachPersona);
-            }
-
-            localStorage.setItem("cached_goals", JSON.stringify(cloudGoalsClean));
-            localStorage.setItem("cached_events", JSON.stringify(optimizedCloudEvents));
-            localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
-            localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));
-            localStorage.setItem("cached_coachMessages", JSON.stringify(data.coachMessages || []));
-            if (data.customTemplates && Array.isArray(data.customTemplates) && data.customTemplates.length > 0) {
-              const localTemplatesRaw = localStorage.getItem("focus_timer_custom_templates_v2");
-              if (!localTemplatesRaw) {
-                localStorage.setItem("focus_timer_custom_templates_v2", JSON.stringify(data.customTemplates));
-              }
-            }
-            localStorage.setItem("local_last_updated", Date.now().toString());
-
-            if (duplicatesRemoved > 0 || priorityAdjusted > 0) {
-              // Persist clean deduplicated and priority-aligned schedule to server
-              await syncToCloud(
-                cloudGoalsClean,
-                optimizedCloudEvents,
-                data.availability || [],
-                data.notifications || [],
-                data.coachMessages || [],
-                data.coachPersona || "mentor"
-              );
-            }
-          }
-          setLastSynced(new Date().toLocaleTimeString());
-          setSyncStatus("synced");
-        } else {
-          setSyncStatus("offline");
-        }
-      } catch (err) {
-        console.error("Cloud fetch sync failed:", err);
-        setSyncStatus("offline");
+      if (res.ok) {
+        setLastSynced(new Date().toLocaleTimeString());
+        setSyncStatus("synced");
+        return true;
       }
-    };
-    fetchData();
-  }, [userEmail]);
+      throw new Error(`HTTP ${res.status}`);
+    } catch (err: any) {
+      if (retryCount < 2) {
+        await new Promise((r) => setTimeout(r, (retryCount + 1) * 1000));
+        return executeCloudPost(payload, retryCount + 1);
+      }
+      console.warn("Cloud synchronization temporarily offline (schedule safely cached in local storage):", err?.message || err);
+      setSyncStatus("offline");
+      return false;
+    }
+  };
 
-  // 2. Auto-sync helper (Syncs client modifications directly to server db and saves in localStorage)
-  const syncToCloud = async (
+  const processPendingSync = async () => {
+    if (isSyncingRef.current || !pendingSyncDataRef.current) return;
+    isSyncingRef.current = true;
+    const currentPayload = pendingSyncDataRef.current;
+    pendingSyncDataRef.current = null;
+    setSyncStatus("syncing");
+
+    await executeCloudPost(currentPayload);
+
+    isSyncingRef.current = false;
+    if (pendingSyncDataRef.current) {
+      processPendingSync();
+    }
+  };
+
+  // 2. Auto-sync helper (Syncs client modifications with local persistence and debounced cloud upload)
+  const syncToCloud = (
     prevGoals: Goal[],
     prevEvents: CalendarEvent[],
     prevAvailability: AvailabilityWindow[],
     prevNotifications: AppNotification[],
     prevCoachMessages: CoachMessage[],
-    forcedPersona?: "mentor" | "drill" | "data"
+    forcedPersona?: "mentor" | "drill" | "data",
+    immediate = false
   ) => {
-    // Save to local cache first
+    // Save to local cache first for instant persistence
     const nowStr = Date.now().toString();
-    localStorage.setItem("cached_goals", JSON.stringify(prevGoals));
-    localStorage.setItem("cached_events", JSON.stringify(prevEvents));
-    localStorage.setItem("cached_availability", JSON.stringify(prevAvailability));
-    localStorage.setItem("cached_notifications", JSON.stringify(prevNotifications));
-    localStorage.setItem("cached_coachMessages", JSON.stringify(prevCoachMessages));
-    localStorage.setItem("local_last_updated", nowStr);
+    try {
+      localStorage.setItem("cached_goals", JSON.stringify(prevGoals));
+      localStorage.setItem("cached_events", JSON.stringify(prevEvents));
+      localStorage.setItem("cached_availability", JSON.stringify(prevAvailability));
+      localStorage.setItem("cached_notifications", JSON.stringify(prevNotifications));
+      localStorage.setItem("cached_coachMessages", JSON.stringify(prevCoachMessages));
+      localStorage.setItem("local_last_updated", nowStr);
+    } catch (storageErr) {
+      console.warn("LocalStorage cache update note:", storageErr);
+    }
 
     const activePersona = forcedPersona || coachPersona;
-
-    setSyncStatus("syncing");
+    let localTemplates: any[] = [];
     try {
-      let localTemplates: any[] = [];
+      const raw = localStorage.getItem("focus_timer_custom_templates_v2");
+      if (raw) localTemplates = JSON.parse(raw);
+    } catch (e) {
+      console.warn("Local custom templates parse note:", e);
+    }
+
+    const payload: SyncData = {
+      goals: prevGoals,
+      events: prevEvents,
+      availability: prevAvailability,
+      notifications: prevNotifications,
+      coachMessages: prevCoachMessages,
+      userEmail,
+      coachPersona: activePersona,
+      customTemplates: localTemplates
+    };
+
+    pendingSyncDataRef.current = payload;
+
+    if (syncDebounceTimerRef.current) {
+      clearTimeout(syncDebounceTimerRef.current);
+      syncDebounceTimerRef.current = null;
+    }
+
+    if (immediate) {
+      processPendingSync();
+    } else {
+      syncDebounceTimerRef.current = setTimeout(() => {
+        processPendingSync();
+      }, 350);
+    }
+  };
+
+  // 1. Initial Data load from cloud sync server with localStorage self-healing fallback
+  useEffect(() => {
+    let isCancelled = false;
+
+    const fetchWithRetry = async (retriesLeft = 2): Promise<SyncData & { lastSyncedAt?: string } | null> => {
       try {
-        const raw = localStorage.getItem("focus_timer_custom_templates_v2");
-        if (raw) localTemplates = JSON.parse(raw);
-      } catch (e) {
-        console.error("Error parsing local custom templates:", e);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(`/api/sync?email=${encodeURIComponent(userEmail)}`, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          return await res.json();
+        }
+        throw new Error(`HTTP ${res.status}`);
+      } catch (err: any) {
+        if (retriesLeft > 0 && !isCancelled) {
+          await new Promise((r) => setTimeout(r, 1200));
+          return fetchWithRetry(retriesLeft - 1);
+        }
+        console.warn("Initial cloud schedule fetch unavailable, continuing with local storage state:", err?.message || err);
+        return null;
       }
+    };
 
-      const payload: SyncData = {
-        goals: prevGoals,
-        events: prevEvents,
-        availability: prevAvailability,
-        notifications: prevNotifications,
-        coachMessages: prevCoachMessages,
-        userEmail,
-        coachPersona: activePersona,
-        customTemplates: localTemplates
-      };
+    const fetchData = async () => {
+      setSyncStatus("syncing");
+      const data = await fetchWithRetry(2);
+      if (isCancelled) return;
 
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
+      if (data) {
+        const localLastUpdated = Number(localStorage.getItem("local_last_updated") || "0");
+        const cloudLastSynced = data.lastSyncedAt ? new Date(data.lastSyncedAt).getTime() : 0;
+        
+        const cachedGoalsRaw = localStorage.getItem("cached_goals");
+        const cachedGoalsParsed = cachedGoalsRaw ? JSON.parse(cachedGoalsRaw) : null;
+        const localGoalsList = Array.isArray(cachedGoalsParsed)
+          ? cachedGoalsParsed.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id))
+          : [];
+        const hasLocalData = cachedGoalsRaw !== null;
 
-      if (res.ok) {
+        if (data.coachPersona) {
+          setCoachPersona(data.coachPersona);
+          localStorage.setItem("coach_persona", data.coachPersona);
+        }
+
+        // Clean legacy default goals from cloud data as well
+        const cloudGoalsClean = Array.isArray(data.goals)
+          ? data.goals.filter((g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id))
+          : [];
+        const cloudEventsClean = Array.isArray(data.events)
+          ? data.events.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id))
+          : [];
+
+        if (hasLocalData && localLastUpdated > cloudLastSynced) {
+          console.log("Local cache is newer than cloud. Syncing user custom goals to server...");
+          
+          const localEventsRaw = JSON.parse(localStorage.getItem("cached_events") || "[]");
+          const localEvents = Array.isArray(localEventsRaw)
+            ? localEventsRaw.filter((e: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) && !["e1", "e2", "e3", "e4"].includes(e.id))
+            : [];
+          const localAvailability = JSON.parse(localStorage.getItem("cached_availability") || "[]");
+          const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
+          const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
+
+          // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
+          const cleanEventsRaw = localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
+          const { optimizedEvents: optimizedLocalEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanEventsRaw, localGoalsList);
+
+          setGoals(localGoalsList);
+          setEvents(optimizedLocalEvents);
+          if (localAvailability.length > 0) {
+            setAvailability(localAvailability);
+          } else {
+            setAvailability(data.availability || []);
+          }
+          setNotifications(localNotifications);
+          setCoachMessages(localCoachMessages);
+
+          localStorage.setItem("cached_goals", JSON.stringify(localGoalsList));
+          localStorage.setItem("cached_events", JSON.stringify(optimizedLocalEvents));
+          localStorage.setItem("local_last_updated", Date.now().toString());
+
+          // Sync up sanitized local user data to cloud database
+          syncToCloud(
+            localGoalsList,
+            optimizedLocalEvents,
+            localAvailability.length > 0 ? localAvailability : data.availability || [],
+            localNotifications,
+            localCoachMessages,
+            (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor",
+            true
+          );
+        } else {
+          // Cloud is newer or initial load
+          const cleanCloudEventsRaw = cloudEventsClean.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
+          // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
+          const { optimizedEvents: optimizedCloudEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanCloudEventsRaw, cloudGoalsClean);
+
+          setGoals(cloudGoalsClean);
+          setEvents(optimizedCloudEvents);
+          setAvailability(data.availability || []);
+          setNotifications(data.notifications || []);
+          setCoachMessages(data.coachMessages || []);
+          if (data.coachPersona) {
+            setCoachPersona(data.coachPersona);
+            localStorage.setItem("coach_persona", data.coachPersona);
+          }
+
+          localStorage.setItem("cached_goals", JSON.stringify(cloudGoalsClean));
+          localStorage.setItem("cached_events", JSON.stringify(optimizedCloudEvents));
+          localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
+          localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));
+          localStorage.setItem("cached_coachMessages", JSON.stringify(data.coachMessages || []));
+          if (data.customTemplates && Array.isArray(data.customTemplates) && data.customTemplates.length > 0) {
+            const localTemplatesRaw = localStorage.getItem("focus_timer_custom_templates_v2");
+            if (!localTemplatesRaw) {
+              localStorage.setItem("focus_timer_custom_templates_v2", JSON.stringify(data.customTemplates));
+            }
+          }
+          localStorage.setItem("local_last_updated", Date.now().toString());
+
+          if (duplicatesRemoved > 0 || priorityAdjusted > 0) {
+            // Persist clean deduplicated and priority-aligned schedule to server
+            syncToCloud(
+              cloudGoalsClean,
+              optimizedCloudEvents,
+              data.availability || [],
+              data.notifications || [],
+              data.coachMessages || [],
+              data.coachPersona || "mentor",
+              true
+            );
+          }
+        }
         setLastSynced(new Date().toLocaleTimeString());
         setSyncStatus("synced");
       } else {
         setSyncStatus("offline");
       }
-    } catch (err) {
-      console.error("Cloud synchronization failed:", err);
+    };
+    fetchData();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [userEmail]);
+
+  // Online / Offline recovery listener
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log("[Network] Reconnected online. Synchronizing latest schedule state with cloud...");
+      syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona, true);
+    };
+    const handleOffline = () => {
       setSyncStatus("offline");
-    }
-  };
+    };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [goals, events, availability, notifications, coachMessages, coachPersona]);
 
   // Sync custom timer templates whenever created, edited, or deleted in FocusTimerModal
   useEffect(() => {
     const handleTemplateSync = () => {
-      syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona);
+      syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona, true);
     };
     window.addEventListener("sync_focus_templates", handleTemplateSync);
     return () => {
@@ -1959,6 +2053,12 @@ export default function App() {
     syncToCloud(goals, events, availability, nextNotifs, coachMessages);
   };
 
+  const handleDismissNotification = (notifId: string) => {
+    const nextNotifs = notifications.filter(n => n.id !== notifId);
+    setNotifications(nextNotifs);
+    syncToCloud(goals, events, availability, nextNotifs, coachMessages);
+  };
+
   const handleClearAllNotifications = () => {
     setNotifications([]);
     syncToCloud(goals, events, availability, [], coachMessages);
@@ -2090,22 +2190,35 @@ export default function App() {
 
             <div className="flex items-center gap-2">
               {syncStatus === "synced" && (
-                <div className="flex items-center gap-1 bg-emerald-500/15 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 shadow-xs">
+                <button
+                  id="sync-status-synced-btn"
+                  onClick={() => syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona, true)}
+                  title={lastSynced ? `Last synchronized at ${lastSynced}. Click to force sync now.` : "Schedule synchronized with cloud. Click to force sync."}
+                  className="flex items-center gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 shadow-xs cursor-pointer transition-colors"
+                >
                   <Wifi className="w-3.5 h-3.5" />
                   <span className="font-bold text-[10px] uppercase">Synced with cloud</span>
-                </div>
+                </button>
               )}
               {syncStatus === "syncing" && (
-                <div className="flex items-center gap-1 bg-amber-500/15 text-amber-400 px-3 py-1 rounded-full border border-amber-500/20 animate-pulse">
+                <div 
+                  id="sync-status-syncing-indicator"
+                  className="flex items-center gap-1.5 bg-amber-500/15 text-amber-400 px-3 py-1 rounded-full border border-amber-500/20 animate-pulse"
+                >
                   <RotateCcw className="w-3.5 h-3.5 animate-spin" />
                   <span className="font-bold text-[10px] uppercase">Syncing...</span>
                 </div>
               )}
               {syncStatus === "offline" && (
-                <div className="flex items-center gap-1 bg-rose-500/20 text-rose-400 px-3 py-1 rounded-full border border-rose-500/30">
+                <button
+                  id="sync-status-offline-btn"
+                  onClick={() => syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona, true)}
+                  title="Operating in offline mode (all data safely preserved in local storage). Click to retry connecting to cloud server."
+                  className="flex items-center gap-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 dark:text-rose-400 px-3 py-1 rounded-full border border-rose-500/30 cursor-pointer transition-colors"
+                >
                   <WifiOff className="w-3.5 h-3.5" />
-                  <span className="font-bold text-[10px] uppercase">Offline Mode</span>
-                </div>
+                  <span className="font-bold text-[10px] uppercase">Offline (Click to retry)</span>
+                </button>
               )}
             </div>
           </div>
@@ -2230,15 +2343,38 @@ export default function App() {
         {activeTab === "calendar" && (
           <div className="space-y-6">
             
-            {/* Quick motivators */}
+            {/* Motivational Pulse & Strategic Daily Focus Briefing */}
             {notifications.length > 0 && (
-              <div id="motivation_floating_tip" className="bg-white/5 backdrop-blur-md border border-white/10 p-3.5 rounded-xl flex items-start gap-2.5">
-                <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5 animate-pulse" />
-                <p className="text-xs text-slate-100 leading-relaxed font-medium">
-                  <span className="font-bold text-indigo-300">Motivational Pulse:</span> "{notifications[0].message}"
-                </p>
-              </div>
+              <MotivationalPulseBanner
+                notifications={notifications}
+                events={events}
+                goals={goals}
+                onNavigateToTab={setActiveTab}
+                onNavigateToDate={setCalendarTargetDate}
+                onMarkNotificationRead={handleMarkNotificationRead}
+                onDismissNotification={handleDismissNotification}
+                onTriggerDailyDigest={() => generateAndTriggerDailyDigest(new Date().toDateString())}
+                onOpenCoachWithMessage={(text) => {
+                  setActiveTab("coach");
+                  handleAddCoachMessage({
+                    id: `m_${Date.now()}`,
+                    sender: "user",
+                    text,
+                    timestamp: new Date().toISOString()
+                  });
+                }}
+              />
             )}
+
+            {/* Real-time Now / Up-Next Execution Cockpit */}
+            <ActiveExecutionHUD
+              events={events}
+              goals={goals}
+              onToggleCompleteEvent={handleToggleEventComplete}
+              onEditEvent={handleEditEvent}
+              onEditGoal={handleEditGoal}
+              onNavigateToCalendar={() => setCalendarTargetDate(new Date())}
+            />
 
             <CalendarView 
               events={events}
@@ -2299,6 +2435,7 @@ export default function App() {
           <ProgressDashboard 
             goals={goals}
             events={events}
+            energyProfile={energyProfile}
             onNavigateToDate={(targetDate?: Date) => {
               if (targetDate) {
                 setCalendarTargetDate(targetDate);

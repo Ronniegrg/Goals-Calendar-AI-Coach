@@ -4237,6 +4237,24 @@ export default function CalendarView({
                                   return null;
                                 })()
                               )}
+
+                              {/* Micro-Tasks summary badge if present */}
+                              {(() => {
+                                const tiedGoal = goals.find(g => g.id === evt.goalId);
+                                const allTasks = evt.subtasks || tiedGoal?.subtasks;
+                                if (allTasks && allTasks.length > 0) {
+                                  const doneCount = allTasks.filter(t => t.completed).length;
+                                  return (
+                                    <div className="flex items-center gap-1.5 mt-2">
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
+                                        <CheckCircle2 className="w-3 h-3 text-indigo-500" />
+                                        <span>{doneCount}/{allTasks.length} Micro-Tasks</span>
+                                      </span>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           </div>
 

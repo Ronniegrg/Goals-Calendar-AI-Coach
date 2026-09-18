@@ -44,6 +44,7 @@ export interface SubTask {
   id: string;
   title: string;
   completed: boolean;
+  durationMinutes?: number;
 }
 
 export interface SessionSubStep {
@@ -93,6 +94,7 @@ export interface CalendarEvent {
   icon?: string;
   energyLevel?: EnergyLevel;
   subSteps?: SessionSubStep[];
+  subtasks?: SubTask[];
 }
 
 export interface AvailabilityWindow {

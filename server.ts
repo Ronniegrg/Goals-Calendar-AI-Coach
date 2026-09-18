@@ -10,6 +10,17 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Enable CORS and handle preflight OPTIONS requests for iframe/preview embedding
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
@@ -135,37 +146,60 @@ function getInitialData(userEmail: string) {
         timestamp: new Date().toISOString()
       }
     ],
-    userEmail: userEmail || "default_user@gmail.com",
-    lastSyncedAt: new Date().toISOString()
+    coachPersona: "mentor"
   };
 }
 
-// Load database
+// Load database with default-preserving migration
 function readDb(email: string) {
+  const initial = getInitialData(email);
   try {
+    let db: any = {};
     if (fs.existsSync(DB_FILE)) {
       const fileContent = fs.readFileSync(DB_FILE, "utf-8");
-      const db = JSON.parse(fileContent);
-      // Return user data if matches, otherwise return initialized template for that user
-      if (db[email]) {
-        return db[email];
+      try {
+        db = JSON.parse(fileContent);
+      } catch (parseErr) {
+        console.warn("[Database] Corrupt db_sync.json detected, resetting safely:", parseErr);
+        db = {};
       }
-      // Migrate or initialize
-      db[email] = getInitialData(email);
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-      return db[email];
-    } else {
-      const db = { [email]: getInitialData(email) };
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-      return db[email];
     }
+    
+    // Return user data if matches, merging with defaults to guarantee no undefined fields
+    if (db[email]) {
+      const userRecord = db[email];
+      return {
+        ...initial,
+        ...userRecord,
+        goals: Array.isArray(userRecord.goals) ? userRecord.goals : [],
+        events: Array.isArray(userRecord.events) ? userRecord.events : [],
+        availability: Array.isArray(userRecord.availability) && userRecord.availability.length > 0 
+          ? userRecord.availability 
+          : initial.availability,
+        notifications: Array.isArray(userRecord.notifications) ? userRecord.notifications : initial.notifications,
+        coachMessages: Array.isArray(userRecord.coachMessages) ? userRecord.coachMessages : initial.coachMessages,
+        userEmail: email,
+        lastSyncedAt: userRecord.lastSyncedAt || new Date().toISOString()
+      };
+    }
+    
+    // Initialize record for new user
+    db[email] = initial;
+    try {
+      const tempFile = `${DB_FILE}.${Date.now()}.${Math.random().toString(36).substring(2, 8)}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), "utf-8");
+      fs.renameSync(tempFile, DB_FILE);
+    } catch (saveErr) {
+      console.warn("[Database] Failed to write initial db_sync.json:", saveErr);
+    }
+    return db[email];
   } catch (err) {
-    console.error("Error reading db_sync.json, providing in-memory data:", err);
-    return getInitialData(email);
+    console.warn("[Database] Error reading db_sync.json, falling back to memory state:", err);
+    return initial;
   }
 }
 
-// Save database
+// Save database with atomic replace to prevent race conditions
 function writeDb(email: string, data: any) {
   try {
     let db: any = {};
@@ -177,31 +211,48 @@ function writeDb(email: string, data: any) {
         db = {};
       }
     }
+    const current = db[email] || getInitialData(email);
     db[email] = {
+      ...current,
       ...data,
       userEmail: email,
       lastSyncedAt: new Date().toISOString()
     };
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+    
+    const tempFile = `${DB_FILE}.${Date.now()}.${Math.random().toString(36).substring(2, 8)}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), "utf-8");
+    fs.renameSync(tempFile, DB_FILE);
+    
     return db[email];
   } catch (err) {
-    console.error("Error writing database:", err);
+    console.warn("[Database] Error writing database:", err);
     return data;
   }
 }
 
 // 1. SYNC ENDPOINT: Get data
 app.get("/api/sync", (req, res) => {
-  const email = (req.query.email as string) || "rounigorgees@gmail.com";
-  const data = readDb(email);
-  res.json(data);
+  try {
+    const email = (req.query.email as string) || "rounigorgees@gmail.com";
+    const data = readDb(email);
+    res.json(data);
+  } catch (err) {
+    console.warn("[API] /api/sync GET error:", err);
+    res.status(500).json({ error: "Failed to read database state" });
+  }
 });
 
 // 2. SYNC ENDPOINT: Post data to update
 app.post("/api/sync", (req, res) => {
-  const email = req.body.userEmail || "rounigorgees@gmail.com";
-  const updatedData = writeDb(email, req.body);
-  res.json({ success: true, data: updatedData });
+  try {
+    const payload = req.body || {};
+    const email = payload.userEmail || "rounigorgees@gmail.com";
+    const updatedData = writeDb(email, payload);
+    res.json({ success: true, data: updatedData });
+  } catch (err) {
+    console.warn("[API] /api/sync POST error:", err);
+    res.status(500).json({ error: "Failed to write database state" });
+  }
 });
 
 // 3. AI COACH ENDPOINT

@@ -41,14 +41,17 @@ import {
 import { Goal, CalendarEvent } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
 import HabitConsistencyHeatmap from "./HabitConsistencyHeatmap";
+import EnergyScheduleAnalytics from "./EnergyScheduleAnalytics";
+import { UserEnergyProfile } from "../types";
 
 interface ProgressDashboardProps {
   goals: Goal[];
   events: CalendarEvent[];
   onNavigateToDate?: (date: Date) => void;
+  energyProfile?: UserEnergyProfile;
 }
 
-export default function ProgressDashboard({ goals, events, onNavigateToDate }: ProgressDashboardProps) {
+export default function ProgressDashboard({ goals, events, onNavigateToDate, energyProfile }: ProgressDashboardProps) {
   const [selectedHeatmapDay, setSelectedHeatmapDay] = useState<number | null>(null);
 
   // 1. Calculate general numbers
@@ -907,6 +910,13 @@ export default function ProgressDashboard({ goals, events, onNavigateToDate }: P
           )}
         </div>
       </div>
+
+      {/* SECTION 5: WEEKLY CIRCADIAN & ENERGY SCHEDULE ALIGNMENT */}
+      <EnergyScheduleAnalytics 
+        goals={goals}
+        events={events}
+        energyProfile={energyProfile}
+      />
       
     </div>
   );

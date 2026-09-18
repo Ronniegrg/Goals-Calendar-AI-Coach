@@ -1951,10 +1951,25 @@ export default function GoalTracker({
 
                     {/* Subtasks Section */}
                     <div className="pt-3 border-t border-white/5 mt-3 space-y-1.5" id={`goal_subtasks_sec_${g.id}`}>
-                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Subtasks / Milestones</span>
+                      {(() => {
+                        const totalAllocated = (g.subtasks || []).reduce((acc, s) => acc + (s.durationMinutes || 0), 0);
+                        const targetMins = g.durationMinutes || 45;
+                        return (
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Subtasks / Milestones</span>
+                            {totalAllocated > 0 && (
+                              <span className={`text-[9px] font-mono font-bold ${
+                                totalAllocated > targetMins ? "text-amber-400" : "text-emerald-400"
+                              }`}>
+                                {totalAllocated}m / {targetMins}m allocated
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       
                       {g.subtasks && g.subtasks.length > 0 ? (
-                        <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                        <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
                           {g.subtasks.map((sub) => (
                             <div key={sub.id} className="flex items-center justify-between gap-1 group bg-black/15 px-2 py-1 rounded border border-white/5">
                               <label className="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer flex-1 min-w-0 select-none">
@@ -1973,13 +1988,31 @@ export default function GoalTracker({
                                   {sub.title}
                                 </span>
                               </label>
+
+                              {/* Time allocation pill */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const currentMins = sub.durationMinutes || 10;
+                                  const nextMins = currentMins >= 45 ? 5 : currentMins + 5;
+                                  const updatedSubtasks = g.subtasks?.map(s => 
+                                    s.id === sub.id ? { ...s, durationMinutes: nextMins } : s
+                                  ) || [];
+                                  onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                }}
+                                className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition shrink-0 cursor-pointer"
+                                title="Click to adjust duration (+5m)"
+                              >
+                                {sub.durationMinutes ? `${sub.durationMinutes}m` : "+time"}
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={() => {
                                   const updatedSubtasks = g.subtasks?.filter(s => s.id !== sub.id) || [];
                                   onEditGoal(g.id, { subtasks: updatedSubtasks });
                                 }}
-                                className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer"
+                                className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer shrink-0"
                                 title="Delete Subtask"
                               >
                                 <X className="w-2.5 h-2.5" />
@@ -1996,17 +2029,21 @@ export default function GoalTracker({
                           e.preventDefault();
                           const form = e.currentTarget;
                           const input = form.elements.namedItem("subtaskTitle") as HTMLInputElement;
+                          const durInput = form.elements.namedItem("subtaskMins") as HTMLInputElement;
                           const title = input.value.trim();
                           if (!title) return;
+                          const mins = parseInt(durInput?.value) || 15;
                           
                           const newSub: SubTask = {
                             id: `sub_${Date.now()}`,
                             title,
+                            durationMinutes: mins,
                             completed: false
                           };
                           const updatedSubtasks = [...(g.subtasks || []), newSub];
                           onEditGoal(g.id, { subtasks: updatedSubtasks });
                           input.value = "";
+                          if (durInput) durInput.value = "15";
                         }}
                         className="flex items-center gap-1"
                       >
@@ -2016,6 +2053,18 @@ export default function GoalTracker({
                           placeholder="Add milestone..."
                           className="flex-1 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
                         />
+                        <div className="flex items-center bg-[#0f111a] border border-white/5 rounded px-1.5 py-1">
+                          <input
+                            type="number"
+                            name="subtaskMins"
+                            defaultValue={15}
+                            min={1}
+                            max={180}
+                            className="w-8 text-[10px] text-center text-white bg-transparent focus:outline-none font-mono font-bold"
+                            title="Minutes for this step"
+                          />
+                          <span className="text-[9px] text-slate-400 font-mono">m</span>
+                        </div>
                         <button
                           type="submit"
                           className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white p-1 rounded transition text-[10px] font-bold shrink-0 cursor-pointer"

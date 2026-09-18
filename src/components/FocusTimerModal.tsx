@@ -45,6 +45,8 @@ export interface ActiveTimerData {
   totalSec: number;
   timeRemaining: number;
   targetEndTime: number | null; // Wall-clock timestamp in ms
+  startedAt?: number | null; // Exact timestamp in ms when the user started studying
+  lastPausedAt?: number | null; // Exact timestamp in ms when user clicked pause
   isRunning: boolean;
   isCompleted: boolean;
   eventId?: string;
@@ -76,7 +78,7 @@ export interface SavedSessionProgress {
 
 export type SoundType = "tibetan_bell" | "crystal_chime" | "zen_bowl" | "alert_bell";
 
-const STORAGE_KEY = "active_focus_timer_v2";
+export const STORAGE_KEY = "active_focus_timer_v2";
 const PROGRESS_MAP_KEY = "saved_focus_goal_progress_map_v2";
 const SOUND_PREF_KEY = "focus_timer_sound_choice_v2";
 const VOLUME_PREF_KEY = "focus_timer_volume_v2";
@@ -373,9 +375,48 @@ export function triggerFocusTimer(params: {
   color?: string;
   previousSessionNote?: string;
   subSteps?: SessionSubStep[];
+  autoStart?: boolean;
+  openModal?: boolean;
 }) {
   unlockAudioEngine();
   window.dispatchEvent(new CustomEvent("open_focus_timer", { detail: params }));
+}
+
+export function pauseFocusTimer() {
+  unlockAudioEngine();
+  window.dispatchEvent(new CustomEvent("focus_timer_pause"));
+}
+
+export function resumeFocusTimer() {
+  unlockAudioEngine();
+  window.dispatchEvent(new CustomEvent("focus_timer_resume"));
+}
+
+export function finishFocusTimer() {
+  window.dispatchEvent(new CustomEvent("focus_timer_finish"));
+}
+
+export function updateActiveTimerSubSteps(subSteps: SessionSubStep[]) {
+  window.dispatchEvent(new CustomEvent("focus_timer_update_substeps", { detail: { subSteps } }));
+}
+
+export function setActiveTimerDuration(durationMinutes: number) {
+  window.dispatchEvent(new CustomEvent("focus_timer_set_duration", { detail: { durationMinutes } }));
+}
+
+export function getActiveTimerSnapshot(): ActiveTimerData | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: ActiveTimerData = JSON.parse(raw);
+    if (parsed.isRunning && parsed.targetEndTime) {
+      const remaining = Math.max(0, Math.round((parsed.targetEndTime - Date.now()) / 1000));
+      return { ...parsed, timeRemaining: remaining };
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 interface FocusTimerModalProps {
@@ -588,6 +629,8 @@ export default function FocusTimerModal({
       const detail = e.detail;
       if (!detail) return;
       unlockAudioEngine();
+      const openModal = detail.openModal !== false;
+      const shouldAutoStart = detail.autoStart ?? false;
 
       setTimerState((prev) => {
         const matchesCurrent = prev && (
@@ -597,27 +640,48 @@ export default function FocusTimerModal({
         );
 
         if (matchesCurrent && prev && prev.timeRemaining < prev.totalSec && !prev.isCompleted) {
+          const now = Date.now();
+          const isRunning = shouldAutoStart ? true : prev.isRunning;
+          const targetEndTime = isRunning 
+            ? (prev.targetEndTime || (now + prev.timeRemaining * 1000))
+            : prev.targetEndTime;
+          const startedAt = prev.startedAt || (isRunning ? now : null);
+
           const updated = {
             ...prev,
-            isOpen: true,
-            isMinimized: false,
+            isOpen: openModal ? true : prev.isOpen,
+            isMinimized: openModal ? false : prev.isMinimized,
+            isRunning,
+            targetEndTime,
+            startedAt,
             previousSessionNote: detail.previousSessionNote !== undefined ? detail.previousSessionNote : prev.previousSessionNote,
             subSteps: detail.subSteps || prev.subSteps
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          try {
+            window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: updated }));
+          } catch {}
           return updated;
         }
 
         const saved = getSavedProgress(detail.goalId, detail.eventId, detail.title);
         const initialSec = Math.max(1, detail.duration || 60) * 60;
+        const now = Date.now();
 
         if (saved && saved.timeRemaining > 0 && saved.timeRemaining < saved.totalSec) {
+          const remaining = saved.timeRemaining;
+          const isRunning = shouldAutoStart;
+          const targetEndTime = isRunning ? now + remaining * 1000 : null;
+          const startedAt = isRunning ? now : null;
+
           const restoredTimer: ActiveTimerData = {
             title: saved.title || detail.title || "Focus Session",
             totalSec: saved.totalSec,
             timeRemaining: saved.timeRemaining,
-            targetEndTime: null,
-            isRunning: false,
+            targetEndTime,
+            startedAt,
+            lastPausedAt: null,
+            isRunning,
             isCompleted: false,
             eventId: saved.eventId || detail.eventId,
             goalId: saved.goalId || detail.goalId,
@@ -625,20 +689,29 @@ export default function FocusTimerModal({
             color: saved.color || detail.color || "#6366f1",
             previousSessionNote: detail.previousSessionNote !== undefined ? detail.previousSessionNote : saved.previousSessionNote,
             sessionTakeawayNote: saved.sessionTakeawayNote || "",
-            isMinimized: false,
-            isOpen: true,
+            isMinimized: !openModal,
+            isOpen: openModal,
             subSteps: saved.subSteps || detail.subSteps
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredTimer));
+          try {
+            window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: restoredTimer }));
+          } catch {}
           return restoredTimer;
         }
+
+        const isRunning = shouldAutoStart;
+        const targetEndTime = isRunning ? now + initialSec * 1000 : null;
+        const startedAt = isRunning ? now : null;
 
         const newTimer: ActiveTimerData = {
           title: detail.title || "Focus Session",
           totalSec: initialSec,
           timeRemaining: initialSec,
-          targetEndTime: null,
-          isRunning: false,
+          targetEndTime,
+          startedAt,
+          lastPausedAt: null,
+          isRunning,
           isCompleted: false,
           eventId: detail.eventId,
           goalId: detail.goalId,
@@ -646,18 +719,139 @@ export default function FocusTimerModal({
           color: detail.color || "#6366f1",
           previousSessionNote: detail.previousSessionNote,
           sessionTakeawayNote: "",
-          isMinimized: false,
-          isOpen: true,
+          isMinimized: !openModal,
+          isOpen: openModal,
           subSteps: detail.subSteps
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: newTimer }));
+        } catch {}
         return newTimer;
       });
     };
 
+    const handleGlobalPause = () => {
+      unlockAudioEngine();
+      const now = Date.now();
+      setTimerState((prev) => {
+        if (!prev) return null;
+        const next = {
+          ...prev,
+          isRunning: false,
+          lastPausedAt: now,
+          targetEndTime: null
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        saveProgressToMap(next);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
+        } catch {}
+        return next;
+      });
+    };
+
+    const handleGlobalResume = () => {
+      unlockAudioEngine();
+      const now = Date.now();
+      setTimerState((prev) => {
+        if (!prev) return null;
+        let remaining = prev.timeRemaining;
+        if (remaining <= 0) remaining = prev.totalSec;
+        const next = {
+          ...prev,
+          timeRemaining: remaining,
+          startedAt: prev.startedAt || now,
+          lastPausedAt: null,
+          targetEndTime: now + remaining * 1000,
+          isRunning: true,
+          isCompleted: false
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        saveProgressToMap(next);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
+        } catch {}
+        return next;
+      });
+    };
+
+    const handleGlobalFinish = () => {
+      unlockAudioEngine();
+      setTimerState((prev) => {
+        if (!prev) return null;
+        triggerCompletionBell(prev.title);
+        if (onCompleteRef.current) {
+          onCompleteRef.current(prev.eventId, prev.goalId, prev.sessionTakeawayNote?.trim() || undefined);
+        }
+        clearSavedProgress(prev.goalId, prev.eventId, prev.title);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_session_completed", {
+            detail: {
+              eventId: prev.eventId,
+              goalId: prev.goalId,
+              title: prev.title,
+              note: prev.sessionTakeawayNote
+            }
+          }));
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: null }));
+        } catch {}
+        localStorage.removeItem(STORAGE_KEY);
+        return null;
+      });
+    };
+
+    const handleGlobalUpdateSubsteps = (e: any) => {
+      const steps = e.detail?.subSteps;
+      if (!steps) return;
+      setTimerState((prev) => {
+        if (!prev) return null;
+        const next = { ...prev, subSteps: steps };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        saveProgressToMap(next);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
+        } catch {}
+        return next;
+      });
+    };
+
+    const handleGlobalSetDuration = (e: any) => {
+      const newMins = e.detail?.durationMinutes;
+      if (!newMins || newMins <= 0) return;
+      setTimerState((prev) => {
+        if (!prev) return null;
+        const newTotalSec = newMins * 60;
+        const spent = prev.totalSec - prev.timeRemaining;
+        const newRemaining = Math.max(1, newTotalSec - spent);
+        const next = {
+          ...prev,
+          totalSec: newTotalSec,
+          timeRemaining: newRemaining,
+          targetEndTime: prev.isRunning ? Date.now() + newRemaining * 1000 : null
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        saveProgressToMap(next);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
+        } catch {}
+        return next;
+      });
+    };
+
     window.addEventListener("open_focus_timer" as any, handleOpenTimerEvent);
+    window.addEventListener("focus_timer_pause", handleGlobalPause);
+    window.addEventListener("focus_timer_resume", handleGlobalResume);
+    window.addEventListener("focus_timer_finish", handleGlobalFinish);
+    window.addEventListener("focus_timer_update_substeps" as any, handleGlobalUpdateSubsteps);
+    window.addEventListener("focus_timer_set_duration" as any, handleGlobalSetDuration);
     return () => {
       window.removeEventListener("open_focus_timer" as any, handleOpenTimerEvent);
+      window.removeEventListener("focus_timer_pause", handleGlobalPause);
+      window.removeEventListener("focus_timer_resume", handleGlobalResume);
+      window.removeEventListener("focus_timer_finish", handleGlobalFinish);
+      window.removeEventListener("focus_timer_update_substeps" as any, handleGlobalUpdateSubsteps);
+      window.removeEventListener("focus_timer_set_duration" as any, handleGlobalSetDuration);
     };
   }, []);
 
@@ -668,8 +862,14 @@ export default function FocusTimerModal({
       if (next) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         saveProgressToMap(next);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
+        } catch {}
       } else {
         localStorage.removeItem(STORAGE_KEY);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: null }));
+        } catch {}
       }
       return next;
     });
@@ -886,10 +1086,16 @@ export default function FocusTimerModal({
         const updatedState = { ...prev, timeRemaining: diffSec };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedState));
         saveProgressToMap(updatedState);
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: updatedState }));
+        } catch {}
         return updatedState;
       });
 
       if (isTimerCompleted) {
+        try {
+          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: null }));
+        } catch {}
         triggerCompletionBell(finishedTitle);
         if (onCompleteRef.current) {
           onCompleteRef.current(completedEventId, completedGoalId, completedNote);
@@ -951,6 +1157,7 @@ export default function FocusTimerModal({
 
   const handleStart = () => {
     unlockAudioEngine();
+    const now = Date.now();
     updateTimerState((prev) => {
       if (!prev) return null;
       let remaining = prev.timeRemaining;
@@ -960,7 +1167,9 @@ export default function FocusTimerModal({
       return {
         ...prev,
         timeRemaining: remaining,
-        targetEndTime: Date.now() + remaining * 1000,
+        startedAt: prev.startedAt || now,
+        lastPausedAt: null,
+        targetEndTime: now + remaining * 1000,
         isRunning: true,
         isCompleted: false
       };
@@ -969,11 +1178,13 @@ export default function FocusTimerModal({
 
   const handlePause = () => {
     unlockAudioEngine();
+    const now = Date.now();
     updateTimerState((prev) => {
       if (!prev) return null;
       return {
         ...prev,
         isRunning: false,
+        lastPausedAt: now,
         targetEndTime: null
       };
     });
