@@ -2024,6 +2024,18 @@ export default function App() {
     syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
   };
 
+  // Clear all external/imported calendar busy blocks
+  const handleClearExternalEvents = () => {
+    const nextEvents = events.filter(e => e.type !== "external");
+    setEvents(nextEvents);
+    syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
+    triggerSystemNotification(
+      "External Calendar Blocks Cleared",
+      "All imported external calendar busy blocks were removed from your schedule.",
+      "sync"
+    );
+  };
+
   // I. Add customized system messages
   const handleAddCoachMessage = (msg: CoachMessage) => {
     const nextMsgs = [...coachMessages, msg];
@@ -2395,6 +2407,8 @@ export default function App() {
               onAlignPriorities={handleAlignPrioritiesAndDeduplicate}
               energyProfile={energyProfile}
               onOpenEnergyModal={() => setShowEnergyModal(true)}
+              userEmail="rounigorgees@gmail.com"
+              onClearExternalEvents={handleClearExternalEvents}
             />
           </div>
         )}

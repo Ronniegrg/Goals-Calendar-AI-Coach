@@ -20,7 +20,8 @@ import {
   CheckCircle2,
   CalendarCheck,
   Download,
-  Lock
+  Lock,
+  ExternalLink
 } from "lucide-react";
 import { 
   Pencil, 
@@ -50,6 +51,19 @@ import {
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
+import CalendarSyncModal from "./CalendarSyncModal";
+import { 
+  getGoogleCalendarEventUrl, 
+  getOutlookCalendarEventUrl, 
+  generateIcsCalendar, 
+  downloadIcsFile 
+} from "../lib/icalParser";
+import { 
+  googleSignIn, 
+  googleLogout, 
+  initGoogleAuth, 
+  setCachedAccessToken 
+} from "../lib/googleAuth";
 import { 
   sanitizeAndOptimizeSchedule, 
   deduplicateDailyGoalEvents, 
@@ -104,6 +118,8 @@ interface CalendarViewProps {
   onNavigateToDate?: (date: Date) => void;
   energyProfile?: UserEnergyProfile;
   onOpenEnergyModal?: () => void;
+  userEmail?: string;
+  onClearExternalEvents?: () => void;
 }
 
 export default function CalendarView({
@@ -124,7 +140,9 @@ export default function CalendarView({
   targetDate,
   onNavigateToDate,
   energyProfile = DEFAULT_USER_ENERGY_PROFILE,
-  onOpenEnergyModal
+  onOpenEnergyModal,
+  userEmail = "rounigorgees@gmail.com",
+  onClearExternalEvents
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -268,6 +286,7 @@ export default function CalendarView({
   const [externalSource, setExternalSource] = useState("");
   const [externalName, setExternalName] = useState("");
   const [showSyncPanel, setShowSyncPanel] = useState(false);
+  const [eventSyncMenuEvt, setEventSyncMenuEvt] = useState<CalendarEvent | null>(null);
   const [showDelayTodayMenu, setShowDelayTodayMenu] = useState(false);
   const [activeShiftMenuId, setActiveShiftMenuId] = useState<string | null>(null);
   const [icsInput, setIcsInput] = useState("");
@@ -1708,6 +1727,25 @@ export default function CalendarView({
 
   const unexportedCount = events.filter(e => e.type !== "external" && exportStatus[e.id] !== "success").length;
 
+  // Initialize Google Auth state listener
+  useEffect(() => {
+    const unsubscribe = initGoogleAuth(
+      (user, token) => {
+        setGoogleAccessToken(token);
+        setCachedAccessToken(token);
+        localStorage.setItem("gcal_access_token", token);
+        if (user.email) {
+          setGoogleEmail(user.email);
+          localStorage.setItem("gcal_email", user.email);
+        }
+      },
+      () => {
+        // Not logged in with Google or session expired
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
   // Implicit flow parser and popup controller
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.hash) {
@@ -1804,32 +1842,29 @@ export default function CalendarView({
     }
   };
 
-  const handleLaunchGoogleOAuth = () => {
-    const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email");
-    const redirectUri = encodeURIComponent(window.location.origin + window.location.pathname);
-    const implicitUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=742721019992-0bmb2dajms66ehm65j8siv3clj08v70l.apps.googleusercontent.com&redirect_uri=${redirectUri}&response_type=token&scope=${scope}&prompt=consent`;
-    
-    // Open Google Accounts Auth directly in a popup (Google prohibits loading inside iframes)
-    const width = 600;
-    const height = 650;
-    const left = window.screen.width / 2 - width / 2;
-    const top = window.screen.height / 2 - height / 2;
-    
-    const popup = window.open(
-      implicitUrl,
-      "google_oauth_popup",
-      `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`
-    );
-    
-    if (popup) {
-      popup.focus();
-      setGcalStatus("Authentication popup initiated. Please sign in there...");
-    } else {
-      // Fallback if browser blocks popups
-      setGcalStatus("Popup window blocked! Please allow popups for this site, or we will redirect your page...");
-      setTimeout(() => {
-        window.location.href = implicitUrl;
-      }, 2500);
+  const handleLaunchGoogleOAuth = async () => {
+    try {
+      setGcalStatus("Signing in with Google Calendar...");
+      const result = await googleSignIn();
+      if (result && result.accessToken) {
+        setGoogleAccessToken(result.accessToken);
+        setCachedAccessToken(result.accessToken);
+        localStorage.setItem("gcal_access_token", result.accessToken);
+        if (result.user.email) {
+          setGoogleEmail(result.user.email);
+          localStorage.setItem("gcal_email", result.user.email);
+        }
+        setGcalStatus(`Connected successfully as ${result.user.email || "Google User"}!`);
+      }
+    } catch (err: any) {
+      console.error("Google Calendar sign-in failed:", err);
+      // If popup was blocked or closed
+      if (err.code === "auth/popup-blocked") {
+        showCustomAlert("Popup Blocked", "Please allow popups in your browser address bar to sign in with Google Calendar.");
+      } else if (err.code !== "auth/popup-closed-by-user") {
+        showCustomAlert("Sign-in Notice", err.message || "Failed to authenticate with Google.");
+      }
+      setGcalStatus(err.message || "Sign in cancelled or failed.");
     }
   };
 
@@ -1838,6 +1873,7 @@ export default function CalendarView({
     const token = manualTokenVal.trim();
     if (token) {
       setGoogleAccessToken(token);
+      setCachedAccessToken(token);
       localStorage.setItem("gcal_access_token", token);
       setGcalStatus("Connected manually using custom Developer Token!");
       setManualTokenVal("");
@@ -1846,9 +1882,15 @@ export default function CalendarView({
     }
   };
 
-  const handleDisconnectGoogle = () => {
+  const handleDisconnectGoogle = async () => {
+    try {
+      await googleLogout();
+    } catch (e) {
+      console.warn("Logout warning:", e);
+    }
     setGoogleAccessToken("");
     setGoogleEmail("");
+    setCachedAccessToken(null);
     localStorage.removeItem("gcal_access_token");
     localStorage.removeItem("gcal_email");
     setGcalStatus("Disconnected Google Account.");
@@ -1928,6 +1970,58 @@ export default function CalendarView({
     });
   };
 
+  // Helper to format clean, professional event descriptions for Google Calendar
+  const formatGoogleEventDescription = (evt: CalendarEvent): string => {
+    const tiedGoal = goals.find(g => g.id === evt.goalId);
+    const appUrl = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "https://ai-studio.google";
+    const doneLink = `${appUrl}?action=complete_event&eventId=${evt.id}`;
+    const editGoalLink = evt.goalId ? `${appUrl}?action=edit_goal&goalId=${evt.goalId}` : "";
+    const openCalLink = appUrl;
+
+    const lines: string[] = [];
+
+    // 1. Primary summary
+    const sessionType = evt.type === "workout" ? "Workout Session" : evt.type === "study" ? "Study Block" : "Routine Session";
+    lines.push(`🎯 <b>${evt.title}</b> (${sessionType})`);
+
+    // 2. Goal context
+    if (tiedGoal) {
+      lines.push(`📌 <b>Goal:</b> ${tiedGoal.name} &bull; Target: ${tiedGoal.weeklyTarget} sessions/week`);
+    }
+
+    // 3. User notes / instructions
+    if (evt.notes && evt.notes.trim()) {
+      lines.push(`📝 <b>Notes:</b> ${evt.notes.trim()}`);
+    }
+
+    // 4. Energy level
+    if (evt.energyLevel) {
+      const formattedEnergy = evt.energyLevel.replace(/_/g, " ").toUpperCase();
+      lines.push(`⚡ <b>Energy Profile:</b> ${formattedEnergy}`);
+    }
+
+    // 5. Checklist sub-steps if present
+    if (evt.subSteps && evt.subSteps.length > 0) {
+      lines.push(`\n📋 <b>Plan for this session:</b>`);
+      evt.subSteps.forEach(s => {
+        lines.push(` &bull; ${s.title} (${s.durationMinutes} min)`);
+      });
+    }
+
+    // 6. Clean, concise HTML action links
+    lines.push(`\n<hr>`);
+    const actionLinks: string[] = [
+      `✅ <a href="${doneLink}"><b>Mark as Completed</b></a>`
+    ];
+    if (editGoalLink) {
+      actionLinks.push(`✏️ <a href="${editGoalLink}">Edit Goal</a>`);
+    }
+    actionLinks.push(`📅 <a href="${openCalLink}">Open Routine Planner</a>`);
+    lines.push(actionLinks.join(" &nbsp;|&nbsp; "));
+
+    return lines.join("\n");
+  };
+
   // 📤 EXPORT: Export custom workouts or study blocks to actual Google Calendar
   const handleExportToGoogleCalendar = (evt: CalendarEvent) => {
     if (!googleAccessToken) return;
@@ -1946,23 +2040,12 @@ export default function CalendarView({
     setCustomDialog(prev => ({ ...prev, isOpen: false }));
     setExportStatus(prev => ({ ...prev, [evt.id]: "syncing" }));
     try {
-      const appUrl = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "https://ai-studio.google";
-      const doneLink = `${appUrl}?action=complete_event&eventId=${evt.id}`;
-      const editGoalLink = evt.goalId ? `${appUrl}?action=edit_goal&goalId=${evt.goalId}` : "";
-      const addGoalLink = `${appUrl}?action=add_goal`;
-
-      let desc = evt.notes || "Scheduled conflict-free using smart AI routine engine.";
-      desc += "\n\n──────────────────────────────";
-      desc += "\n🎯 QUICK WORKSPACE ACTIONS:";
-      desc += `\n✅ Click to Mark This Hour Done:\n   ${doneLink}`;
-      if (editGoalLink) {
-        desc += `\n\n✏️ Click to Edit Associated Goal:\n   ${editGoalLink}`;
-      }
-      desc += `\n\n➕ Click to Register a New Goal:\n   ${addGoalLink}`;
-      desc += "\n──────────────────────────────";
+      const desc = formatGoogleEventDescription(evt);
+      const tiedGoal = goals.find(g => g.id === evt.goalId);
+      const icon = evt.icon || tiedGoal?.icon || (evt.type === "workout" ? "🏋️" : evt.type === "study" ? "📚" : "🎯");
 
       const postBody = {
-        summary: `${evt.type === "workout" ? "🏋️" : "📚"} ${evt.title}`,
+        summary: `${icon} ${evt.title}`,
         description: desc,
         start: { dateTime: evt.start },
         end: { dateTime: evt.end }
@@ -2049,23 +2132,12 @@ export default function CalendarView({
     for (const evt of unexported) {
       setExportStatus(prev => ({ ...prev, [evt.id]: "syncing" }));
       try {
-        const appUrl = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "https://ai-studio.google";
-        const doneLink = `${appUrl}?action=complete_event&eventId=${evt.id}`;
-        const editGoalLink = evt.goalId ? `${appUrl}?action=edit_goal&goalId=${evt.goalId}` : "";
-        const addGoalLink = `${appUrl}?action=add_goal`;
-
-        let desc = evt.notes || "Auto-programmed with conflict-free AI scheduler.";
-        desc += "\n\n──────────────────────────────";
-        desc += "\n🎯 QUICK WORKSPACE ACTIONS:";
-        desc += `\n✅ Click to Mark This Hour Done:\n   ${doneLink}`;
-        if (editGoalLink) {
-          desc += `\n\n✏️ Click to Edit Associated Goal:\n   ${editGoalLink}`;
-        }
-        desc += `\n\n➕ Click to Register a New Goal:\n   ${addGoalLink}`;
-        desc += "\n──────────────────────────────";
+        const desc = formatGoogleEventDescription(evt);
+        const tiedGoal = goals.find(g => g.id === evt.goalId);
+        const icon = evt.icon || tiedGoal?.icon || (evt.type === "workout" ? "🏋️" : evt.type === "study" ? "📚" : "🎯");
 
         const postBody = {
-          summary: `${evt.type === "workout" ? "🏋️" : "📚"} ${evt.title}`,
+          summary: `${icon} ${evt.title}`,
           description: desc,
           start: { dateTime: evt.start },
           end: { dateTime: evt.end }
@@ -2550,7 +2622,7 @@ export default function CalendarView({
   };
 
   return (
-    <div id="calendar_section_card" className="bg-white/95 dark:bg-white/5 backdrop-blur-md border border-slate-200 dark:border-white/10 rounded-2xl shadow-xl overflow-hidden flex flex-col min-h-[600px] h-auto md:h-[750px] text-slate-900 dark:text-white">
+    <div id="calendar_section_card" className="bg-white/95 dark:bg-white/5 backdrop-blur-md border border-slate-200 dark:border-white/10 rounded-2xl shadow-xl flex flex-col min-h-[600px] h-auto md:h-[750px] text-slate-900 dark:text-white">
       
       {/* Calendar Header toolbar: Two-tier structure preventing collisions and overlapping */}
       <div className="relative z-40 border-b border-slate-200 dark:border-white/10 bg-slate-100/70 dark:bg-white/5">
@@ -2664,18 +2736,21 @@ export default function CalendarView({
         {/* Tier 2: Smart Schedule Toolbar (Connect, Focus Incomplete, Re-balance, Priorities, Bio-Energy, Delay, Regenerate) */}
         <div className="relative z-40 px-3 sm:px-4 py-2 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-start gap-2 overflow-visible">
           <div className="flex items-center gap-1.5 flex-wrap">
-            {/* Sync Feeds */}
+            {/* Calendar Sync Hub (Apple, Google, Outlook) */}
             <button
               id="open_sync_sidebar_btn"
               onClick={(e) => {
                 e.stopPropagation();
-                setShowSyncPanel(prev => !prev);
+                setShowSyncPanel(true);
               }}
-              className="p-1.5 sm:px-2.5 sm:py-1.5 border border-slate-300 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-white/10 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] whitespace-nowrap shrink-0"
-              title="External Calendar Feeds"
+              className="p-1.5 sm:px-3 sm:py-1.5 border border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 shadow-2xs active:scale-95"
+              title="Direct Sync with Apple Calendar, Google Calendar, and Microsoft Outlook"
             >
-              <Link2 className="w-3.5 h-3.5" />
-              <span>Connect</span>
+              <CalendarIcon className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+              <span>Sync Calendars</span>
+              <span className="hidden md:inline-flex text-[9px] bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                Apple • Google • Outlook
+              </span>
             </button>
 
             {/* Focus Incomplete Goal Button */}
@@ -2792,7 +2867,7 @@ export default function CalendarView({
               </button>
               {showDelayTodayMenu && (
                 <div 
-                  className="absolute right-0 sm:right-0 max-sm:left-0 top-full mt-1.5 w-56 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2.5 z-50 text-left animate-fade-in space-y-1.5 ring-1 ring-black/5"
+                  className="absolute left-0 sm:left-0 top-full mt-1.5 w-60 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2.5 z-50 text-left animate-fade-in space-y-1.5 ring-1 ring-black/5"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
@@ -2930,224 +3005,145 @@ export default function CalendarView({
         </div>
       )}
 
-      {/* Sync/External Calendar configuration Modal Overlay */}
-      {showSyncPanel && (
+      {/* Universal Calendar Direct Sync & Integration Hub Modal */}
+      <CalendarSyncModal
+        isOpen={showSyncPanel}
+        onClose={() => setShowSyncPanel(false)}
+        events={events}
+        goals={goals}
+        userEmail={userEmail || "rounigorgees@gmail.com"}
+        onImportCalendar={onImportCalendar}
+        onClearExternalEvents={onClearExternalEvents}
+        onAutoRebalanceAroundBusy={onAlignPriorities}
+        googleAccessToken={googleAccessToken}
+        googleEmail={googleEmail}
+        onConnectGoogleOAuth={handleLaunchGoogleOAuth}
+        onDisconnectGoogleOAuth={handleDisconnectGoogle}
+        onExportToGoogleCalendar={handleExportToGoogleCalendar}
+        onBulkExportGoogle={handleBulkExportUnexported}
+        exportingAll={exportingAll}
+        unexportedCount={unexportedCount}
+        autoGcalExport={autoGcalExport}
+        onToggleAutoGcalExport={(enabled) => {
+          setAutoGcalExport(enabled);
+          localStorage.setItem("auto_gcal_export", enabled ? "true" : "false");
+          if (enabled && googleAccessToken) {
+            // When user enables auto-sync, immediately sync any currently unexported routines
+            const unexported = events.filter(e => e.type !== "external" && exportStatus[e.id] !== "success" && exportStatus[e.id] !== "syncing");
+            if (unexported.length > 0) {
+              triggerBulkExportExecution(unexported);
+            }
+          }
+        }}
+      />
+
+      {/* Quick Single-Event Sync & Push Popover Modal */}
+      {eventSyncMenuEvt && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md transition-all animate-fade-in"
-          onClick={() => setShowSyncPanel(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in text-left"
+          onClick={() => setEventSyncMenuEvt(null)}
         >
           <div 
-            id="sync_calendar_modal"
-            className="bg-[#121320] border border-white/15 rounded-2xl p-5 md:p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl space-y-4 relative text-left"
+            className="bg-[#121320] border border-white/15 rounded-2xl p-5 max-w-md w-full shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-indigo-500/20 text-indigo-400 rounded-xl">
-                  <Link2 className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">Calendar Sync & Integrations</h3>
-                  <p className="text-xs text-slate-400">Connect Google Calendar or import external .ICS schedules</p>
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="text-2xl shrink-0">
+                  {eventSyncMenuEvt.icon || (eventSyncMenuEvt.type === "workout" ? "🏋️" : "📚")}
+                </span>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-bold text-white truncate">{eventSyncMenuEvt.title}</h4>
+                  <p className="text-[11px] text-slate-400">
+                    {new Date(eventSyncMenuEvt.start).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} • {new Date(eventSyncMenuEvt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - {new Date(eventSyncMenuEvt.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </p>
                 </div>
               </div>
-              <button
+              <button 
                 type="button"
-                onClick={() => setShowSyncPanel(false)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
-                title="Close Sync Panel"
+                onClick={() => setEventSyncMenuEvt(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg transition cursor-pointer"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white/5 border border-white/10 p-4 rounded-xl flex flex-col justify-between">
-                <div>
-                  <h3 className="font-sans font-semibold text-white text-sm mb-2 flex items-center gap-1.5">
-                    <Upload className="w-4 h-4 text-emerald-400" />
-                    Sync Existing Calendar (.ICS or Web URL)
-                  </h3>
-                  <form onSubmit={handleImportSubmit} className="space-y-3">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Calendar Source Name</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. My Google Work Calendar"
-                        value={externalName}
-                        onChange={(e) => setExternalName(e.target.value)}
-                        className="w-full text-xs p-2.5 bg-white/5 text-white border border-white/10 rounded-lg focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">ICS Feed URL / Raw Text Data</label>
-                      <textarea
-                        rows={3}
-                        placeholder="Paste calendar public URL, or raw .ics template blocks..."
-                        value={icsInput}
-                        onChange={(e) => setIcsInput(e.target.value)}
-                        className="w-full text-xs p-2.5 bg-white/5 text-white border border-white/10 rounded-lg focus:outline-none focus:border-indigo-400 focus:bg-white/10 transition"
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      className="w-full bg-white/10 hover:bg-white/15 text-white border border-white/10 text-[11px] font-bold py-2.5 rounded-lg transition cursor-pointer"
-                    >
-                      Import and Sync Availability
-                    </button>
-                  </form>
-                </div>
-              </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Choose your preferred calendar to sync or export this session:
+            </p>
 
-              <div className="bg-white/5 border border-white/10 p-4 rounded-xl flex flex-col justify-between">
-                <div>
-                  <h3 className="font-sans font-semibold text-white text-sm mb-2 flex items-center gap-1.5">
-                    <Globe className="w-4 h-4 text-indigo-400" />
-                    Google Calendar Live Sync
-                  </h3>
+            <div className="space-y-2">
+              {/* Apple Calendar (.ics) */}
+              <button
+                type="button"
+                id="sync_evt_apple_btn"
+                onClick={() => {
+                  const icsData = generateIcsCalendar([eventSyncMenuEvt], goals, {
+                    calendarName: eventSyncMenuEvt.title
+                  });
+                  downloadIcsFile(`${eventSyncMenuEvt.title.replace(/[^a-zA-Z0-9]/g, "_")}.ics`, icsData);
+                  setEventSyncMenuEvt(null);
+                }}
+                className="w-full p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold flex items-center justify-between transition cursor-pointer"
+              >
+                <span className="flex items-center gap-2.5">
+                  <span className="text-base">🍏</span>
+                  <span>Apple Calendar (.ics download)</span>
+                </span>
+                <Download className="w-3.5 h-3.5 text-slate-400" />
+              </button>
 
-                  {gcalStatus && (
-                    <p className="text-[11px] text-pink-400 bg-pink-500/10 border border-pink-500/20 px-2.5 py-1.5 rounded-lg mb-3">
-                      {gcalStatus}
-                    </p>
-                  )}
+              {/* Google Calendar Web Intent */}
+              <a
+                id="sync_evt_google_link"
+                href={getGoogleCalendarEventUrl(eventSyncMenuEvt, goals.find(g => g.id === eventSyncMenuEvt.goalId))}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setEventSyncMenuEvt(null)}
+                className="w-full p-2.5 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 text-indigo-300 text-xs font-semibold flex items-center justify-between transition"
+              >
+                <span className="flex items-center gap-2.5">
+                  <span className="text-base">📅</span>
+                  <span>Google Calendar (1-Click Web)</span>
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
+              </a>
 
-                  {!googleAccessToken ? (
-                    <div className="space-y-3.5 pt-1">
-                      <p className="text-xs text-slate-300 leading-relaxed">
-                        Connect your Google Calendar live to import conflicts (so the smart auto-scheduler avoids overlaps) and export scheduled routines!
-                      </p>
-                      
-                      <button
-                        type="button"
-                        id="gcal_connect_oauth_btn"
-                        onClick={handleLaunchGoogleOAuth}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg border border-white/5 shadow-indigo-600/15 flex items-center justify-center gap-2 transition cursor-pointer"
-                      >
-                        <Globe className="w-4 h-4" /> Connect Automatically
-                      </button>
+              {/* Microsoft Outlook Web Intent */}
+              <a
+                id="sync_evt_outlook_link"
+                href={getOutlookCalendarEventUrl(eventSyncMenuEvt, goals.find(g => g.id === eventSyncMenuEvt.goalId))}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setEventSyncMenuEvt(null)}
+                className="w-full p-2.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 text-sky-300 text-xs font-semibold flex items-center justify-between transition"
+              >
+                <span className="flex items-center gap-2.5">
+                  <span className="text-base">📮</span>
+                  <span>Microsoft Outlook (1-Click Web)</span>
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+              </a>
 
-                      <div className="text-center">
-                        <button
-                          type="button"
-                          id="toggle_manual_token_form_btn"
-                          onClick={() => setShowTokenInput(!showTokenInput)}
-                          className="text-[10.5px] text-slate-400 hover:text-white font-medium underline transition"
-                        >
-                          {showTokenInput ? "Hide Developer Auth" : "Advanced: Developer Token Connection"}
-                        </button>
-                      </div>
-
-                      {showTokenInput && (
-                        <form onSubmit={handleManualTokenSubmit} className="bg-slate-900/40 p-3 rounded-lg border border-white/5 mt-2 space-y-2">
-                          <p className="text-[10px] text-slate-400 leading-normal">
-                            For instant, reliable iframe connection, you can copy an ACCESS TOKEN from the <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-indigo-400 underline hover:text-indigo-300">Google OAuth Playground</a> (Calendar API v3), then paste it here:
-                          </p>
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              required
-                              placeholder="ya29.a0Acv..."
-                              value={manualTokenVal}
-                              onChange={(e) => setManualTokenVal(e.target.value)}
-                              className="bg-white/5 text-[11px] p-2 rounded border border-white/10 text-white flex-1 focus:outline-none focus:border-indigo-400"
-                            />
-                            <button
-                              type="submit"
-                              className="bg-indigo-600 text-white text-[11.5px] px-3 py-1.5 rounded font-bold hover:bg-indigo-500 cursor-pointer"
-                            >
-                              Set Token
-                            </button>
-                          </div>
-                        </form>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-3.5">
-                      <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl flex items-center justify-between">
-                        <div>
-                          <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Connected Account</p>
-                          <p className="text-xs font-mono text-slate-200 mt-0.5 max-w-[200px] truncate" title={googleEmail}>
-                            {googleEmail || "Active OAuth User"}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleDisconnectGoogle}
-                          className="text-[10px] bg-white/5 hover:bg-red-500/10 text-slate-300 hover:text-red-400 border border-white/10 p-1.5 rounded-lg transition flex items-center gap-1 cursor-pointer"
-                          title="Disconnect"
-                        >
-                          <LogOut className="w-3.5 h-3.5" /> Disconnect
-                        </button>
-                      </div>
-
-                      <div className="flex items-center justify-between bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-left select-none">
-                        <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300 font-bold">
-                          <input
-                            type="checkbox"
-                            checked={autoGcalExport}
-                            onChange={(e) => {
-                              const next = e.target.checked;
-                              setAutoGcalExport(next);
-                              localStorage.setItem("auto_gcal_export", next ? "true" : "false");
-                              if (next) {
-                                setGcalStatus("Real-time auto-sync activated! New schedules will auto-sync.");
-                              } else {
-                                setGcalStatus("Real-time auto-sync deactivated.");
-                              }
-                            }}
-                            className="rounded border-white/20 bg-slate-900 text-indigo-500 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
-                          />
-                          <span>⚡ Real-time Google Calendar Sync</span>
-                        </label>
-                        <span className="text-[9px] bg-indigo-500/10 text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">AUTO</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-center">
-                        <button
-                          type="button"
-                          id="gcal_import_btn"
-                          disabled={importingGcal}
-                          onClick={handleImportGoogleCalendar}
-                          className="bg-white/5 hover:bg-white/10 text-slate-100 text-xs font-bold py-2.5 px-3 border border-white/10 rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
-                        >
-                          {importingGcal ? (
-                            <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
-                          ) : (
-                            <Download className="w-4 h-4 text-indigo-400" />
-                          )}
-                          <span>{importingGcal ? "Importing..." : "📥 Import Busy Blocks"}</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          id="gcal_bulk_export_btn"
-                          disabled={exportingAll}
-                          onClick={handleBulkExportUnexported}
-                          className={`text-xs font-bold py-2.5 px-3 border rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                            unexportedCount > 0
-                              ? "bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500 shadow-md shadow-indigo-600/20 hover:shadow-indigo-600/30 font-extrabold"
-                              : "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10"
-                          }`}
-                        >
-                          {exportingAll ? (
-                            <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
-                          ) : (
-                            <Send className={`w-4 h-4 ${unexportedCount > 0 ? "text-emerald-300 animate-pulse" : "text-pink-400"}`} />
-                          )}
-                          <span>{exportingAll ? "Exporting..." : `📤 Export Routines (${unexportedCount})`}</span>
-                        </button>
-                      </div>
-
-                      <p className="text-[10px] text-slate-400 leading-normal italic text-center">
-                        * Imported Google events act as busy exclusions in auto-scheduling. Exporting pushes workouts & study blocks to your Google app.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
+              {/* Direct Google Calendar API Push */}
+              {googleAccessToken && (
+                <button
+                  type="button"
+                  id="sync_evt_direct_gcal_btn"
+                  onClick={() => {
+                    const target = eventSyncMenuEvt;
+                    setEventSyncMenuEvt(null);
+                    handleExportToGoogleCalendar(target);
+                  }}
+                  className="w-full p-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-300 text-xs font-semibold flex items-center justify-between transition cursor-pointer"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <span className="text-base">⚡</span>
+                    <span>Direct Push to Google Account</span>
+                  </span>
+                  <Send className="w-3.5 h-3.5 text-emerald-400" />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -3663,14 +3659,15 @@ export default function CalendarView({
                               <span>{evt.completed ? "Done" : "Mark"}</span>
                             </button>
 
-                            {googleAccessToken && evt.type !== "external" && (
+                            {evt.type !== "external" && (
                               <button
                                 type="button"
+                                id={`sync_event_btn_week_${evt.id}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleExportToGoogleCalendar(evt);
+                                  setEventSyncMenuEvt(evt);
                                 }}
-                                disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                                disabled={exportStatus[evt.id] === "syncing"}
                                 className={`p-1 rounded-lg border transition cursor-pointer shrink-0 ${
                                   isLightMode ? "border-slate-300 bg-white" : "border-white/10 bg-white/5"
                                 } ${
@@ -3682,7 +3679,7 @@ export default function CalendarView({
                                     ? "text-indigo-500 animate-spin"
                                     : "text-slate-400 hover:text-indigo-500"
                                 }`}
-                                title="Sync to Google Calendar"
+                                title="Sync to Apple, Google, or Outlook Calendar"
                               >
                                 {exportStatus[evt.id] === "success" ? (
                                   <CheckCircle2 className="w-3 h-3 animate-pulse" />
@@ -4046,14 +4043,15 @@ export default function CalendarView({
                                   {evt.completed ? "Done" : "Mark Done"}
                                 </button>
 
-                                {googleAccessToken && evt.type !== "external" && (
+                                {evt.type !== "external" && (
                                   <button
                                     type="button"
+                                    id={`sync_event_btn_day_${evt.id}`}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleExportToGoogleCalendar(evt);
+                                      setEventSyncMenuEvt(evt);
                                     }}
-                                    disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                                    disabled={exportStatus[evt.id] === "syncing"}
                                     className={`p-1.5 rounded-lg border transition cursor-pointer ${
                                       isLightMode ? "border-slate-300 bg-white" : "border-white/10 bg-white/5"
                                     } ${
@@ -4065,11 +4063,7 @@ export default function CalendarView({
                                         ? "text-indigo-500 animate-spin"
                                         : "text-slate-400 hover:text-indigo-500"
                                     }`}
-                                    title={
-                                      exportStatus[evt.id] === "success"
-                                        ? "Synced to Google!"
-                                        : "Export to Google Calendar"
-                                    }
+                                    title="Sync to Apple, Google, or Outlook Calendar"
                                   >
                                     {exportStatus[evt.id] === "success" ? (
                                       <CheckCircle2 className="w-3.5 h-3.5 animate-pulse" />
@@ -4532,13 +4526,14 @@ export default function CalendarView({
                               {evt.completed ? "Done ✅" : "Complete"}
                             </button>
 
-                            {googleAccessToken && evt.type !== "external" && (
+                            {evt.type !== "external" && (
                               <button
+                                id={`sync_event_btn_list_${evt.id}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleExportToGoogleCalendar(evt);
+                                  setEventSyncMenuEvt(evt);
                                 }}
-                                disabled={exportStatus[evt.id] === "syncing" || exportStatus[evt.id] === "success"}
+                                disabled={exportStatus[evt.id] === "syncing"}
                                 className={`p-2 border rounded-xl transition cursor-pointer min-h-[38px] min-w-[38px] flex items-center justify-center ${
                                   exportStatus[evt.id] === "success"
                                     ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
@@ -4548,11 +4543,7 @@ export default function CalendarView({
                                     ? "bg-indigo-600/10 text-indigo-400 animate-spin border-indigo-500/20"
                                     : "bg-white/5 hover:bg-white/10 text-slate-300 hover:text-indigo-400 border-white/10"
                                 }`}
-                                title={
-                                  exportStatus[evt.id] === "success"
-                                    ? "Synced to Google!"
-                                    : "Export to Google Calendar"
-                                }
+                                title="Sync to Apple, Google, or Outlook Calendar"
                               >
                                 {exportStatus[evt.id] === "success" ? (
                                   <CheckCircle2 className="w-4 h-4 animate-pulse" />

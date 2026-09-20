@@ -255,6 +255,157 @@ app.post("/api/sync", (req, res) => {
   }
 });
 
+/**
+ * 2b. CALENDAR FEED & EXPORT ENDPOINTS (RFC 5545 iCalendar Standard)
+ * Supports live subscription in:
+ * - Apple Calendar (macOS, iOS, iPadOS via webcal://)
+ * - Google Calendar (via "Add from URL")
+ * - Microsoft Outlook (Web & Desktop via "Subscribe from web")
+ */
+function buildIcsFeedString(events: any[], goals: any[] = []): string {
+  const formatUtc = (dateStr: string | Date) => {
+    const d = typeof dateStr === "string" ? new Date(dateStr) : dateStr;
+    if (isNaN(d.getTime())) return new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+    return d.toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+  };
+
+  const escapeIcs = (str: string) => {
+    if (!str) return "";
+    return str
+      .replace(/\\/g, "\\\\")
+      .replace(/;/g, "\\;")
+      .replace(/,/g, "\\,")
+      .replace(/\n/g, "\\n");
+  };
+
+  const nowUtc = formatUtc(new Date());
+  const lines: string[] = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Calendar Goals & AI Coach//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:Calendar Goals & Routines",
+    "X-WR-TIMEZONE:UTC",
+    "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
+    "X-PUBLISHED-TTL:PT15M"
+  ];
+
+  const validEvents = (events || []).filter(e => e && e.start && e.end && e.type !== "external");
+
+  for (const evt of validEvents) {
+    const startUtc = formatUtc(evt.start);
+    const endUtc = formatUtc(evt.end);
+    const tiedGoal = (goals || []).find(g => g.id === evt.goalId);
+    const icon = evt.icon || tiedGoal?.icon || (evt.type === "workout" ? "🏋️" : evt.type === "study" ? "📚" : "🎯");
+    const summary = `${icon} ${evt.title}`;
+
+    let desc = evt.notes || "Scheduled via Calendar Goals & AI Coach";
+    if (evt.energyLevel) {
+      desc += `\\n• Energy: ${evt.energyLevel.replace("_", " ").toUpperCase()}`;
+    }
+    if (tiedGoal) {
+      desc += `\\n• Goal: ${tiedGoal.name} (${tiedGoal.completedCount}/${tiedGoal.weeklyTarget} weekly)`;
+    }
+
+    lines.push("BEGIN:VEVENT");
+    lines.push(`UID:${evt.id}@calendargoals.app`);
+    lines.push(`DTSTAMP:${nowUtc}`);
+    lines.push(`DTSTART:${startUtc}`);
+    lines.push(`DTEND:${endUtc}`);
+    lines.push(`SUMMARY:${escapeIcs(summary)}`);
+    lines.push(`DESCRIPTION:${escapeIcs(desc)}`);
+    lines.push(`CATEGORIES:${(evt.type || "goal").toUpperCase()}`);
+    lines.push(`STATUS:${evt.completed ? "COMPLETED" : "CONFIRMED"}`);
+    lines.push("END:VEVENT");
+  }
+
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+// Live Subscribable Feed (Apple Calendar, Google Calendar, Outlook)
+app.get("/api/calendar/feed.ics", (req, res) => {
+  try {
+    const email = (req.query.email as string) || "rounigorgees@gmail.com";
+    const data = readDb(email);
+    const icsContent = buildIcsFeedString(data.events || [], data.goals || []);
+
+    res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+    res.setHeader("Content-Disposition", 'inline; filename="calendar_goals.ics"');
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.send(icsContent);
+  } catch (err) {
+    console.warn("[API] /api/calendar/feed.ics error:", err);
+    res.status(500).send("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Calendar Goals//EN\r\nEND:VCALENDAR");
+  }
+});
+
+// Downloadable File Export
+app.get("/api/calendar/export.ics", (req, res) => {
+  try {
+    const email = (req.query.email as string) || "rounigorgees@gmail.com";
+    const data = readDb(email);
+    const icsContent = buildIcsFeedString(data.events || [], data.goals || []);
+
+    res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="calendar_goals_schedule.ics"');
+    res.send(icsContent);
+  } catch (err) {
+    console.warn("[API] /api/calendar/export.ics error:", err);
+    res.status(500).json({ error: "Failed to generate export file" });
+  }
+});
+
+// Fetch Remote Calendar URL (bypasses browser CORS for Apple / Google / Outlook / iCal URLs)
+app.post("/api/calendar/fetch-remote", async (req, res) => {
+  try {
+    let { url } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ error: "Missing calendar feed URL" });
+    }
+
+    url = url.trim();
+    if (url.startsWith("webcal://")) {
+      url = "https://" + url.substring(9);
+    } else if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = "https://" + url;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "CalendarGoals/1.0 (Mozilla/5.0 compatible)",
+        "Accept": "text/calendar, text/plain, */*"
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: `Remote calendar server returned HTTP ${response.status}: ${response.statusText}`
+      });
+    }
+
+    const text = await response.text();
+    if (!text.includes("BEGIN:VCALENDAR") && !text.includes("BEGIN:VEVENT")) {
+      return res.status(422).json({
+        error: "The provided URL did not return valid iCalendar (.ics) data."
+      });
+    }
+
+    res.json({ success: true, icsContent: text });
+  } catch (err: any) {
+    console.warn("[API] /api/calendar/fetch-remote error:", err);
+    res.status(500).json({
+      error: err.name === "AbortError" ? "Calendar feed request timed out after 12s." : (err.message || "Failed to fetch remote feed")
+    });
+  }
+});
+
 // 3. AI COACH ENDPOINT
 app.post("/api/coach/optimize", async (req, res) => {
   const { prompt, goals, events, availability, coachPersona = "mentor" } = req.body;
