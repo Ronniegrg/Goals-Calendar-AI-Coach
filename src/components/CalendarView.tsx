@@ -3,6 +3,7 @@ import {
   Calendar as CalendarIcon, 
   ChevronLeft, 
   ChevronRight, 
+  ChevronDown,
   Clock, 
   Plus, 
   Check, 
@@ -74,6 +75,15 @@ const DEFAULT_AVAILABILITY: AvailabilityWindow[] = [
   { dayOfWeek: 5, startTime: "08:00", endTime: "18:00", active: true },
   { dayOfWeek: 6, startTime: "09:00", endTime: "19:00", active: true }
 ];
+
+// Helper to check if two dates fall on the exact same calendar day
+const isSameDay = (d1: Date, d2: Date) => {
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+};
 
 interface CalendarViewProps {
   events: CalendarEvent[];
@@ -262,14 +272,39 @@ export default function CalendarView({
   const [activeShiftMenuId, setActiveShiftMenuId] = useState<string | null>(null);
   const [icsInput, setIcsInput] = useState("");
 
-  // Dismiss dropdowns when clicking outside
+  // Ref for Delay Today dropdown container
+  const delayTodayRef = useRef<HTMLDivElement | null>(null);
+
+  // Dismiss dropdowns when clicking outside or pressing Escape
   useEffect(() => {
-    const handleGlobalClick = () => {
-      setActiveShiftMenuId(null);
-      setShowDelayTodayMenu(false);
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      // Close Delay Today menu only if clicked outside
+      if (delayTodayRef.current && !delayTodayRef.current.contains(target)) {
+        setShowDelayTodayMenu(false);
+      }
+
+      // Close Active Shift Cascade menu only if clicked outside
+      if (!target.closest(".cascade-shift-container")) {
+        setActiveShiftMenuId(null);
+      }
     };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowDelayTodayMenu(false);
+        setActiveShiftMenuId(null);
+      }
+    };
+
     window.addEventListener("click", handleGlobalClick);
-    return () => window.removeEventListener("click", handleGlobalClick);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleGlobalClick);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, []);
 
   // Google Calendar Integration State
@@ -924,15 +959,33 @@ export default function CalendarView({
     const isNow = delayMinutes === "now";
     const nowTime = now.getTime();
     
-    // Find today's uncompleted events
-    const todayUncompleted = events.filter(e => {
+    // Find uncompleted non-external sessions scheduled for today
+    let targetUncompleted = events.filter(e => {
       if (e.completed || e.type === "external") return false;
       const s = new Date(e.start);
-      return isSameDay(s, now) && (isNow || new Date(e.end).getTime() >= nowTime - 30 * 60 * 1000);
-    }).sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+      return isSameDay(s, now);
+    }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    if (todayUncompleted.length === 0) {
-      showCustomAlert("No Upcoming Sessions Today", "You have no remaining uncompleted sessions scheduled for today to delay.");
+    let targetDateContext = now;
+    let targetLabel = "today";
+
+    // Fallback: If no uncompleted sessions exist today, but the user is viewing another date on the calendar with uncompleted sessions
+    if (targetUncompleted.length === 0 && !isSameDay(currentDate, now)) {
+      const viewDayUncompleted = events.filter(e => {
+        if (e.completed || e.type === "external") return false;
+        const s = new Date(e.start);
+        return isSameDay(s, currentDate);
+      }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+      if (viewDayUncompleted.length > 0) {
+        targetUncompleted = viewDayUncompleted;
+        targetDateContext = currentDate;
+        targetLabel = currentDate.toLocaleDateString([], { month: "short", day: "numeric" });
+      }
+    }
+
+    if (targetUncompleted.length === 0) {
+      showCustomAlert("No Uncompleted Sessions Found", "You have no uncompleted sessions scheduled for today to delay. All scheduled sessions are either completed or already caught up!");
       return;
     }
 
@@ -946,17 +999,17 @@ export default function CalendarView({
       currentStart.setSeconds(0, 0);
       let nextAvailableStartMs = currentStart.getTime();
 
-      todayUncompleted.forEach((evt, idx) => {
+      targetUncompleted.forEach((evt, idx) => {
         const origS = new Date(evt.start);
         const origE = new Date(evt.end);
-        const dur = origE.getTime() - origS.getTime();
+        const dur = Math.max(15 * 60 * 1000, origE.getTime() - origS.getTime());
 
         let newSMs: number;
         if (idx === 0) {
           newSMs = currentStart.getTime();
         } else {
-          const prevOrigE = new Date(todayUncompleted[idx - 1].end).getTime();
-          const origGap = Math.max(10 * 60 * 1000, origS.getTime() - prevOrigE);
+          const prevOrigE = new Date(targetUncompleted[idx - 1].end).getTime();
+          const origGap = Math.max(10 * 60 * 1000, Math.min(30 * 60 * 1000, origS.getTime() - prevOrigE));
           newSMs = Math.max(nextAvailableStartMs + 10 * 60 * 1000, nextAvailableStartMs + origGap);
         }
 
@@ -966,12 +1019,13 @@ export default function CalendarView({
         const newS = new Date(newSMs);
         const newE = new Date(newEMs);
 
+        const cleanNotes = evt.notes ? evt.notes.replace(/\s*\(Shifted[^)]*\)/g, "") : "";
         updates.push({
           id: evt.id,
           fields: {
             start: newS.toISOString(),
             end: newE.toISOString(),
-            notes: `${evt.notes || ''} (Shifted to Now @ ${newS.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})`.trim()
+            notes: `${cleanNotes} (Shifted to Now @ ${newS.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})`.trim()
           }
         });
         count++;
@@ -983,91 +1037,136 @@ export default function CalendarView({
         updates.forEach(u => onEditEvent(u.id, u.fields));
       }
 
-      setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today to start immediately from Now (${currentStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})!`);
+      setRebalanceStatus(`⚡ Shifted ${count} session(s) ${targetLabel === "today" ? "today" : `on ${targetLabel}`} to start immediately from Now (${currentStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})!`);
       setTimeout(() => setRebalanceStatus(null), 5000);
       return;
     }
 
-    const delayMs = (delayMinutes as number) * 60 * 1000;
+    if (!isDayDelay) {
+      const delayMs = (delayMinutes as number) * 60 * 1000;
+      let nextAvailableStartMs = nowTime + delayMs;
+
+      targetUncompleted.forEach((evt, idx) => {
+        const origS = new Date(evt.start);
+        const origE = new Date(evt.end);
+        const dur = Math.max(15 * 60 * 1000, origE.getTime() - origS.getTime());
+
+        let newSMs: number;
+        if (origS.getTime() < nowTime) {
+          // If this session's start time was in the past, shift relative to now + delay
+          if (idx === 0) {
+            newSMs = nowTime + delayMs;
+          } else {
+            const prevOrigE = new Date(targetUncompleted[idx - 1].end).getTime();
+            const origGap = Math.max(10 * 60 * 1000, Math.min(30 * 60 * 1000, origS.getTime() - prevOrigE));
+            newSMs = Math.max(nextAvailableStartMs + 10 * 60 * 1000, nextAvailableStartMs + origGap);
+          }
+        } else {
+          // Future session: push forward by delayMs, avoiding collisions with earlier shifted blocks
+          const delayedS = origS.getTime() + delayMs;
+          newSMs = Math.max(delayedS, nextAvailableStartMs);
+        }
+
+        const newEMs = newSMs + dur;
+        nextAvailableStartMs = newEMs + 10 * 60 * 1000;
+
+        const newS = new Date(newSMs);
+        const newE = new Date(newEMs);
+
+        const cleanNotes = evt.notes ? evt.notes.replace(/\s*\(Shifted[^)]*\)/g, "") : "";
+        updates.push({
+          id: evt.id,
+          fields: {
+            start: newS.toISOString(),
+            end: newE.toISOString(),
+            notes: `${cleanNotes} (Shifted +${delayMinutes}m)`.trim()
+          }
+        });
+        count++;
+      });
+
+      if (onBulkEditEvents) {
+        onBulkEditEvents(updates);
+      } else if (onEditEvent) {
+        updates.forEach(u => onEditEvent(u.id, u.fields));
+      }
+
+      setRebalanceStatus(`⚡ Shifted ${count} session(s) ${targetLabel === "today" ? "today" : `on ${targetLabel}`} forward by +${delayMinutes} minutes!`);
+      setTimeout(() => setRebalanceStatus(null), 5000);
+      return;
+    }
+
+    // Day delays (+1d, +2d, +1w)
     const occupiedByDay: Record<string, { start: Date; end: Date }[]> = {};
 
-    todayUncompleted.forEach(evt => {
+    targetUncompleted.forEach(evt => {
       const origS = new Date(evt.start);
       const origE = new Date(evt.end);
-      const dur = origE.getTime() - origS.getTime();
+      const dur = Math.max(15 * 60 * 1000, origE.getTime() - origS.getTime());
       const fallbackStartHour = origS.getHours() + origS.getMinutes() / 60;
 
-      let newS: Date;
-      let newE: Date;
+      const targetDate = new Date(targetDateContext.getFullYear(), targetDateContext.getMonth(), targetDateContext.getDate() + daysOffset);
+      const dayKey = targetDate.toDateString();
 
-      if (isDayDelay) {
-        const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysOffset);
-        const dayKey = targetDate.toDateString();
+      if (!occupiedByDay[dayKey]) {
+        occupiedByDay[dayKey] = events
+          .filter(e => e.id !== evt.id && isSameDay(new Date(e.start), targetDate))
+          .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
+      }
 
-        if (!occupiedByDay[dayKey]) {
-          occupiedByDay[dayKey] = events
-            .filter(e => e.id !== evt.id && isSameDay(new Date(e.start), targetDate))
-            .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
-        }
+      const goal = getGoalForEvent(evt);
+      const { startHour, endHour } = getPreferredTimeWindow(goal, fallbackStartHour);
 
-        const goal = getGoalForEvent(evt);
-        const { startHour, endHour } = getPreferredTimeWindow(goal, fallbackStartHour);
+      let windowsToTry: { startH: number; endH: number }[] = [];
+      if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
+        windowsToTry = [
+          { startH: startHour, endH: endHour },
+          { startH: 8, endH: 22 }
+        ];
+      } else {
+        windowsToTry = [
+          { startH: startHour, endH: endHour }
+        ];
+      }
 
-        let windowsToTry: { startH: number; endH: number }[] = [];
-        if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) {
-          windowsToTry = [
-            { startH: startHour, endH: endHour },
-            { startH: 8, endH: 22 }
-          ];
-        } else {
-          windowsToTry = [
-            { startH: startHour, endH: endHour }
-          ];
-        }
+      let slotFound = false;
+      let testS = new Date(targetDate);
+      let testE = new Date(targetDate);
 
-        let slotFound = false;
-        let testS = new Date(targetDate);
-        let testE = new Date(targetDate);
+      for (const win of windowsToTry) {
+        if (slotFound) break;
+        const durHours = dur / (3600 * 1000);
+        const maxStartH = Math.max(win.startH, win.endH - durHours);
+        for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
+          const candS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+          candS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+          const candE = new Date(candS.getTime() + dur);
 
-        for (const win of windowsToTry) {
-          if (slotFound) break;
-          const durHours = dur / (3600 * 1000);
-          const maxStartH = Math.max(win.startH, win.endH - durHours);
-          for (let h = win.startH; h <= maxStartH + 0.01; h += 0.5) {
-            const candS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-            candS.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
-            const candE = new Date(candS.getTime() + dur);
-
-            const hasOverlap = occupiedByDay[dayKey].some(occ => candS < occ.end && candE > occ.start);
-            if (!hasOverlap) {
-              testS = candS;
-              testE = candE;
-              slotFound = true;
-              break;
-            }
+          const hasOverlap = occupiedByDay[dayKey].some(occ => candS < occ.end && candE > occ.start);
+          if (!hasOverlap) {
+            testS = candS;
+            testE = candE;
+            slotFound = true;
+            break;
           }
         }
-
-        if (!slotFound) {
-          testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-          testS.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
-          testE = new Date(testS.getTime() + dur);
-        }
-
-        occupiedByDay[dayKey].push({ start: testS, end: testE });
-        newS = testS;
-        newE = testE;
-      } else {
-        newS = new Date(origS.getTime() + delayMs);
-        newE = new Date(origE.getTime() + delayMs);
       }
+
+      if (!slotFound) {
+        testS = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+        testS.setHours(Math.floor(startHour), Math.round((startHour % 1) * 60), 0, 0);
+        testE = new Date(testS.getTime() + dur);
+      }
+
+      occupiedByDay[dayKey].push({ start: testS, end: testE });
+      const cleanNotes = evt.notes ? evt.notes.replace(/\s*\(Shifted[^)]*\)/g, "") : "";
 
       updates.push({
         id: evt.id,
         fields: {
-          start: newS.toISOString(),
-          end: newE.toISOString(),
-          notes: `${evt.notes || ''} (Shifted ${isDayDelay ? `+${daysOffset}d` : `+${delayMinutes}m`})`.trim()
+          start: testS.toISOString(),
+          end: testE.toISOString(),
+          notes: `${cleanNotes} (Shifted +${daysOffset}d)`.trim()
         }
       });
       count++;
@@ -1079,8 +1178,8 @@ export default function CalendarView({
       updates.forEach(u => onEditEvent(u.id, u.fields));
     }
 
-    const shiftText = isDayDelay ? `${daysOffset} day(s)` : `${delayMinutes} minutes`;
-    setRebalanceStatus(`⚡ Shifted ${count} remaining session(s) today forward by +${shiftText} into their preferred goal time slots!`);
+    const dayText = daysOffset === 7 ? "1 week" : `${daysOffset} day(s)`;
+    setRebalanceStatus(`⚡ Shifted ${count} session(s) ${targetLabel === "today" ? "today" : `on ${targetLabel}`} forward by +${dayText} into optimal time slots!`);
     setTimeout(() => setRebalanceStatus(null), 5000);
   };
 
@@ -2454,7 +2553,7 @@ export default function CalendarView({
     <div id="calendar_section_card" className="bg-white/95 dark:bg-white/5 backdrop-blur-md border border-slate-200 dark:border-white/10 rounded-2xl shadow-xl overflow-hidden flex flex-col min-h-[600px] h-auto md:h-[750px] text-slate-900 dark:text-white">
       
       {/* Calendar Header toolbar: Two-tier structure preventing collisions and overlapping */}
-      <div className="border-b border-slate-200 dark:border-white/10 bg-slate-100/70 dark:bg-white/5">
+      <div className="relative z-40 border-b border-slate-200 dark:border-white/10 bg-slate-100/70 dark:bg-white/5">
         {/* Tier 1: Main Header Toolbar (Schedule title, View switcher, Date navigation, Date display, Primary Creation CTAs) */}
         <div className="p-3 sm:px-4 sm:py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200/80 dark:border-white/5">
           {/* Left: Schedule Title + Event Count Badge + View Mode Switcher */}
@@ -2563,8 +2662,8 @@ export default function CalendarView({
         </div>
 
         {/* Tier 2: Smart Schedule Toolbar (Connect, Focus Incomplete, Re-balance, Priorities, Bio-Energy, Delay, Regenerate) */}
-        <div className="px-3 sm:px-4 py-2 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-start gap-2 overflow-x-auto no-scrollbar">
-          <div className="flex items-center gap-1.5 shrink-0 flex-nowrap sm:flex-wrap">
+        <div className="relative z-40 px-3 sm:px-4 py-2 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-start gap-2 overflow-visible">
+          <div className="flex items-center gap-1.5 flex-wrap">
             {/* Sync Feeds */}
             <button
               id="open_sync_sidebar_btn"
@@ -2676,7 +2775,7 @@ export default function CalendarView({
             )}
 
             {/* Delay Today Quick Trigger */}
-            <div className="relative z-50 shrink-0">
+            <div ref={delayTodayRef} className="relative z-50 shrink-0">
               <button
                 id="delay_today_btn"
                 type="button"
@@ -2684,15 +2783,16 @@ export default function CalendarView({
                   e.stopPropagation();
                   setShowDelayTodayMenu(prev => !prev);
                 }}
-                className="p-1.5 sm:px-2.5 sm:py-1.5 border border-amber-300 dark:border-amber-500/30 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap"
+                className="p-1.5 sm:px-2.5 sm:py-1.5 border border-amber-300 dark:border-amber-500/30 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95"
                 title="Shift today's remaining uncompleted sessions forward if running late"
               >
                 <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 <span>Delay Today</span>
+                <ChevronDown className={`w-3 h-3 text-amber-600 dark:text-amber-400 transition-transform duration-200 ${showDelayTodayMenu ? "rotate-180" : ""}`} />
               </button>
               {showDelayTodayMenu && (
                 <div 
-                  className="absolute left-0 sm:left-auto sm:right-0 mt-2 w-52 bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2 z-[100] text-left animate-fade-in space-y-1"
+                  className="absolute right-0 sm:right-0 max-sm:left-0 top-full mt-1.5 w-56 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2.5 z-50 text-left animate-fade-in space-y-1.5 ring-1 ring-black/5"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
@@ -4303,7 +4403,7 @@ export default function CalendarView({
 
                             {/* Delay/Shift Popover Menu */}
                             {!evt.completed && evt.type !== "external" && (
-                              <div className="relative">
+                              <div className="relative cascade-shift-container">
                                 <button
                                   type="button"
                                   id={`delay_event_btn_list_${evt.id}`}
