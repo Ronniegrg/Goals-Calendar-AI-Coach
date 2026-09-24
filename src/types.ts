@@ -187,3 +187,46 @@ export interface SyncData {
   customTemplates?: CustomSessionTemplate[];
   userEnergyProfile?: UserEnergyProfile;
 }
+
+export interface ScheduleDiffItem {
+  id: string;
+  type: "added" | "moved" | "deleted" | "retained";
+  title: string;
+  goalId?: string;
+  goalName?: string;
+  oldStart?: string;
+  oldEnd?: string;
+  newStart?: string;
+  newEnd?: string;
+  reason?: string;
+  energyBadge?: string;
+}
+
+export interface AIScheduleProposal {
+  title: string;
+  summary: string;
+  reasoning: string[];
+  proposedEvents: CalendarEvent[];
+  diff: ScheduleDiffItem[];
+  stats: {
+    sessionsAdded: number;
+    sessionsMoved: number;
+    sessionsRemoved: number;
+    totalHoursScheduled: number;
+    energyScore?: number;
+  };
+  aiGenerated: boolean;
+}
+
+export type AutopilotMode = "full_autonomous" | "copilot_sentinel" | "manual";
+
+export interface AutopilotLogEntry {
+  id: string;
+  timestamp: string;
+  actionType: "deconflict" | "rebalance_overdue" | "auto_plan_goal" | "energy_shift" | "sentinel_scan";
+  title: string;
+  description: string;
+  badge: string;
+  affectedCount: number;
+}
+

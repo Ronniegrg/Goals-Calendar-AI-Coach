@@ -32,6 +32,7 @@ import FocusTimerModal from "./components/FocusTimerModal";
 import EnergyProfileModal from "./components/EnergyProfileModal";
 import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
+import AIScheduleController from "./components/AIScheduleController";
 import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
@@ -44,7 +45,7 @@ import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProf
 
 export default function App() {
   // Navigation State
-  const [activeTab, setActiveTab] = useState<"calendar" | "goals" | "dashboard" | "coach" | "notifications">("calendar");
+  const [activeTab, setActiveTab] = useState<"calendar" | "goals" | "dashboard" | "coach" | "notifications" | "ai-schedule">("calendar");
 
   // Sync state & user credentials
   const [userEmail, setUserEmail] = useState("rounigorgees@gmail.com");
@@ -2287,18 +2288,39 @@ export default function App() {
               Schedule Grid
             </button>
 
-            <button
-              id="tab_trigger_goals"
-              onClick={() => setActiveTab("goals")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
-                activeTab === "goals"
-                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
-              }`}
-            >
-              <Layers className="w-4 h-4" />
-              Goals & Constraints
-            </button>
+            {/* GOALS ⇄ AI CONTROLLER SCHEDULE SEGMENTED TOGGLE */}
+            <div className="flex items-center bg-slate-100 dark:bg-white/5 p-1 rounded-xl border border-slate-200 dark:border-white/10 shrink-0 gap-1">
+              <button
+                id="tab_trigger_goals"
+                onClick={() => setActiveTab("goals")}
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 cursor-pointer ${
+                  activeTab === "goals"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                }`}
+                title="Manage goals, milestones, and constraints"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Goals</span>
+              </button>
+
+              <button
+                id="tab_trigger_ai_schedule"
+                onClick={() => setActiveTab("ai-schedule")}
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 cursor-pointer ${
+                  activeTab === "ai-schedule"
+                    ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-500/20"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                }`}
+                title="Autonomous AI Schedule Controller & Deconflictor"
+              >
+                <Bot className="w-3.5 h-3.5 text-yellow-300 animate-pulse" />
+                <span>AI Schedule</span>
+                <span className="text-[9px] bg-yellow-400/25 text-yellow-500 dark:text-yellow-300 px-1.5 py-0.2 rounded-full font-bold">
+                  Autopilot
+                </span>
+              </button>
+            </div>
 
             <button
               id="tab_trigger_dashboard"
@@ -2442,6 +2464,38 @@ export default function App() {
             onResumeGoal={handleResumeGoal}
             energyProfile={energyProfile}
             onOpenEnergyModal={() => setShowEnergyModal(true)}
+            onNavigateToAiSchedule={() => setActiveTab("ai-schedule")}
+          />
+        )}
+
+        {activeTab === "ai-schedule" && (
+          <AIScheduleController
+            goals={goals}
+            events={events}
+            availability={availability}
+            energyProfile={energyProfile}
+            onApplySchedule={(newEvents, summaryMsg) => {
+              setEvents(newEvents);
+              syncToCloud(goals, newEvents, availability, notifications, coachMessages);
+              triggerSystemNotification(
+                "AI Schedule Applied! ✨",
+                summaryMsg,
+                "success",
+                {
+                  label: "View Calendar",
+                  onClick: () => setActiveTab("calendar")
+                }
+              );
+            }}
+            onNavigateToGoals={() => setActiveTab("goals")}
+            onNavigateToCalendar={(targetDate?: Date) => {
+              if (targetDate) {
+                setCalendarTargetDate(targetDate);
+              }
+              setActiveTab("calendar");
+            }}
+            onAddNotification={triggerSystemNotification}
+            userEmail={userEmail}
           />
         )}
 
@@ -2550,15 +2604,28 @@ export default function App() {
 
         <button
           id="tab_trigger_goals_mobile"
-          onClick={() => setActiveTab("goals")}
+          onClick={() => {
+            if (activeTab === "goals") {
+              setActiveTab("ai-schedule");
+            } else {
+              setActiveTab("goals");
+            }
+          }}
           className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
-            activeTab === "goals"
+            activeTab === "goals" || activeTab === "ai-schedule"
               ? "text-indigo-400 font-bold scale-105"
               : "text-slate-400 hover:text-slate-200"
           }`}
+          title="Toggle between Goals and AI Schedule Controller"
         >
-          <Layers className="w-5 h-5" />
-          <span className="text-[10px] tracking-wide font-medium">Goals</span>
+          {activeTab === "ai-schedule" ? (
+            <Bot className="w-5 h-5 text-yellow-300 animate-pulse" />
+          ) : (
+            <Layers className="w-5 h-5" />
+          )}
+          <span className="text-[10px] tracking-wide font-medium">
+            {activeTab === "ai-schedule" ? "AI Sched" : "Goals"}
+          </span>
         </button>
 
         <button

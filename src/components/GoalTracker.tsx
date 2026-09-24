@@ -26,7 +26,8 @@ import {
   PauseCircle,
   ShieldCheck,
   CalendarOff,
-  ArrowRight
+  ArrowRight,
+  Bot
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority, EnergyLevel, UserEnergyProfile } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -174,6 +175,7 @@ interface GoalTrackerProps {
   onResumeGoal?: (goalId: string) => void;
   energyProfile?: UserEnergyProfile;
   onOpenEnergyModal?: () => void;
+  onNavigateToAiSchedule?: () => void;
 }
 
 export default function GoalTracker({
@@ -195,7 +197,8 @@ export default function GoalTracker({
   onPauseGoal,
   onResumeGoal,
   energyProfile,
-  onOpenEnergyModal
+  onOpenEnergyModal,
+  onNavigateToAiSchedule
 }: GoalTrackerProps) {
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
@@ -725,12 +728,21 @@ export default function GoalTracker({
 
   // Quick preset colors
   const presetColors = [
-    "#f43f5e", // rose
-    "#06b6d4", // cyan
-    "#8b5cf6", // purple
-    "#10b981", // emerald
-    "#f59e0b", // amber
-    "#3b82f6"  // blue
+    "#f43f5e", // Rose / Crimson
+    "#ef4444", // Red / Coral
+    "#f97316", // Orange
+    "#f59e0b", // Amber / Gold
+    "#eab308", // Yellow
+    "#84cc16", // Lime
+    "#10b981", // Emerald / Mint
+    "#14b8a6", // Teal
+    "#06b6d4", // Cyan / Sky
+    "#3b82f6", // Blue / Sapphire
+    "#6366f1", // Indigo
+    "#8b5cf6", // Purple / Violet
+    "#d946ef", // Fuchsia / Magenta
+    "#ec4899", // Pink
+    "#64748b"  // Slate / Steel
   ];
 
   const handleSubmitGoalForm = (e: React.FormEvent) => {
@@ -1117,6 +1129,48 @@ export default function GoalTracker({
   return (
     <div className="space-y-6">
       
+      {/* 0. TOP SEGMENTED TOGGLE: GOALS TRACKER ⇄ AI CONTROLLER SCHEDULE */}
+      {onNavigateToAiSchedule && (
+        <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-3 rounded-2xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center p-1.5 bg-slate-950/80 rounded-xl border border-white/10 w-full sm:w-auto shadow-inner">
+            <button
+              type="button"
+              id="goals_tracker_active_pill"
+              className="flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-600/30"
+            >
+              <Layers className="w-4 h-4 text-white" />
+              <span>Goals & Constraints</span>
+              <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.5 rounded-full font-semibold">
+                {goals.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              id="switch_to_ai_schedule_controller_btn"
+              onClick={onNavigateToAiSchedule}
+              className="flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer text-slate-400 hover:text-white hover:bg-white/5"
+            >
+              <Bot className="w-4 h-4 text-yellow-300 animate-pulse" />
+              <span>AI Schedule Controller</span>
+              <span className="text-[9px] bg-yellow-400/20 text-yellow-300 border border-yellow-400/30 px-1.5 py-0.2 rounded-full font-bold uppercase tracking-wider">
+                Autopilot
+              </span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={onNavigateToAiSchedule}
+            className="text-xs px-4 py-2 rounded-xl font-bold bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-300 hover:text-white transition flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center shadow-xs"
+          >
+            <Sparkles className="w-4 h-4 text-yellow-300" />
+            <span>Launch AI Schedule Autopilot</span>
+            <ArrowRight className="w-3.5 h-3.5 text-indigo-400" />
+          </button>
+        </div>
+      )}
+
       {/* SECTION 1: AUTO SCHEDULER TRIGGER */}
       <div id="planner_solver_widget" className="bg-gradient-to-r from-indigo-600/30 to-indigo-800/35 border border-white/10 p-6 rounded-2xl text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 backdrop-blur-md">
         <div className="space-y-1 text-center md:text-left flex-1">
@@ -1602,21 +1656,33 @@ export default function GoalTracker({
             <GoalIconPicker selectedIcon={icon} onSelectIcon={setIcon} accentColor={color} />
 
             {/* Custom Palette options */}
-            <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-white/5">
-              <div className="flex gap-2 items-center">
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Marker Color:</span>
-                <div className="flex items-center gap-1.5">
+            <div className="flex items-center justify-between flex-wrap gap-3 pt-2 border-t border-white/5">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Marker Color:</span>
+                <div className="flex items-center gap-1.5 flex-wrap">
                   {presetColors.map((col) => (
                     <button
                       key={col}
                       type="button"
                       onClick={() => setColor(col)}
                       className={`w-5 h-5 rounded-full border transition-transform cursor-pointer ${
-                        color === col ? "scale-125 border-white ring-2 ring-indigo-500/40" : "border-transparent"
+                        color === col ? "scale-125 border-white ring-2 ring-indigo-500/40" : "border-transparent opacity-85 hover:opacity-100"
                       }`}
                       style={{ backgroundColor: col }}
+                      title={col}
                     />
                   ))}
+                  {/* Custom Hex Color Picker */}
+                  <label className="relative flex items-center justify-center w-5 h-5 rounded-full border border-dashed border-white/30 hover:border-white cursor-pointer bg-white/5 overflow-hidden ml-1" title="Pick custom color">
+                    <input
+                      type="color"
+                      value={color}
+                      onChange={(e) => setColor(e.target.value)}
+                      className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                    />
+                    <span className="text-[9px] font-bold text-slate-400">+</span>
+                  </label>
+                  <span className="text-[10px] font-mono text-slate-400 uppercase ml-1">{color}</span>
                 </div>
               </div>
 

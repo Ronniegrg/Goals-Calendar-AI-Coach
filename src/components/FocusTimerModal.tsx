@@ -36,7 +36,8 @@ import {
   Bookmark,
   Copy,
   Edit3,
-  Info
+  Info,
+  Zap
 } from "lucide-react";
 import { SessionSubStep, CustomSessionTemplate } from "../types";
 
@@ -1426,6 +1427,11 @@ export default function FocusTimerModal({
         { id: `step_${Date.now()}_3`, title: "3. Application Drills", durationMinutes: p3, description: "Build, code, or solve hard questions" },
         { id: `step_${Date.now()}_4`, title: "4. Review & Log Takeaway", durationMinutes: p4, description: "Capture learnings and bookmark next session" },
       ]);
+    } else if (templateType === "lazy_jumpstart") {
+      setDraftSubSteps([
+        { id: `step_${Date.now()}_1`, title: "Step 1: 2-Minute Easy Setup", durationMinutes: 2, description: "Open tools, take a sip of water, zero pressure" },
+        { id: `step_${Date.now()}_2`, title: "Step 2: 3-Minute Micro-Action", durationMinutes: 3, description: "Do just one tiny action. Stop anytime with zero guilt!" }
+      ]);
     }
   };
 
@@ -1988,27 +1994,57 @@ export default function FocusTimerModal({
 
         {/* TIME'S UP LOUD BANNER & REPLAY BELL BUTTON */}
         {timerState.isCompleted && (
-          <div className="mb-3 p-3 bg-amber-500/20 border border-amber-400/60 rounded-2xl text-amber-200 flex items-center justify-between animate-fade-in shadow-lg shadow-amber-500/10">
-            <div className="flex items-center gap-2">
-              <span className="p-2 bg-amber-500/30 rounded-xl text-amber-300">
-                <BellRing className="w-5 h-5 animate-bounce" />
-              </span>
-              <div>
-                <h4 className="font-extrabold text-white text-sm">Session Complete!</h4>
-                <p className="text-xs text-amber-300/90 font-medium">Your scheduled focus timer has finished.</p>
+          <div className="mb-3 p-3.5 bg-gradient-to-r from-amber-500/20 via-emerald-500/20 to-teal-500/20 border border-amber-400/60 rounded-2xl text-amber-200 animate-fade-in shadow-lg shadow-amber-500/10 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="p-2 bg-amber-500/30 rounded-xl text-amber-300 shrink-0">
+                  {timerState.totalSec <= 300 ? (
+                    <Sparkles className="w-5 h-5 animate-bounce" />
+                  ) : (
+                    <BellRing className="w-5 h-5 animate-bounce" />
+                  )}
+                </span>
+                <div>
+                  <h4 className="font-extrabold text-white text-sm">
+                    {timerState.totalSec <= 300 ? "🎉 Micro-Win Unlocked!" : "Session Complete!"}
+                  </h4>
+                  <p className="text-xs text-amber-200/90 font-medium">
+                    {timerState.totalSec <= 300 
+                      ? "You beat task paralysis! Showing up is 90% of the battle. Keep momentum rolling or stop guilt-free!"
+                      : "Your scheduled focus timer has finished. Excellent job!"}
+                  </p>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  unlockAudioEngine();
+                  playBellSound(soundChoice, soundVolume);
+                }}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition flex items-center gap-1.5 active:scale-95 shrink-0"
+              >
+                <Bell className="w-3.5 h-3.5 fill-current" />
+                <span>Ring Bell</span>
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                unlockAudioEngine();
-                playBellSound(soundChoice, soundVolume);
-              }}
-              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition flex items-center gap-1.5 active:scale-95"
-            >
-              <Bell className="w-3.5 h-3.5 fill-current" />
-              <span>Ring Bell</span>
-            </button>
+
+            {/* Ride the Momentum Button for micro-starts */}
+            {timerState.totalSec <= 300 && (
+              <div className="pt-2 border-t border-white/10 flex items-center gap-2">
+                <button
+                  type="button"
+                  id="timer_ride_momentum_btn"
+                  onClick={() => {
+                    handleAdjustMinutes(15);
+                    handleStart();
+                  }}
+                  className="flex-1 py-2 px-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition flex items-center justify-center gap-1.5 active:scale-95"
+                >
+                  <Flame className="w-3.5 h-3.5 text-amber-300 fill-current" />
+                  <span>Ride the Momentum (+15m Deep Flow)</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -3034,9 +3070,25 @@ export default function FocusTimerModal({
               <Flame className="w-3.5 h-3.5 text-amber-400" />
               Adjust Time On The Fly
             </span>
-            <span className="font-mono text-indigo-300">
-              {timerState.timeRemaining > 0 ? `${remainingMins}m left` : "0m"}
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                id="timer_lazy_5min_jumpstart_btn"
+                onClick={() => {
+                  const targetSec = 5 * 60;
+                  const deltaMins = Math.round((targetSec - timerState.timeRemaining) / 60);
+                  handleAdjustMinutes(deltaMins);
+                }}
+                className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition flex items-center gap-1 cursor-pointer active:scale-95"
+                title="5-Minute Rule: Just commit to 5 mins. You have full permission to stop after 5 mins with zero guilt!"
+              >
+                <Zap className="w-3 h-3 fill-current text-amber-400" />
+                <span>5-Min Lazy Start</span>
+              </button>
+              <span className="font-mono text-indigo-300">
+                {timerState.timeRemaining > 0 ? `${remainingMins}m left` : "0m"}
+              </span>
+            </div>
           </div>
 
           <div className="grid grid-cols-7 gap-1 sm:gap-1.5">

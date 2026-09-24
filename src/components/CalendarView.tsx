@@ -46,7 +46,10 @@ import {
   Compass,
   Brain,
   Zap,
-  BatteryCharging
+  BatteryCharging,
+  Flame,
+  ShieldAlert,
+  Filter
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -210,11 +213,11 @@ export default function CalendarView({
   const [timerCategory, setTimerCategory] = useState<string | undefined>();
   const [timerColor, setTimerColor] = useState<string>("#6366f1");
 
-  const handleOpenTimerForEvent = (evt: CalendarEvent, e?: React.MouseEvent) => {
+  const handleOpenTimerForEvent = (evt: CalendarEvent, e?: React.MouseEvent, overrideDuration?: number) => {
     if (e) e.stopPropagation();
     const startMs = new Date(evt.start).getTime();
     const endMs = new Date(evt.end).getTime();
-    const durationMins = Math.max(5, Math.round((endMs - startMs) / (1000 * 60)));
+    const durationMins = overrideDuration || Math.max(5, Math.round((endMs - startMs) / (1000 * 60)));
     
     const associatedGoal = goals.find(g => g.id === evt.goalId);
     
@@ -226,21 +229,25 @@ export default function CalendarView({
       category: associatedGoal?.category || evt.type,
       color: associatedGoal?.color || (evt.type === "study" ? "#3b82f6" : evt.type === "workout" ? "#f43f5e" : "#10b981"),
       previousSessionNote: associatedGoal?.lastSessionNote,
-      subSteps: evt.subSteps || associatedGoal?.subSteps
+      subSteps: evt.subSteps || associatedGoal?.subSteps,
+      autoStart: true,
+      openModal: true
     });
   };
 
-  const handleOpenTimerForGoal = (goal: Goal, e?: React.MouseEvent) => {
+  const handleOpenTimerForGoal = (goal: Goal, e?: React.MouseEvent, overrideDuration?: number) => {
     if (e) e.stopPropagation();
     triggerFocusTimer({
       title: goal.name,
-      duration: goal.durationMinutes || 60,
+      duration: overrideDuration || goal.durationMinutes || 60,
       eventId: undefined,
       goalId: goal.id,
       category: goal.category || goal.type,
       color: goal.color || "#6366f1",
       previousSessionNote: goal.lastSessionNote,
-      subSteps: goal.subSteps
+      subSteps: goal.subSteps,
+      autoStart: true,
+      openModal: true
     });
   };
 
@@ -293,6 +300,17 @@ export default function CalendarView({
 
   // Ref for Delay Today dropdown container
   const delayTodayRef = useRef<HTMLDivElement | null>(null);
+  const focusIncompleteMenuRef = useRef<HTMLDivElement | null>(null);
+  const [showFocusIncompleteMenu, setShowFocusIncompleteMenu] = useState(false);
+  const [focusPriorityFilter, setFocusPriorityFilter] = useState<"all" | "critical" | "important" | "normal">("all");
+  const [restDayActive, setRestDayActive] = useState<boolean>(() => {
+    try {
+      const todayKey = new Date().toDateString();
+      return localStorage.getItem(`rest_day_${todayKey}`) === "true";
+    } catch {
+      return false;
+    }
+  });
 
   // Dismiss dropdowns when clicking outside or pressing Escape
   useEffect(() => {
@@ -305,6 +323,11 @@ export default function CalendarView({
         setShowDelayTodayMenu(false);
       }
 
+      // Close Focus Incomplete dropdown menu if clicked outside
+      if (focusIncompleteMenuRef.current && !focusIncompleteMenuRef.current.contains(target)) {
+        setShowFocusIncompleteMenu(false);
+      }
+
       // Close Active Shift Cascade menu only if clicked outside
       if (!target.closest(".cascade-shift-container")) {
         setActiveShiftMenuId(null);
@@ -314,6 +337,7 @@ export default function CalendarView({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setShowDelayTodayMenu(false);
+        setShowFocusIncompleteMenu(false);
         setActiveShiftMenuId(null);
       }
     };
@@ -403,6 +427,8 @@ export default function CalendarView({
     totalIncompleteCount: number;
     currentIndex: number;
     isTodayFocus?: boolean;
+    priorityFilter?: "all" | "critical" | "important" | "normal";
+    orderMode?: "priority" | "chronological" | "quick_win";
   } | null>(null);
   const lastHandledCompletedEventId = useRef<string | null>(null);
 
@@ -467,6 +493,84 @@ export default function CalendarView({
 
     return mapped;
   }, [events, goals, now]);
+
+  // Priority-ranked past incomplete sessions (strictly prioritizes Critical > Important > Normal, then chronological)
+  const priorityRankedPastIncompleteSessions = useMemo(() => {
+    const sorted = [...rankedPastIncompleteSessions];
+    const priorityWeight = (p?: string) => {
+      if (p === "critical") return 3;
+      if (p === "important") return 2;
+      return 1;
+    };
+
+    sorted.sort((a, b) => {
+      const pDiff = priorityWeight(b.goal.priority) - priorityWeight(a.goal.priority);
+      if (pDiff !== 0) return pDiff;
+
+      // Secondary: Earlier scheduled sessions come first within same priority tier
+      const aTime = new Date(a.event.start).getTime();
+      const bTime = new Date(b.event.start).getTime();
+      if (aTime !== bTime) return aTime - bTime;
+
+      // Tertiary: Higher deficit
+      return b.deficit - a.deficit;
+    });
+
+    return sorted;
+  }, [rankedPastIncompleteSessions]);
+
+  // Quick-win ranked past incomplete sessions (strictly prioritizes shortest duration & lightest cognitive load first to beat inertia)
+  const quickWinRankedPastIncompleteSessions = useMemo(() => {
+    const sorted = [...rankedPastIncompleteSessions];
+    sorted.sort((a, b) => {
+      // 1. Duration in minutes: shorter sessions first (e.g. 15m or 25m before 60m or 90m)
+      const durA = Math.max(15, Math.round((new Date(a.event.end).getTime() - new Date(a.event.start).getTime()) / 60000));
+      const durB = Math.max(15, Math.round((new Date(b.event.end).getTime() - new Date(b.event.start).getTime()) / 60000));
+      if (durA !== durB) return durA - durB;
+
+      // 2. Cognitive energy level: light_recharge (1) > moderate (2) > deep_focus (3)
+      const energyWeight = (e?: string) => (e === "light_recharge" ? 1 : e === "moderate" ? 2 : 3);
+      const eDiff = energyWeight(a.goal.energyLevel) - energyWeight(b.goal.energyLevel);
+      if (eDiff !== 0) return eDiff;
+
+      // 3. Lower weekly deficit (easier to check off completely)
+      if (a.deficit !== b.deficit) return a.deficit - b.deficit;
+
+      // 4. Chronological: earlier scheduled first
+      return new Date(a.event.start).getTime() - new Date(b.event.start).getTime();
+    });
+    return sorted;
+  }, [rankedPastIncompleteSessions]);
+
+  // Incomplete sessions filtered by selected focus priority
+  const activeFocusIncompleteSessions = useMemo(() => {
+    if (focusPriorityFilter === "all") {
+      return rankedPastIncompleteSessions;
+    }
+    return rankedPastIncompleteSessions.filter(
+      item => (item.goal.priority || "normal") === focusPriorityFilter
+    );
+  }, [rankedPastIncompleteSessions, focusPriorityFilter]);
+
+  // Priority breakdown counts for badges & quick indicators
+  const incompletePriorityCounts = useMemo(() => {
+    const uncompleted = rankedPastIncompleteSessions.filter(item => !item.event.completed);
+    let critical = 0;
+    let important = 0;
+    let normal = 0;
+    uncompleted.forEach(item => {
+      const p = item.goal.priority || "normal";
+      if (p === "critical") critical++;
+      else if (p === "important") important++;
+      else normal++;
+    });
+    return {
+      total: uncompleted.length,
+      critical,
+      important,
+      normal
+    };
+  }, [rankedPastIncompleteSessions]);
 
   // Chronological goal sessions scheduled for today
   const todayGoalSessions = useMemo(() => {
@@ -1252,13 +1356,33 @@ export default function CalendarView({
     });
   };
 
-  const handleFocusMostIncompleteGoal = (indexToFocus?: number) => {
-    const activePastIncomplete = rankedPastIncompleteSessions.filter(item => !item.event.completed);
+  const handleFocusMostIncompleteGoal = (
+    indexToFocus?: number,
+    priorityOverride?: "all" | "critical" | "important" | "normal",
+    orderOverride?: "priority" | "chronological" | "quick_win"
+  ) => {
+    const effectivePriority = priorityOverride !== undefined ? priorityOverride : focusPriorityFilter;
+    const effectiveOrder = orderOverride !== undefined ? orderOverride : (effectivePriority !== "all" ? "priority" : "chronological");
+
+    // Choose base dataset according to ordering mode
+    const baseList = effectiveOrder === "quick_win"
+      ? quickWinRankedPastIncompleteSessions
+      : effectiveOrder === "priority" 
+      ? priorityRankedPastIncompleteSessions 
+      : rankedPastIncompleteSessions;
+
+    // Filter by priority if not "all"
+    const filteredList = effectivePriority === "all"
+      ? baseList
+      : baseList.filter(item => (item.goal.priority || "normal") === effectivePriority);
+
+    const activePastIncomplete = filteredList.filter(item => !item.event.completed);
 
     if (activePastIncomplete.length === 0) {
       setSpotlightBannerInfo(null);
       setSpotlightEventId(null);
-      setRebalanceStatus("🎉 No past incomplete sessions! All scheduled sessions up to now are complete.");
+      const priorityLabel = effectivePriority !== "all" ? ` [${effectivePriority.toUpperCase()}]` : "";
+      setRebalanceStatus(`🎉 No past incomplete${priorityLabel} sessions! All scheduled sessions up to now are complete.`);
       setTimeout(() => setRebalanceStatus(null), 4000);
       return;
     }
@@ -1288,7 +1412,9 @@ export default function CalendarView({
       isOverdue: true,
       deficit,
       totalIncompleteCount: activePastIncomplete.length,
-      currentIndex: idx
+      currentIndex: idx,
+      priorityFilter: effectivePriority,
+      orderMode: effectiveOrder
     });
   };
 
@@ -1483,12 +1609,23 @@ export default function CalendarView({
     }
 
     // 2. Find remaining past incomplete items strictly excluding the completed event
-    const remaining = rankedPastIncompleteSessions.filter(
+    const currentFilter = spotlightBannerInfo?.priorityFilter || focusPriorityFilter;
+    const currentOrder = spotlightBannerInfo?.orderMode || (currentFilter !== "all" ? "priority" : "chronological");
+    const baseSource = currentOrder === "quick_win"
+      ? quickWinRankedPastIncompleteSessions
+      : currentOrder === "priority" 
+      ? priorityRankedPastIncompleteSessions 
+      : rankedPastIncompleteSessions;
+    const filteredSource = currentFilter === "all"
+      ? baseSource
+      : baseSource.filter(item => (item.goal.priority || "normal") === currentFilter);
+
+    const remaining = filteredSource.filter(
       item => item.event.id !== completedEvtId && !item.event.completed
     );
 
     if (remaining.length > 0) {
-      // Immediately switch to the earliest remaining incomplete target in chronological order
+      // Immediately switch to the earliest remaining incomplete target
       const nextIndex = 0;
       const nextTarget = remaining[0];
 
@@ -1512,16 +1649,20 @@ export default function CalendarView({
         isOverdue: true,
         deficit: nextTarget.deficit,
         totalIncompleteCount: remaining.length,
-        currentIndex: nextIndex
+        currentIndex: nextIndex,
+        priorityFilter: currentFilter,
+        orderMode: currentOrder
       });
 
-      setRebalanceStatus(`✅ Target finished! Switched immediately to next incomplete session: "${nextTarget.event.title}"`);
+      const priorityTag = nextTarget.goal.priority ? ` [${nextTarget.goal.priority.toUpperCase()}]` : "";
+      setRebalanceStatus(`✅ Target finished! Switched immediately to next${priorityTag} incomplete session: "${nextTarget.event.title}"`);
       setTimeout(() => setRebalanceStatus(null), 3000);
     } else {
       // All past incomplete sessions completed!
       setSpotlightBannerInfo(null);
       setSpotlightEventId(null);
-      setRebalanceStatus("🎉 All past incomplete sessions are completed!");
+      const priorityLabel = currentFilter !== "all" ? ` [${currentFilter.toUpperCase()}]` : "";
+      setRebalanceStatus(`🎉 All past incomplete${priorityLabel} sessions are completed!`);
       setTimeout(() => setRebalanceStatus(null), 3500);
     }
   };
@@ -1597,12 +1738,12 @@ export default function CalendarView({
     };
   }, [spotlightBannerInfo, rankedPastIncompleteSessions, events, goals, now]);
 
-  const handleStartSpotlightTimer = () => {
+  const handleStartSpotlightTimer = (overrideDuration?: number) => {
     if (!spotlightBannerInfo) return;
     if (spotlightBannerInfo.event) {
-      handleOpenTimerForEvent(spotlightBannerInfo.event);
+      handleOpenTimerForEvent(spotlightBannerInfo.event, undefined, overrideDuration);
     } else if (spotlightBannerInfo.goal && spotlightBannerInfo.goal.id !== "general") {
-      handleOpenTimerForGoal(spotlightBannerInfo.goal);
+      handleOpenTimerForGoal(spotlightBannerInfo.goal, undefined, overrideDuration);
     }
   };
 
@@ -2607,6 +2748,86 @@ export default function CalendarView({
     return map;
   }, [events, weekDates]);
 
+  // Zero-Guilt Rest Day Handler for unmotivated / exhausted users
+  const handleToggleRestDay = () => {
+    const todayKey = new Date().toDateString();
+    if (restDayActive) {
+      setCustomDialog({
+        isOpen: true,
+        title: "Resume Regular Routine?",
+        message: "Rest Day is currently active. Would you like to resume your regular scheduled sessions?",
+        confirmText: "Resume Routine",
+        cancelText: "Keep Resting",
+        onConfirm: () => {
+          setRestDayActive(false);
+          try {
+            localStorage.removeItem(`rest_day_${todayKey}`);
+          } catch {}
+          setCustomDialog(prev => ({ ...prev, isOpen: false }));
+          setRebalanceStatus("✨ Regular schedule resumed! Take it one step at a time.");
+          setTimeout(() => setRebalanceStatus(null), 4000);
+        }
+      });
+      return;
+    }
+
+    setCustomDialog({
+      isOpen: true,
+      title: "Activate Zero-Guilt Rest Day? 🦥",
+      message: "Feeling unmotivated, tired, or overwhelmed? Take a guilt-free recharge day! This will auto-defer today's remaining uncompleted sessions evenly across upcoming days in the week into open slots. Your streak stays safe, with zero guilt and zero overdue alarms.",
+      confirmText: "🌱 Take Rest Day",
+      cancelText: "Cancel",
+      onConfirm: () => {
+        setCustomDialog(prev => ({ ...prev, isOpen: false }));
+        const todayStartMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const todayEndMs = todayStartMs + 24 * 3600 * 1000;
+
+        const uncompletedToday = events.filter(e => {
+          if (e.completed || e.type === "external") return false;
+          const s = new Date(e.start).getTime();
+          return s >= todayStartMs && s < todayEndMs;
+        });
+
+        if (uncompletedToday.length > 0) {
+          const updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[] = [];
+          uncompletedToday.forEach((evt, idx) => {
+            const dayOffset = (idx % 3) + 1;
+            const origS = new Date(evt.start);
+            const origE = new Date(evt.end);
+            const dur = Math.max(15 * 60 * 1000, origE.getTime() - origS.getTime());
+
+            const newS = new Date(origS);
+            newS.setDate(origS.getDate() + dayOffset);
+            const newE = new Date(newS.getTime() + dur);
+
+            const cleanNotes = evt.notes ? evt.notes.replace(/\s*\(Rest Day Shift[^)]*\)/g, "") : "";
+            updates.push({
+              id: evt.id,
+              fields: {
+                start: newS.toISOString(),
+                end: newE.toISOString(),
+                notes: `${cleanNotes} (Shifted from Rest Day)`.trim()
+              }
+            });
+          });
+
+          if (onBulkEditEvents) {
+            onBulkEditEvents(updates);
+          } else if (onEditEvent) {
+            updates.forEach(u => onEditEvent(u.id, u.fields));
+          }
+        }
+
+        setRestDayActive(true);
+        try {
+          localStorage.setItem(`rest_day_${todayKey}`, "true");
+        } catch {}
+        setRebalanceStatus("🌱 Zero-Guilt Rest Day Active! Sessions shifted to upcoming days. Enjoy your recovery!");
+        setTimeout(() => setRebalanceStatus(null), 5000);
+      }
+    });
+  };
+
   // Format month and year label
   const getHeaderLabel = () => {
     if (viewMode === "day") {
@@ -2753,26 +2974,327 @@ export default function CalendarView({
               </span>
             </button>
 
-            {/* Focus Incomplete Goal Button */}
-            <button
-              id="focus_incomplete_goal_btn"
-              type="button"
-              onClick={() => handleFocusMostIncompleteGoal()}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 ${
-                rankedPastIncompleteSessions.length > 0
-                  ? "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50 shadow-xs active:scale-95"
-                  : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
-              }`}
-              title="Focus directly on past uncompleted sessions to catch up now without waiting or re-balancing"
-            >
-              <Compass className={`w-3.5 h-3.5 ${rankedPastIncompleteSessions.length > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-500"}`} />
-              <span>Focus Incomplete</span>
-              {rankedPastIncompleteSessions.length > 0 && (
-                <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-xs animate-pulse" title={`${rankedPastIncompleteSessions.length} past incomplete sessions`}>
-                  {rankedPastIncompleteSessions.length}
+            {/* Focus Incomplete Goal (Split Button with Priority & Ordering Menu) */}
+            <div className="relative inline-flex items-center rounded-xl shadow-xs" ref={focusIncompleteMenuRef}>
+              <button
+                id="focus_incomplete_goal_btn"
+                type="button"
+                onClick={() => {
+                  setShowFocusIncompleteMenu(false);
+                  handleFocusMostIncompleteGoal();
+                }}
+                className={`p-1.5 sm:px-2.5 sm:py-1.5 border-y border-l rounded-l-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 ${
+                  incompletePriorityCounts.total > 0
+                    ? focusPriorityFilter === "critical"
+                      ? "bg-rose-100 dark:bg-rose-500/20 hover:bg-rose-200 dark:hover:bg-rose-500/30 text-rose-950 dark:text-rose-200 border-rose-400/80 dark:border-rose-500/50 shadow-xs active:scale-95"
+                      : focusPriorityFilter === "important"
+                      ? "bg-orange-100 dark:bg-orange-500/20 hover:bg-orange-200 dark:hover:bg-orange-500/30 text-orange-950 dark:text-orange-200 border-orange-400/80 dark:border-orange-500/50 shadow-xs active:scale-95"
+                      : focusPriorityFilter === "normal"
+                      ? "bg-blue-100 dark:bg-blue-500/20 hover:bg-blue-200 dark:hover:bg-blue-500/30 text-blue-950 dark:text-blue-200 border-blue-400/80 dark:border-blue-500/50 shadow-xs active:scale-95"
+                      : "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50 shadow-xs active:scale-95"
+                    : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
+                }`}
+                title={
+                  focusPriorityFilter !== "all"
+                    ? `Focus ${focusPriorityFilter.toUpperCase()} past uncompleted sessions (${activeFocusIncompleteSessions.length} sessions)`
+                    : "Focus past uncompleted sessions to catch up now without waiting or re-balancing"
+                }
+              >
+                {focusPriorityFilter === "critical" ? (
+                  <Flame className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 animate-pulse" />
+                ) : focusPriorityFilter === "important" ? (
+                  <AlertTriangle className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+                ) : (
+                  <Compass className={`w-3.5 h-3.5 ${incompletePriorityCounts.total > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-500"}`} />
+                )}
+                <span>
+                  {focusPriorityFilter === "critical"
+                    ? "Focus Critical"
+                    : focusPriorityFilter === "important"
+                    ? "Focus Important"
+                    : focusPriorityFilter === "normal"
+                    ? "Focus Normal"
+                    : "Focus Incomplete"}
                 </span>
+
+                {/* Priority / Total Count Badge */}
+                {incompletePriorityCounts.total > 0 && (
+                  <span
+                    className={`text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-xs ${
+                      focusPriorityFilter === "critical"
+                        ? "bg-rose-500 text-white animate-pulse"
+                        : focusPriorityFilter === "important"
+                        ? "bg-orange-500 text-white animate-pulse"
+                        : focusPriorityFilter === "normal"
+                        ? "bg-blue-500 text-white"
+                        : incompletePriorityCounts.critical > 0
+                        ? "bg-rose-500 text-white animate-pulse"
+                        : "bg-amber-500 text-slate-950 animate-pulse"
+                    }`}
+                    title={
+                      focusPriorityFilter !== "all"
+                        ? `${activeFocusIncompleteSessions.length} ${focusPriorityFilter} incomplete sessions`
+                        : `${incompletePriorityCounts.total} total past incomplete sessions (${incompletePriorityCounts.critical} critical, ${incompletePriorityCounts.important} important, ${incompletePriorityCounts.normal} normal)`
+                    }
+                  >
+                    {focusPriorityFilter === "all"
+                      ? incompletePriorityCounts.total
+                      : activeFocusIncompleteSessions.length}
+                  </span>
+                )}
+              </button>
+
+              {/* Priority Option Selector Dropdown Toggle */}
+              <button
+                id="focus_incomplete_options_btn"
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowFocusIncompleteMenu(prev => !prev);
+                }}
+                className={`p-1.5 border-y border-r rounded-r-xl transition-all cursor-pointer flex items-center justify-center min-h-[32px] px-1.5 ${
+                  incompletePriorityCounts.total > 0
+                    ? focusPriorityFilter === "critical"
+                      ? "bg-rose-100 dark:bg-rose-500/20 hover:bg-rose-200 dark:hover:bg-rose-500/30 text-rose-950 dark:text-rose-200 border-rose-400/80 dark:border-rose-500/50"
+                      : focusPriorityFilter === "important"
+                      ? "bg-orange-100 dark:bg-orange-500/20 hover:bg-orange-200 dark:hover:bg-orange-500/30 text-orange-950 dark:text-orange-200 border-orange-400/80 dark:border-orange-500/50"
+                      : focusPriorityFilter === "normal"
+                      ? "bg-blue-100 dark:bg-blue-500/20 hover:bg-blue-200 dark:hover:bg-blue-500/30 text-blue-950 dark:text-blue-200 border-blue-400/80 dark:border-blue-500/50"
+                      : "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50"
+                    : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
+                }`}
+                title="Filter Focus Incomplete by priority status (Critical, Important, Normal, Chronological)"
+              >
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showFocusIncompleteMenu ? "rotate-180" : ""}`} />
+              </button>
+
+              {/* Dropdown Menu */}
+              {showFocusIncompleteMenu && (
+                <div
+                  id="focus_incomplete_menu_dropdown"
+                  className="absolute left-0 top-full mt-1.5 w-72 bg-white dark:bg-slate-900 border border-slate-300 dark:border-white/15 rounded-2xl shadow-xl p-2 z-50 animate-in fade-in zoom-in-95 duration-100"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between px-2.5 py-1 mb-1 border-b border-slate-200 dark:border-white/10">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      Focus Incomplete Mode
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {incompletePriorityCounts.total} total
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    {/* Option 1: Prioritize Most Critical (Status-Based Ordering) */}
+                    <button
+                      type="button"
+                      id="focus_opt_priority_ranked"
+                      onClick={() => {
+                        setShowFocusIncompleteMenu(false);
+                        setFocusPriorityFilter("all");
+                        handleFocusMostIncompleteGoal(0, "all", "priority");
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/10 transition flex items-center justify-between group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                          <Flame className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-rose-600 dark:group-hover:text-rose-400">
+                            Critical Goals First
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                            Prioritizes Critical → Important → Normal
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-700 dark:text-rose-300">
+                        {incompletePriorityCounts.critical} crit
+                      </span>
+                    </button>
+
+                    {/* Option: Quick Win First (Lazy / Lowest Effort Mode) */}
+                    <button
+                      type="button"
+                      id="focus_opt_quick_win"
+                      onClick={() => {
+                        setShowFocusIncompleteMenu(false);
+                        setFocusPriorityFilter("all");
+                        handleFocusMostIncompleteGoal(0, "all", "quick_win");
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl hover:bg-emerald-50 dark:hover:bg-emerald-500/20 transition flex items-center justify-between group cursor-pointer border border-emerald-500/20 bg-emerald-500/5"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                          <Zap className="w-3.5 h-3.5 fill-current" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 flex items-center gap-1.5">
+                            <span>Quick Win First</span>
+                            <span className="text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 px-1 py-0.2 rounded font-extrabold uppercase">
+                              Lazy Mode
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                            Shortest & easiest sessions first to beat inertia
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+                        Low effort
+                      </span>
+                    </button>
+
+                    {/* Option 2: Strictly Critical Only */}
+                    <button
+                      type="button"
+                      id="focus_opt_critical_only"
+                      onClick={() => {
+                        setShowFocusIncompleteMenu(false);
+                        setFocusPriorityFilter("critical");
+                        handleFocusMostIncompleteGoal(0, "critical", "priority");
+                      }}
+                      className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
+                        focusPriorityFilter === "critical"
+                          ? "bg-rose-50 dark:bg-rose-500/20 border border-rose-300 dark:border-rose-500/40"
+                          : "hover:bg-slate-100 dark:hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                          <ShieldAlert className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
+                            <span>Only Critical</span>
+                            {focusPriorityFilter === "critical" && (
+                              <Check className="w-3 h-3 text-rose-600 dark:text-rose-400" />
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                            Filter strictly by highest priority
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-700 dark:text-rose-300">
+                        {incompletePriorityCounts.critical}
+                      </span>
+                    </button>
+
+                    {/* Option 3: Strictly Important Only */}
+                    <button
+                      type="button"
+                      id="focus_opt_important_only"
+                      onClick={() => {
+                        setShowFocusIncompleteMenu(false);
+                        setFocusPriorityFilter("important");
+                        handleFocusMostIncompleteGoal(0, "important", "priority");
+                      }}
+                      className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
+                        focusPriorityFilter === "important"
+                          ? "bg-orange-50 dark:bg-orange-500/20 border border-orange-300 dark:border-orange-500/40"
+                          : "hover:bg-slate-100 dark:hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-orange-500/20 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
+                            <span>Only Important</span>
+                            {focusPriorityFilter === "important" && (
+                              <Check className="w-3 h-3 text-orange-600 dark:text-orange-400" />
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                            Filter strictly by important sessions
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-700 dark:text-orange-300">
+                        {incompletePriorityCounts.important}
+                      </span>
+                    </button>
+
+                    {/* Option 4: Normal Priority Only */}
+                    <button
+                      type="button"
+                      id="focus_opt_normal_only"
+                      onClick={() => {
+                        setShowFocusIncompleteMenu(false);
+                        setFocusPriorityFilter("normal");
+                        handleFocusMostIncompleteGoal(0, "normal", "priority");
+                      }}
+                      className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
+                        focusPriorityFilter === "normal"
+                          ? "bg-blue-50 dark:bg-blue-500/20 border border-blue-300 dark:border-blue-500/40"
+                          : "hover:bg-slate-100 dark:hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                          <CheckCircle className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
+                            <span>Only Normal</span>
+                            {focusPriorityFilter === "normal" && (
+                              <Check className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                            Filter strictly by standard routine goals
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-700 dark:text-blue-300">
+                        {incompletePriorityCounts.normal}
+                      </span>
+                    </button>
+
+                    <div className="border-t border-slate-200 dark:border-white/10 my-1 pt-1">
+                      {/* Option 5: Strict Chronological Order (All Priorities) */}
+                      <button
+                        type="button"
+                        id="focus_opt_chronological"
+                        onClick={() => {
+                          setShowFocusIncompleteMenu(false);
+                          setFocusPriorityFilter("all");
+                          handleFocusMostIncompleteGoal(0, "all", "chronological");
+                        }}
+                        className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
+                          focusPriorityFilter === "all"
+                            ? "bg-amber-50 dark:bg-amber-500/20 border border-amber-300 dark:border-amber-500/40"
+                            : "hover:bg-slate-100 dark:hover:bg-white/10"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                            <Clock className="w-3.5 h-3.5" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
+                              <span>Chronological (All Goals)</span>
+                              {focusPriorityFilter === "all" && (
+                                <Check className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                              Earliest scheduled missed session first
+                            </div>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-900 dark:text-amber-300">
+                          {incompletePriorityCounts.total}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
-            </button>
+            </div>
 
             {/* Focus Today's First Goal Button */}
             <button
@@ -2848,6 +3370,22 @@ export default function CalendarView({
                 )}
               </button>
             )}
+
+            {/* Zero-Guilt Rest Day (For Lazy or Unmotivated Days) */}
+            <button
+              id="activate_rest_day_btn"
+              type="button"
+              onClick={handleToggleRestDay}
+              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 active:scale-95 ${
+                restDayActive
+                  ? "bg-teal-100 dark:bg-teal-500/20 hover:bg-teal-200 dark:hover:bg-teal-500/30 text-teal-950 dark:text-teal-200 border-teal-400/80 dark:border-teal-500/50 shadow-xs ring-1 ring-teal-400/40 animate-pulse"
+                  : "bg-slate-100 dark:bg-white/5 hover:bg-teal-50 dark:hover:bg-teal-500/10 text-slate-700 dark:text-slate-300 hover:text-teal-600 dark:hover:text-teal-300 border-slate-300 dark:border-white/10"
+              }`}
+              title="Zero-Guilt Rest Day: Feeling lazy or exhausted? Auto-defer today's remaining tasks across the week with zero streak penalty."
+            >
+              <span className="text-sm">🦥</span>
+              <span>{restDayActive ? "Rest Day Active" : "Rest Day"}</span>
+            </button>
 
             {/* Delay Today Quick Trigger */}
             <div ref={delayTodayRef} className="relative z-50 shrink-0">
@@ -2989,6 +3527,39 @@ export default function CalendarView({
           </div>
         </div>
       </div>
+
+      {/* Zero-Guilt Rest Day Active Banner */}
+      {restDayActive && (
+        <div 
+          id="rest_day_active_banner"
+          className="bg-gradient-to-r from-teal-500/15 via-emerald-500/10 to-teal-500/15 border-b border-teal-500/30 px-4 py-2.5 flex items-center justify-between text-xs text-teal-950 dark:text-teal-200 animate-fade-in font-medium"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-lg">🦥</span>
+            <span>
+              <strong>Zero-Guilt Rest Day Active:</strong> Today is dedicated to rest and mental recharge. Remaining sessions were safely deferred across your week. No streak penalties!
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              id="resume_routine_from_rest_btn"
+              onClick={handleToggleRestDay}
+              className="px-2.5 py-1 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-[10.5px] font-extrabold transition cursor-pointer shadow-xs active:scale-95 flex items-center gap-1"
+            >
+              <span>Resume Routine</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRestDayActive(false)}
+              className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-md cursor-pointer transition"
+              title="Dismiss Rest Day"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {rebalanceStatus && (
         <div className="bg-indigo-600/20 border-b border-indigo-500/30 px-4 py-2.5 flex items-center justify-between text-xs text-indigo-200 animate-fade-in font-medium">
@@ -3242,9 +3813,29 @@ export default function CalendarView({
                     <Sparkles className="w-2.5 h-2.5" /> Scheduled for Today
                   </span>
                 ) : (
-                  <span className="text-[9.5px] bg-rose-500/20 text-rose-800 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">
-                    <Clock className="w-2.5 h-2.5" /> Date Passed (Missed Session)
-                  </span>
+                  <>
+                    <span className="text-[9.5px] bg-rose-500/20 text-rose-800 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">
+                      <Clock className="w-2.5 h-2.5" /> Date Passed (Missed Session)
+                    </span>
+                    {spotlightBannerInfo.goal.priority && (
+                      <span className={`text-[9.5px] font-black uppercase px-2 py-0.5 rounded border flex items-center gap-1 ${
+                        spotlightBannerInfo.goal.priority === "critical"
+                          ? "bg-rose-500/20 text-rose-800 dark:text-rose-300 border-rose-500/40 animate-pulse"
+                          : spotlightBannerInfo.goal.priority === "important"
+                          ? "bg-orange-500/20 text-orange-800 dark:text-orange-300 border-orange-500/40"
+                          : "bg-blue-500/20 text-blue-800 dark:text-blue-300 border-blue-500/40"
+                      }`}>
+                        {spotlightBannerInfo.goal.priority === "critical" && <Flame className="w-2.5 h-2.5" />}
+                        {spotlightBannerInfo.goal.priority === "important" && <AlertTriangle className="w-2.5 h-2.5" />}
+                        {spotlightBannerInfo.goal.priority} Priority
+                      </span>
+                    )}
+                    {spotlightBannerInfo.priorityFilter && spotlightBannerInfo.priorityFilter !== "all" && (
+                      <span className="text-[9.5px] bg-slate-500/20 text-slate-700 dark:text-slate-300 font-bold px-1.5 py-0.5 rounded border border-slate-500/30">
+                        Filter: {spotlightBannerInfo.priorityFilter}
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -3266,11 +3857,23 @@ export default function CalendarView({
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
+            {/* 5-Minute Micro-Start for Task Paralysis / Lazy Start */}
+            <button
+              type="button"
+              id="spotlight_5min_start_btn"
+              onClick={() => handleStartSpotlightTimer(5)}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-amber-500/20 transition cursor-pointer active:scale-95"
+              title="5-Minute Rule: Just commit to 5 minutes to break task paralysis. You can stop after 5 mins with zero guilt!"
+            >
+              <Zap className="w-3 h-3 fill-current" />
+              <span>5-Min Start</span>
+            </button>
+
             {/* Start Timer Now */}
             <button
               type="button"
               id="spotlight_start_timer_btn"
-              onClick={handleStartSpotlightTimer}
+              onClick={() => handleStartSpotlightTimer()}
               className="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition cursor-pointer active:scale-95"
               title="Start Focus Timer for this session immediately"
             >
@@ -3303,7 +3906,11 @@ export default function CalendarView({
                   if (spotlightBannerInfo.isTodayFocus) {
                     handleFocusTodayFirstGoal(nextIdx);
                   } else {
-                    handleFocusMostIncompleteGoal(nextIdx);
+                    handleFocusMostIncompleteGoal(
+                      nextIdx,
+                      spotlightBannerInfo.priorityFilter,
+                      spotlightBannerInfo.orderMode
+                    );
                   }
                 }}
                 className="bg-slate-200 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200 font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 border border-slate-300 dark:border-white/10"
@@ -4757,19 +5364,34 @@ export default function CalendarView({
               <GoalIconPicker selectedIcon={goalIcon} onSelectIcon={setGoalIcon} accentColor={goalColor} />
 
               <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Color Tag</label>
-                <div className="flex items-center gap-2">
-                  {["#f43f5e", "#06b6d4", "#8b5cf6", "#10b981", "#f59e0b", "#3b82f6"].map((c) => (
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Color Tag (Marker Color)</label>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {[
+                    "#f43f5e", "#ef4444", "#f97316", "#f59e0b", "#eab308", 
+                    "#84cc16", "#10b981", "#14b8a6", "#06b6d4", "#3b82f6", 
+                    "#6366f1", "#8b5cf6", "#d946ef", "#ec4899", "#64748b"
+                  ].map((c) => (
                     <button
                       key={c}
                       type="button"
                       onClick={() => setGoalColor(c)}
-                      className={`w-6 h-6 rounded-full transition-transform cursor-pointer ${
-                        goalColor === c ? "ring-2 ring-white scale-110" : "opacity-70 hover:opacity-100"
+                      className={`w-5 h-5 rounded-full transition-transform cursor-pointer ${
+                        goalColor === c ? "ring-2 ring-white scale-125" : "opacity-75 hover:opacity-100"
                       }`}
                       style={{ backgroundColor: c }}
+                      title={c}
                     />
                   ))}
+                  <label className="relative flex items-center justify-center w-5 h-5 rounded-full border border-dashed border-white/30 hover:border-white cursor-pointer bg-white/5 overflow-hidden ml-1" title="Pick custom color">
+                    <input
+                      type="color"
+                      value={goalColor}
+                      onChange={(e) => setGoalColor(e.target.value)}
+                      className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                    />
+                    <span className="text-[9px] font-bold text-slate-400">+</span>
+                  </label>
+                  <span className="text-[10px] font-mono text-slate-400 uppercase ml-1">{goalColor}</span>
                 </div>
               </div>
 

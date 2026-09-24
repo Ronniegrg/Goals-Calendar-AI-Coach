@@ -623,6 +623,24 @@ export default function AICoach({
                 </button>
 
                 <button
+                  id="coach_lazy_procrastination_btn"
+                  onClick={() => {
+                    const prompt = "I'm feeling unmotivated and lazy today. Please look at my scheduled goals and give me one absurdly easy 2-minute micro-action to get started without overwhelm or guilt.";
+                    handleSendQuestion(prompt);
+                  }}
+                  disabled={loading}
+                  className="w-full text-left text-xs bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 hover:border-amber-400/50 p-3 rounded-xl transition flex items-center gap-2.5 cursor-pointer"
+                >
+                  <div className="p-1.5 bg-amber-500/20 text-amber-300 rounded-lg">
+                    <Zap className="w-4 h-4 fill-current" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-amber-200 block text-[11px]">Procrastination & Lazy Buster</span>
+                    <span className="text-[9px] text-amber-300/80">2-minute micro-action & zero guilt</span>
+                  </div>
+                </button>
+
+                <button
                   id="coach_recommend_goals_btn"
                   onClick={() => setActiveSubTab("recommendations")}
                   className="w-full text-left text-xs bg-indigo-950/30 hover:bg-indigo-900/40 border border-indigo-500/30 hover:border-indigo-400/50 p-3 rounded-xl transition flex items-center gap-2.5 cursor-pointer"
