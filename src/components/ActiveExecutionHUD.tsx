@@ -81,7 +81,10 @@ export default function ActiveExecutionHUD({
   // Sync with global timer events (dispatched by FocusTimerModal on start, pause, resume, tick, finish)
   useEffect(() => {
     const handleTimerChange = (e: any) => {
-      setActiveTimer(e.detail || null);
+      const detail = e.detail || null;
+      queueMicrotask(() => {
+        setActiveTimer(detail);
+      });
     };
 
     window.addEventListener("focus_timer_state_change" as any, handleTimerChange);

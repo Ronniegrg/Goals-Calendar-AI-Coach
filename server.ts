@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -64,7 +64,7 @@ async function generateWithFallback(params: {
   if (!key) return null;
 
   const ai = getAi();
-  const requestTimeout = params.timeoutMs || 4500;
+  const requestTimeout = params.timeoutMs || 18000;
   
   const modelChain = [
     params.primaryModel || "gemini-3.8-flash",
@@ -406,37 +406,192 @@ app.post("/api/calendar/fetch-remote", async (req, res) => {
   }
 });
 
-// 3. AI COACH ENDPOINT
+// Helper to synthesize rich, contextual coaching guidance locally when offline or during cloud failover
+function generateLocalCoachingAdvice(
+  prompt: string,
+  goals: any[] = [],
+  events: any[] = [],
+  availability: any[] = [],
+  coachPersona: "mentor" | "drill" | "data" = "mentor"
+): string {
+  const lowerPrompt = (prompt || "").toLowerCase();
+  const firstGoal = goals.length > 0 ? goals[0] : null;
+  const studyGoals = goals.filter((g: any) => g.type === "study" || (g.name || "").toLowerCase().includes("study") || (g.name || "").toLowerCase().includes("code") || (g.name || "").toLowerCase().includes("read"));
+  const workoutGoals = goals.filter((g: any) => g.type === "workout" || (g.name || "").toLowerCase().includes("workout") || (g.name || "").toLowerCase().includes("gym") || (g.name || "").toLowerCase().includes("run") || (g.name || "").toLowerCase().includes("cardio"));
+
+  // 1. PROPOSE NEW GOAL
+  if (lowerPrompt.includes("new goal") || lowerPrompt.includes("add goal") || lowerPrompt.includes("create goal") || lowerPrompt.includes("propose") || lowerPrompt.includes("make goal") || lowerPrompt.includes("suggest a goal")) {
+    const suggestedCategory = workoutGoals.length > studyGoals.length ? "Engineering" : "Wellness";
+    const suggestedType = workoutGoals.length > studyGoals.length ? "study" : "workout";
+    const suggestedName = workoutGoals.length > studyGoals.length ? "System Architecture & Deep Coding" : "Core Strength & Mobility";
+
+    let badge = coachPersona === "drill" ? "💥 [DRILL SERGEANT] NEW TARGET ACQUIRED" : coachPersona === "data" ? "📊 [ANALYST ENGINE] OPTIMAL GOAL SYNTHESIS" : "✨ [AI COACH] RECOMMENDED GOAL PROPOSAL";
+
+    let advice = "";
+    if (coachPersona === "drill") {
+      advice = `ATTENTION RECRUIT! I evaluated your current targets and your routine is ready for an upgrade! We are locking in **${suggestedName}** right now! 3 sessions per week, 45 minutes of pure focus. Click the button below, commit to the calendar, and DO NOT MISS A SESSION!`;
+    } else if (coachPersona === "data") {
+      advice = `**[Schedule Analysis & Capacity Modeling]**\n\nCross-referencing your weekly availability slots indicates an unallocated high-energy window. Introducing **${suggestedName}** creates balanced cognitive-muscular distribution with a projected 88.4% habit retention coefficient.\n\n### 📈 Recommended Parameters\n- **Target**: 3 sessions / week\n- **Duration**: 45 minutes\n- **Slot Alignment**: Morning Peak (08:30 - 10:30)\n\nReview the configuration below and confirm execution:`;
+    } else {
+      advice = `Hello! I took a close look at your schedule, and I'd love to propose **${suggestedName}** as a wonderful complement to your existing routine! 🌱\n\n- 🎯 **Why this fits**: Setting aside 3 gentle, 45-minute blocks each week gives you space to build lasting momentum without feeling overwhelmed.\n- 💡 **Best Window**: Morning hours when your energy is fresh and calm.\n\nClick the button below to add this goal and place its sessions directly onto your calendar:`;
+    }
+
+    return `**${badge}**\n\n${advice}\n\n\`\`\`json
+{
+  "goalAction": {
+    "action": "create_goal",
+    "goal": {
+      "name": "${suggestedName}",
+      "type": "${suggestedType}",
+      "category": "${suggestedCategory}",
+      "weeklyTarget": 3,
+      "durationMinutes": 45,
+      "timePreference": "morning",
+      "priority": "high",
+      "color": "indigo",
+      "icon": "code"
+    }
+  }
+}
+\`\`\``;
+  }
+
+  // 2. MODIFY / UPDATE GOALS
+  if (lowerPrompt.includes("modify") || lowerPrompt.includes("update") || lowerPrompt.includes("change goal") || lowerPrompt.includes("target")) {
+    const targetGoal = firstGoal || { id: "g_default", name: "Deep Work Focus" };
+    let badge = coachPersona === "drill" ? "🔥 [DRILL SERGEANT] STEPPING UP STANDARDS" : coachPersona === "data" ? "📊 [ANALYST ENGINE] PARAMETER RECALIBRATION" : "✏️ [AI COACH] GOAL OPTIMIZATION";
+
+    let advice = "";
+    if (coachPersona === "drill") {
+      advice = `TIME TO RAISE THE BAR! You're getting too comfortable with **${targetGoal.name}**! We are upgrading your target to 4 sessions per week at 50 minutes each. Push through resistance and demand more of yourself!`;
+    } else if (coachPersona === "data") {
+      advice = `**[Routine Recalibration Model]**\n\nAnalysis of completion rates for **${targetGoal.name}** suggests capacity for volume expansion. Scaling to 4 weekly sessions of 45 minutes optimizes neural pathways without triggering the fatigue inflection threshold.`;
+    } else {
+      advice = `Great thinking! Tuning your goal targets is the best way to keep your routine engaging and sustainable. 🌱\n\nLet's update **${targetGoal.name}** to 4 sessions per week with 45-minute focus intervals. This creates steady, comfortable progress.`;
+    }
+
+    return `**${badge}**\n\n${advice}\n\n\`\`\`json
+{
+  "goalAction": {
+    "action": "update_goal",
+    "goalId": "${targetGoal.id}",
+    "goalName": "${targetGoal.name}",
+    "updatedFields": {
+      "weeklyTarget": 4,
+      "durationMinutes": 45,
+      "timePreference": "morning"
+    }
+  }
+}
+\`\`\``;
+  }
+
+  // 3. PROCRASTINATION / LAZY / UNMOTIVATED / START
+  if (lowerPrompt.includes("lazy") || lowerPrompt.includes("procrastin") || lowerPrompt.includes("unmotivated") || lowerPrompt.includes("start") || lowerPrompt.includes("overwhelm")) {
+    let advice = "";
+    if (coachPersona === "drill") {
+      advice = `**🏋️‍♂️ [DRILL SERGEANT] THE 120-SECOND PROTOCOL**\n\nLISTEN UP RECRUIT! Motivation is a fleeting emotion, DISCIPLINE is an iron habit! You don't need to feel like doing it, you just need to START!\n\n### ⚡ Immediate Orders\n1. **The 2-Minute Rule**: Don't think about the whole session. Commit to exactly 120 SECONDS of execution right now.\n2. **Eliminate Friction**: Open your code editor, put on your training shoes, or open your notebook.\n3. **Kill the Phone**: Put your smartphone in another room or face-down.\n\nOnce the first 2 minutes pass, inertia is broken. GET UP AND GET TO WORK!`;
+    } else if (coachPersona === "data") {
+      advice = `**📊 [ANALYST ENGINE] FRICTION REDUCTION PROTOCOL**\n\nBehavioral telemetry reveals that 82% of task cancellations stem from perceived cognitive startup friction rather than the difficulty of the task itself.\n\n### 📈 Empirical De-escalation Strategy\n- **Micro-Initiation Threshold**: Commit to a 3-minute atomic start. Dopamine secretion triggers upon task engagement, reducing psychological resistance by 64%.\n- **Environmental Cues**: Clear digital clutter (close unused browser tabs, activate Do Not Disturb).\n- **Session Chunking**: Split the upcoming block into 25-minute Pomodoro bursts with mandatory 5-minute hydration stand-ups.`;
+    } else {
+      advice = `**🌸 [MENTOR COACH] GENTLE RESET & MINDFUL START**\n\nIt is completely okay to feel low energy or resistance today. Please don't be hard on yourself—everyone experiences days where starting feels like climbing a mountain. 🌱\n\n### 🌿 Gentle 3-Step Re-entry\n1. **Give yourself permission to do the bare minimum**: Tell yourself you're only going to sit down for 2 minutes with zero expectations.\n2. **Take 3 deep, grounding breaths**: Inhale calm, exhale the pressure.\n3. **Celebrate just opening the materials**: Often, simply showing up is the whole victory. If you still feel exhausted after 5 minutes, we can gently reschedule, and that is 100% okay! You are doing great.`;
+    }
+    return `${advice}\n\n\`\`\`json\n{\n  "goalAction": {\n    "action": "launch_timer",\n    "timerConfig": {\n      "title": "2-Minute Micro-Action Starter",\n      "durationMinutes": 2,\n      "category": "Focus"\n    }\n  }\n}\n\`\`\``;
+  }
+
+  // 4. STUDY / LEARNING STRATEGIES / POMODORO
+  if (lowerPrompt.includes("study") || lowerPrompt.includes("learn") || lowerPrompt.includes("pomodoro") || lowerPrompt.includes("recall") || lowerPrompt.includes("focus")) {
+    if (coachPersona === "drill") {
+      return `**🧠 [DRILL SERGEANT] HIGH-INTENSITY COGNITIVE PROTOCOL**\n\nPASSIVE READING IS FOR AMATEURS! If you want real mastery in your study blocks, you must engage in ACTIVE DRILLING!\n\n### 🎯 Combat Study Rules\n- **Active Recall**: Close your notes and write down everything you remember from scratch. If you struggle, that means your brain is growing!\n- **Feynman Technique**: Explain the concept out loud as if teaching a 10-year-old recruit. If you stumble, re-study the gap immediately!\n- **50/10 Split**: 50 minutes of pure silent focus, zero notifications. 10 minutes of active walking and hydration. LOCK IN!`;
+    } else if (coachPersona === "data") {
+      return `**📊 [ANALYST ENGINE] COGNITIVE RETENTION OPTIMIZATION**\n\nOptimizing memory retention requires leveraging the spacing effect and testing effect to flatten the Ebbinghaus forgetting curve.\n\n### 🔬 Recommended Cognitive Architecture\n- **Interleaved Practice**: Alternate between complementary subjects (e.g., 45m algorithmic coding followed by 45m system design) to build flexible mental representations (+36% retention).\n- **Ultradian Rhythm Sync**: Limit continuous high-load cognitive blocks to 90 minutes, followed by a 20-minute systemic mental reset.\n- **Active Testing Cycles**: Spend 30% of time reading and 70% practicing retrieval and solving problems.`;
+    } else {
+      return `**📚 [MENTOR COACH] MINDFUL & EFFECTIVE LEARNING**\n\nLearning is a journey of curiosity! When you give your mind the space to absorb ideas calmly, deep understanding follows naturally. ✨\n\n### 💡 Beautiful Study Techniques to Try\n- **The Pomodoro Rhythm**: 25 minutes of cozy, undistracted focus, followed by 5 minutes to stretch, sip some tea, and rest your eyes.\n- **Teach It to a Friend**: Try summarizing the core idea in 3 simple sentences. It's a wonderful way to solidify your confidence.\n- **Honor Your Breaks**: True memory consolidation happens when your brain rests after a focus block. Enjoy your pauses!`;
+    }
+  }
+
+  // 5. WORKOUT / FITNESS / CARDIO / EXERCISE
+  if (lowerPrompt.includes("workout") || lowerPrompt.includes("fitness") || lowerPrompt.includes("cardio") || lowerPrompt.includes("gym") || lowerPrompt.includes("exercise") || lowerPrompt.includes("strength")) {
+    if (coachPersona === "drill") {
+      return `**🏋️‍♂️ [DRILL SERGEANT] PHYSICAL EXCELLENCE PROTOCOL**\n\nSWEAT SAVES SUFFERING! A strong body fuels a razor-sharp mind! When your workout block rings, NO DELAYS!\n\n### 💥 Execution Directives\n- **Warm Up with Purpose**: 5 minutes of dynamic mobility—jump rope, leg swings, arm circles.\n- **Progressive Overload**: More reps, more weight, or tighter rest intervals every single week.\n- **Finish Empty**: Give everything you've got in the final set. Cool down, rehydrate, and log the victory! DISCIPLINE WINS!`;
+    } else if (coachPersona === "data") {
+      return `**📊 [ANALYST ENGINE] PHYSIOLOGICAL ADAPTATION MATRIX**\n\nOptimal training distribution balances mechanical tension, metabolic stress, and central nervous system (CNS) recovery windows.\n\n### 📈 Prescribed Training Variables\n- **Split Frequency**: 3 to 4 resistance sessions weekly, spaced by at least 24–48 hours for target muscle groups.\n- **Heart Rate Zone 2 Base**: Include 30–45 minutes of steady Zone 2 cardio (60–70% HR max) to elevate mitochondrial density and cognitive alertness.\n- **Hydration & Electrolytes**: Maintain 500ml water intake per 45 minutes of training to avoid 15% neuromuscular power drops.`;
+    } else {
+      return `**🌱 [MENTOR COACH] NURTURING MOVEMENT & VITALITY**\n\nMovement is a celebration of what your body can do, not a chore! Moving regularly boosts your mood, clears your mind, and gives you wonderful energy for your creative goals. ✨\n\n### 🌿 Balanced Approach to Fitness\n- **Listen to Your Body**: Some days you'll feel like setting personal bests; other days, a brisk walk in the sunshine or gentle yoga is exactly what your spirit needs.\n- **Consistency Over Intensity**: Showing up 3 times a week with joy will always beat burning out in two weeks.\n- **Celebrate Every Session**: When you finish, take a moment to thank yourself for taking care of your health!`;
+    }
+  }
+
+  // 6. OVERLAP / SCHEDULE / CONFLICTS / TIME-MANAGEMENT
+  if (lowerPrompt.includes("overlap") || lowerPrompt.includes("conflict") || lowerPrompt.includes("busy") || lowerPrompt.includes("reschedule") || lowerPrompt.includes("time") || lowerPrompt.includes("calendar")) {
+    let advice = "";
+    if (coachPersona === "drill") {
+      advice = `**⏱️ [DRILL SERGEANT] SCHEDULE DECONFLICT PROTOCOL**\n\nDOUBLE BOOKINGS ARE A SIGN OF POOR PLANNING, RECRUIT! We do not tolerate overlapping chaos on the calendar!\n\n### 🛡️ Battlefield Orders\n- **Buffer Zones**: Insert a mandatory 15-minute barrier between all appointments.\n- **Priority Sorting**: Non-negotiable deep work and workouts come FIRST. Everything else fits into the remaining gaps.\n- **Ruthless Elimination**: If an activity doesn't advance your mission, cancel it or delegate it immediately!`;
+    } else if (coachPersona === "data") {
+      advice = `**📊 [ANALYST ENGINE] SCHEDULE REBALANCING & ZERO-COLLISION MATRIX**\n\nCalendar analysis reveals potential friction when transition buffers drop below 10 minutes between contrasting cognitive task domains.\n\n### 🔍 Optimization Architecture\n- **Transition Dampening**: Add 15-minute buffers between study and social/work commitments to eliminate mental residue.\n- **Batch Processing**: Group reactive communication (emails, administrative check-ins) into a single 30-minute block at 16:30.\n- **Automated Rebalancing**: Use our AI Schedule Controller to automatically deconflict and shift overlapping blocks into open slots.`;
+    } else {
+      advice = `**🌸 [MENTOR COACH] CALM CALENDAR HARMONY**\n\nWhen our calendar feels crowded, it's a gentle sign to breathe, step back, and bring peace back into our day. You don't have to do everything all at once. ✨\n\n### 🌿 Restoring Schedule Peace\n- **Give yourself breathing room**: A 15-minute cup of tea or walk between commitments makes the whole day feel spacious.\n- **Flexibility with Kindness**: If an unexpected meeting pops up, simply slide your focus block to tomorrow without any guilt.\n- **Protect Your Evenings**: Keep your late evenings free of work so your mind can recharge deeply.`;
+    }
+    return `${advice}\n\n\`\`\`json\n{\n  "goalAction": {\n    "action": "auto_resolve_conflicts"\n  }\n}\n\`\`\``;
+  }
+
+  // 7. DEFAULT HOLISTIC COACHING ADVICE
+  let defaultBadge = coachPersona === "drill" ? "🏋️‍♂️ [DRILL SERGEANT] DISCIPLINE AUDIT" : coachPersona === "data" ? "📊 [ANALYST ENGINE] ROUTINE PERFORMANCE AUDIT" : "🌸 [MENTOR COACH] EMPOWERMENT & MINDFUL COGNITION";
+
+  let defaultText = "";
+  if (coachPersona === "drill") {
+    defaultText = `Regarding your query "${prompt || 'Weekly Routine Optimization'}":\n\n- **Stand Tall & Execute**: You have goals on your dashboard—commit to them like a warrior!\n- **Daily Accountability**: Check off each session the minute you complete it. No excuses!\n- **Relentless Focus**: Keep your momentum going and dominate today!`;
+  } else if (coachPersona === "data") {
+    defaultText = `**[Routine System Analysis for: "${prompt || 'Weekly Routine Optimization'}"]**\n\n- **Consistency Index**: 0.82 (High Performance Trajectory)\n- **Active Goal Allocations**: ${goals.length} active tracked objectives with ${events.length} weekly scheduled blocks.\n- **Prescription**: Prioritize morning focus blocks (08:30–11:30 AM) where cognitive output benchmarks reach maximum efficiency.`;
+  } else {
+    defaultText = `Thank you for asking about **"${prompt || 'your routine'}"**! 🌱\n\n- ✨ **You are on the right track**: Taking time to reflect on your schedule is the first step toward lasting, joyful habits.\n- 💡 **Actionable Tip**: Choose just one primary focus block today and give it your full, calm attention.\n- 🌿 **Consistency with Ease**: Remember that slow, steady progress builds true mastery. Keep shining!`;
+  }
+
+  return `**${defaultBadge}**\n\n${defaultText}`;
+}
+
+// 3. AI COACH ENDPOINT (ROBUST MULTI-TURN & CONTEXT-AWARE)
 app.post("/api/coach/optimize", async (req, res) => {
-  const { prompt, goals, events, availability, coachPersona = "mentor" } = req.body;
+  const { 
+    prompt, 
+    goals = [], 
+    events = [], 
+    availability = [], 
+    coachPersona = "mentor",
+    conversationHistory = [] 
+  } = req.body;
   const keyAvailable = !!process.env.GEMINI_API_KEY;
 
-  if (!keyAvailable) {
-    // Elegant fallback simulation customized by persona if API Key is not set
-    let mockResponses: string[] = [];
-    let badge = "";
+  let personaInstruction = "";
+  if (coachPersona === "drill") {
+    personaInstruction = `Adopt the persona of a tough-love, high-energy, direct military Drill Sergeant coach. Use phrases like "LISTEN UP RECRUIT!", "NO EXCUSES!", "STAY DISCIPLINED!", and hold them strictly accountable with motivating energy!`;
+  } else if (coachPersona === "data") {
+    personaInstruction = `Adopt the persona of an analytical, quantitative data-science Productivity Systems Optimizer. Use terms like "consistency index", "probabilistic alignment", "performance metrics", and output trends, statistical models, and structured bullet lists.`;
+  } else {
+    personaInstruction = `Adopt the persona of an encouraging, warm, gentle, and empathetic mentor and life coach. Validate their challenges, build confidence, use kind words, positive mindfulness suggestions, and warm emojis.`;
+  }
 
-    const lowerPrompt = (prompt || "").toLowerCase();
+  const systemPrompt = `You are a world-class Productivity & Routine Optimizer Coach. ${personaInstruction}
+You analyze calendar events, user availability, and workout/study goals to suggest smart scheduling optimizations, time management, motivational challenges, and productivity tips.
 
-    if (lowerPrompt.includes("new goal") || lowerPrompt.includes("add goal") || lowerPrompt.includes("create goal") || lowerPrompt.includes("propose a goal") || lowerPrompt.includes("make goals")) {
-      badge = "✨ [AI COACH] GOAL PROPOSAL GENERATOR";
-      mockResponses = [
-        `I analyzed your focus routine and recommend adding a targeted **System Design & Architecture** goal to complement your software dev track!
+YOU HAVE FULL AUTHORITY TO PROPOSE CREATING NEW GOALS, MODIFYING EXISTING GOALS, DELETING INACTIVE GOALS, AUTO-RESOLVING SCHEDULE CONFLICTS, OR LAUNCHING TIMED FOCUS SESSIONS!
 
-### 🎯 Goal Proposal Details
-- **Name**: System Design & Architecture
-- **Frequency**: 3 sessions / week
-- **Session Duration**: 45 minutes
-- **Preferred Window**: Morning (08:00 - 12:00)
+Format your output using elegant, clean Markdown:
+- Use clear subheadings (e.g. ### 🎯 Section Title)
+- Use bullet points with bold lead-ins (- **Concept**: Description)
+- Highlight key terms with clean bold text (**React.js**, **20/5/5 Rule**)
+- Do not output meta warnings or disclaimer apologies. Speak directly to the user.
 
-Click the button below to automatically create this goal and schedule its sessions on your calendar!
+INTERACTIVE ACTION PROPOSALS:
+Whenever you suggest creating a goal, modifying a goal, deleting a goal, resolving calendar overlaps, or starting a focus sprint, append a JSON code block at the very end of your response so the user gets an interactive 1-click action button.
 
+Valid formats:
+For creating a new goal:
 \`\`\`json
 {
   "goalAction": {
     "action": "create_goal",
     "goal": {
-      "name": "System Design & Architecture",
+      "name": "Goal Name",
       "type": "study",
       "category": "Engineering",
       "weeklyTarget": 3,
@@ -448,120 +603,9 @@ Click the button below to automatically create this goal and schedule its sessio
     }
   }
 }
-\`\`\``
-      ];
-    } else if (lowerPrompt.includes("modify") || lowerPrompt.includes("update") || lowerPrompt.includes("change goal") || lowerPrompt.includes("target")) {
-      const firstGoal = (goals && goals.length > 0) ? goals[0] : { id: "g_demo", name: "Python Learning" };
-      badge = "✏️ [AI COACH] GOAL OPTIMIZATION";
-      mockResponses = [
-        `Based on your high completion rates, I recommend upgrading your **${firstGoal.name}** weekly target to 4 sessions per week with 45-minute focus intervals!
-
-### 📊 Recommended Modifications
-- **Goal**: ${firstGoal.name}
-- **New Weekly Target**: 4 sessions / week
-- **Session Duration**: 45 minutes
-- **Optimized Window**: Evening (17:00 - 21:00)
-
-Click below to apply these updates directly to your goal and sync your calendar!
-
-\`\`\`json
-{
-  "goalAction": {
-    "action": "update_goal",
-    "goalId": "${firstGoal.id}",
-    "goalName": "${firstGoal.name}",
-    "updatedFields": {
-      "weeklyTarget": 4,
-      "durationMinutes": 45,
-      "timePreference": "evening"
-    }
-  }
-}
-\`\`\``
-      ];
-    } else if (coachPersona === "drill") {
-      badge = "🏋️‍♂️ [DIFFICULTY: HIGH] SERGEANT HARDCORE DISCIPLINE CHATBOT";
-      mockResponses = [
-        "ATTENTION RECRUIT! Your calendar is looking soft! I checked your **Morning Cardio** completions and you are lagging behind! SCHEDULE THOSE BLOCKS AT 08:00 SHARP! No snooze button, no crying! DISCIPLINE IS THE FUEL OF PROGRESS! GET UP AND DOMINATE!",
-        "LISTENING TO EXCUSES IS NOT IN MY CODE! You've got Study targets to hit but you're letting prime focus windows waste away. Block out 90 minutes of absolute silent execution today. LOCK YOUR PHONE, UNPLUG THE TV, AND GET TO WORK!",
-        "SQUAT DOWN AND DIG DEEP! Maintaining consistency isn't about feeling motivated, it's about following the schedule layout like an absolute machine. Lock in your routines now. DISCIPLINE REAPS REWARDS!",
-        "IF YOU WEAR OUT, YOU WIN! IF YOU GIVE UP, YOU LOSE! Get those study and side project hours allocated. I want to see conflict-free blocks of pure performance scheduled immediately!"
-      ];
-    } else if (coachPersona === "data") {
-      badge = "📊 [ANALYST MODE] DATA-DRIVEN STOCHASTIC ROUTINE SYSTEMS";
-      mockResponses = [
-        "**[Metrics Report] Consistency Index: 0.64 (Moderate)**\n\n- **Quantitative Observation**: Shift of **React Learning** blocks by +90 minutes correlates with a 24.3% increase in session completion probabilities.\n- **Optimized Window**: Tuesday & Thursday afternoons display the lowest probability of scheduling conflicts.",
-        "**[Routine Performance Analysis]**\n\n- **Bottleneck Identified**: Stacked side-project and workout sessions show a high correlation with fatigue-induced skips (coefficient: 0.72).\n- **Prescription**: Interject a 45-minute active recovery or hydration buffer to reset your metabolic and mental focus levels.",
-        "**[Time-Block Correlation Model]**\n\n- Active study sessions placed between 09:00 and 11:30 achieve maximum cognitive retention. Avoid late night allocations where cognitive capacity drops by up to 40% based on user telemetry benchmarks.",
-        "**[Optimized Distribution Strategy]**\n\n- Distribute your 4x weekly workouts in a 1-day-on, 1-day-off pattern rather than loading weekends. This optimizes muscular recovery timelines and keeps cardiovascular fatigue minimal."
-      ];
-    } else {
-      badge = "🌸 [MENTOR COACH] EMPOWERMENT & MINDFUL COGNITION";
-      mockResponses = [
-        "Hello! You're doing a truly wonderful job taking steps toward your goals. 🌱\n\n- Let's look at your **Morning Cardio** - if mornings are feeling a bit rushed, how about we set them for a comfortable 30-minute block? Be gentle with yourself; slow, steady progress is what builds lifelong habits. You've got this!",
-        "I'm super proud of you for keeping your study goals in focus! 📚 To make things easier, try breaking your sessions into a 45-minute deep-focus period, followed by a warm cup of tea and some deep breathing. Your mental wellness is just as important as your progress.",
-        "It's completely okay if some days don't go exactly as planned. Life happens! The important thing is we simply look forward to tomorrow. Try placing your **Side Project** block on a relaxing Thursday evening, and enjoy the process of creating.",
-        "Finding your personal rhythm takes a little time, and you are doing beautifully. Let's make sure we schedule a gentle self-care routine window during the weekend to recharge your creative batteries."
-      ];
-    }
-
-    const item = mockResponses[Math.floor(Math.random() * mockResponses.length)];
-    const simulatedCoachMessage = `**${badge}**\n\n${item}\n\n*(Note: Running in optimized local guidance mode. When a live GEMINI_API_KEY is configured, this AI assistant activates the real-time Gemini model using this custom persona!)*`;
-    
-    // Brief delay to simulate actual dynamic call processing
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    return res.json({ text: simulatedCoachMessage });
-  }
-
-  try {
-    const ai = getAi();
-    
-    let personaInstruction = "";
-    if (coachPersona === "drill") {
-      personaInstruction = `Adopt the persona of a tough-love, high-energy, loud, direct military Drill Sergeant coach. Use phrases like "LISTEN UP RECRUIT!", "NO EXCUSES!", "STAY DISCIPLINED!", and emphasize your points with passionate capitalizations. Hold them strictly accountable with aggressive motivational challenges!`;
-    } else if (coachPersona === "data") {
-      personaInstruction = `Adopt the persona of an extremely analytical, quantitative data-science Productivity Systems Optimizer. Use terms like "consistency index", "probability distribution of success", "stochastic alignment", "performance metrics", and output trends and statistical models. Use tables and bullet lists to present data-driven scheduling prescriptions.`;
-    } else {
-      personaInstruction = `Adopt the persona of an encouraging, warm, gentle, and highly empathetic life coach and mentor. Validate their challenges, build confidence, use kind words and positive mindfulness suggestions, and guide them gently. Use warm emojis.`;
-    }
-
-    const systemPrompt = `You are a world-class Productivity & Routine Optimizer Coach. ${personaInstruction}
-You analyze calendar events, user availability, and workout/study goals to suggest smart scheduling optimizations, time management, motivational challenges, and productivity tips.
-
-YOU HAVE FULL AUTHORITY TO PROPOSE CREATING NEW GOALS, MODIFYING EXISTING GOALS, OR DELETING INACTIVE GOALS!
-
-Format your output using elegant, clean Markdown:
-- Use clear subheadings (e.g. ### 🎯 Section Title)
-- Use bullet points with bold lead-ins (- **Concept**: Description)
-- Highlight key terms with bold text (**React.js**, **20/5/5 Rule**)
-- Keep sections well-spaced with horizontal dividers (---) where appropriate.
-
-GOAL ACTION PROPOSALS:
-Whenever you suggest creating a new goal, updating an existing goal, or deleting a goal, append a JSON code block at the very end of your response so the user gets an interactive 1-click action button to execute your proposal instantly.
-
-Valid formats:
-
-For creating a new goal:
-\`\`\`json
-{
-  "goalAction": {
-    "action": "create_goal",
-    "goal": {
-      "name": "Goal Name",
-      "type": "study",
-      "category": "Category Name",
-      "weeklyTarget": 3,
-      "durationMinutes": 45,
-      "timePreference": "morning",
-      "priority": "high",
-      "color": "indigo",
-      "icon": "code"
-    }
-  }
-}
 \`\`\`
 
-For updating an existing goal (use exact goal ID from Available Goals list):
+For updating an existing goal:
 \`\`\`json
 {
   "goalAction": {
@@ -570,20 +614,32 @@ For updating an existing goal (use exact goal ID from Available Goals list):
     "goalName": "Goal Name",
     "updatedFields": {
       "weeklyTarget": 4,
-      "durationMinutes": 60,
+      "durationMinutes": 45,
       "timePreference": "evening"
     }
   }
 }
 \`\`\`
 
-For deleting a goal:
+For auto-resolving calendar conflicts, overlapping sessions, or schedule drift:
 \`\`\`json
 {
   "goalAction": {
-    "action": "delete_goal",
-    "goalId": "EXACT_GOAL_ID",
-    "goalName": "Goal Name"
+    "action": "auto_resolve_conflicts"
+  }
+}
+\`\`\`
+
+For starting a focus session or 2-minute / 25-minute sprint:
+\`\`\`json
+{
+  "goalAction": {
+    "action": "launch_timer",
+    "timerConfig": {
+      "title": "Deep Work Sprint",
+      "durationMinutes": 25,
+      "category": "Study"
+    }
   }
 }
 \`\`\`
@@ -597,99 +653,52 @@ ${JSON.stringify(events, null, 2)}
 Availability:
 ${JSON.stringify(availability, null, 2)}`;
 
-    const userPrompt = prompt || "Analyze my current routine and suggest 3 direct optimizations to boost my weekly consistency and completion rate.";
-
-    const result = await generateWithFallback({
-      primaryModel: "gemini-3.8-flash",
-      fallbackModel: "gemini-3.1-flash-lite",
-      contents: userPrompt,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.7
+  if (keyAvailable) {
+    try {
+      // Build conversational contents with previous turns if available
+      const contentsPayload: any[] = [];
+      
+      if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+        conversationHistory.slice(-6).forEach((h: any) => {
+          if (h.role && h.text) {
+            contentsPayload.push({
+              role: h.role === "user" ? "user" : "model",
+              parts: [{ text: h.text }]
+            });
+          }
+        });
       }
-    });
 
-    if (result && result.text) {
-      return res.json({ text: result.text });
-    }
+      // Add current user prompt
+      const currentPromptText = prompt || "Analyze my current routine and suggest 3 direct optimizations to boost my weekly consistency.";
+      contentsPayload.push({
+        role: "user",
+        parts: [{ text: currentPromptText }]
+      });
 
-    // Smart contextual fallback response if Gemini call throws or returns empty
-    const lowerPrompt = (prompt || "").toLowerCase();
-    let fallbackBadge = "";
-    let fallbackText = "";
+      const result = await generateWithFallback({
+        primaryModel: "gemini-3.8-flash",
+        fallbackModel: "gemini-3.1-flash-lite",
+        contents: contentsPayload,
+        config: {
+          systemInstruction: systemPrompt,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          temperature: 0.7
+        },
+        timeoutMs: 18000
+      });
 
-    if (lowerPrompt.includes("new goal") || lowerPrompt.includes("add goal") || lowerPrompt.includes("create goal") || lowerPrompt.includes("propose") || lowerPrompt.includes("make goal") || lowerPrompt.includes("suggest a goal")) {
-      fallbackBadge = "✨ [AI COACH] GOAL PROPOSAL GENERATOR";
-      fallbackText = `I analyzed your current schedule and availability grid! I strongly recommend adding a targeted **Software Architecture & Deep Focus** goal to accelerate your development track.
-
-### 🎯 Proposed Goal Details
-- **Goal Name**: Software Architecture & Design
-- **Weekly Target**: 3 sessions / week
-- **Session Duration**: 45 minutes
-- **Preferred Window**: Morning (08:00 - 12:00)
-
-Click the action button below to automatically create this goal and schedule its sessions on your calendar!
-
-\`\`\`json
-{
-  "goalAction": {
-    "action": "create_goal",
-    "goal": {
-      "name": "Software Architecture & Design",
-      "type": "study",
-      "category": "Engineering",
-      "weeklyTarget": 3,
-      "durationMinutes": 45,
-      "timePreference": "morning",
-      "color": "indigo",
-      "icon": "code"
+      if (result && result.text) {
+        return res.json({ text: result.text });
+      }
+    } catch (err: any) {
+      console.warn("[AI Coach API] Cloud model fallback to local intelligence:", err?.message || err);
     }
   }
-}
-\`\`\``;
-    } else if (lowerPrompt.includes("modify") || lowerPrompt.includes("update") || lowerPrompt.includes("change goal") || lowerPrompt.includes("target")) {
-      const firstGoal = (goals && goals.length > 0) ? goals[0] : { id: "g_demo", name: "Python Learning" };
-      fallbackBadge = "✏️ [AI COACH] GOAL OPTIMIZATION";
-      fallbackText = `Based on your recent performance metrics, I recommend upgrading your **${firstGoal.name}** weekly target to 4 sessions per week with 45-minute focus intervals!
 
-### 📊 Recommended Modifications
-- **Goal**: ${firstGoal.name}
-- **New Weekly Target**: 4 sessions / week
-- **Session Duration**: 45 minutes
-- **Optimized Window**: Evening (17:00 - 21:00)
-
-Click below to apply these updates directly to your goal and sync your calendar!
-
-\`\`\`json
-{
-  "goalAction": {
-    "action": "update_goal",
-    "goalId": "${firstGoal.id}",
-    "goalName": "${firstGoal.name}",
-    "updatedFields": {
-      "weeklyTarget": 4,
-      "durationMinutes": 45,
-      "timePreference": "evening"
-    }
-  }
-}
-\`\`\``;
-    } else if (coachPersona === "drill") {
-      fallbackBadge = "🏋️‍♂️ [DIFFICULTY: HIGH] SERGEANT HARDCORE DISCIPLINE CHATBOT";
-      fallbackText = `ATTENTION RECRUIT! Regarding your request "${prompt || 'Routine Optimization'}":\n\n- **No Excuses**: Lock in your target sessions right now on your calendar grid!\n- **Execution**: Block out 45 to 90 minutes of pure silent focus today.\n- **Consistency**: Talk is cheap—consistent action builds mastery! GET TO WORK!`;
-    } else if (coachPersona === "data") {
-      fallbackBadge = "📊 [ANALYST MODE] DATA-DRIVEN STOCHASTIC ROUTINE SYSTEMS";
-      fallbackText = `**[Data Analysis for: "${prompt || 'Routine Optimization'}"]**\n\n- **Consistency Index**: 0.78 (Optimal Range)\n- **Peak Focus Window**: Morning slots (08:30 - 11:30 AM) yield a 91.2% session completion rate.\n- **Prescription**: Maintain a 15-minute recovery buffer between consecutive deep-focus blocks to avoid cognitive fatigue decay.`;
-    } else {
-      fallbackBadge = "🌸 [MENTOR COACH] EMPOWERMENT & MINDFUL COGNITION";
-      fallbackText = `Hello! Thank you for reaching out regarding **"${prompt || 'your routine'}"**:\n\n- 🌱 **Focus & Mindset**: You're doing a fantastic job staying intentional with your time. Small, consistent efforts compound into massive growth over time.\n- 💡 **Actionable Step**: Keep your focus blocks to 45 minutes, followed by a short 5-minute break to recharge.\n- ✨ Be proud of your dedication—let's keep building momentum!`;
-    }
-
-    return res.json({ text: `**${fallbackBadge}**\n\n${fallbackText}` });
-  } catch (err: any) {
-    console.error("Error communicating with Gemini: ", err);
-    res.json({ text: "I analyzed your request! Remember that staying consistent with your daily time blocks is the single most important factor for achieving long-term progress." });
-  }
+  // Smart Context-Aware Local Guidance when offline or falling back
+  const localAdvice = generateLocalCoachingAdvice(prompt, goals, events, availability, coachPersona);
+  return res.json({ text: localAdvice });
 });
 
 // 4. AI WEEKLY DIGEST & INSIGHTS ENDPOINT

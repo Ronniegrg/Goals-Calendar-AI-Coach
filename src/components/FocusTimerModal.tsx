@@ -659,9 +659,6 @@ export default function FocusTimerModal({
             subSteps: detail.subSteps || prev.subSteps
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-          try {
-            window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: updated }));
-          } catch {}
           return updated;
         }
 
@@ -695,9 +692,6 @@ export default function FocusTimerModal({
             subSteps: saved.subSteps || detail.subSteps
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredTimer));
-          try {
-            window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: restoredTimer }));
-          } catch {}
           return restoredTimer;
         }
 
@@ -725,9 +719,6 @@ export default function FocusTimerModal({
           subSteps: detail.subSteps
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: newTimer }));
-        } catch {}
         return newTimer;
       });
     };
@@ -745,9 +736,6 @@ export default function FocusTimerModal({
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         saveProgressToMap(next);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
-        } catch {}
         return next;
       });
     };
@@ -770,9 +758,6 @@ export default function FocusTimerModal({
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         saveProgressToMap(next);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
-        } catch {}
         return next;
       });
     };
@@ -795,7 +780,6 @@ export default function FocusTimerModal({
               note: prev.sessionTakeawayNote
             }
           }));
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: null }));
         } catch {}
         localStorage.removeItem(STORAGE_KEY);
         return null;
@@ -810,9 +794,6 @@ export default function FocusTimerModal({
         const next = { ...prev, subSteps: steps };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         saveProgressToMap(next);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
-        } catch {}
         return next;
       });
     };
@@ -833,9 +814,6 @@ export default function FocusTimerModal({
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         saveProgressToMap(next);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
-        } catch {}
         return next;
       });
     };
@@ -856,6 +834,13 @@ export default function FocusTimerModal({
     };
   }, []);
 
+  // Safely broadcast timer state changes to global listeners after React render commit
+  useEffect(() => {
+    try {
+      window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: timerState }));
+    } catch {}
+  }, [timerState]);
+
   // Save to localStorage and persistent progress map
   const updateTimerState = (updater: (prev: ActiveTimerData | null) => ActiveTimerData | null) => {
     setTimerState((prev) => {
@@ -863,14 +848,8 @@ export default function FocusTimerModal({
       if (next) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         saveProgressToMap(next);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: next }));
-        } catch {}
       } else {
         localStorage.removeItem(STORAGE_KEY);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: null }));
-        } catch {}
       }
       return next;
     });
@@ -1087,16 +1066,10 @@ export default function FocusTimerModal({
         const updatedState = { ...prev, timeRemaining: diffSec };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedState));
         saveProgressToMap(updatedState);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: updatedState }));
-        } catch {}
         return updatedState;
       });
 
       if (isTimerCompleted) {
-        try {
-          window.dispatchEvent(new CustomEvent("focus_timer_state_change", { detail: null }));
-        } catch {}
         triggerCompletionBell(finishedTitle);
         if (onCompleteRef.current) {
           onCompleteRef.current(completedEventId, completedGoalId, completedNote);

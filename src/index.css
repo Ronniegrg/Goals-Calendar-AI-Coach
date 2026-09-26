@@ -510,5 +510,336 @@ html:not(.light-theme) .cal-quick-play-btn:hover {
   color: #ffffff !important;
 }
 
+/* ==========================================================================
+   AI COACH HIGH-CONTRAST THEME (Flawless readability across Light & Dark modes)
+   ========================================================================== */
+
+/* --- LIGHT THEME RULES --- */
+html.light-theme .coach-high-contrast {
+  color: #0f172a;
+}
+
+html.light-theme .coach-high-contrast .coach-sidebar-panel,
+html.light-theme .coach-high-contrast .coach-chat-panel,
+html.light-theme .coach-high-contrast .coach-digest-panel,
+html.light-theme .coach-high-contrast .coach-energy-panel {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Coach Message Bubble in Light Mode */
+html.light-theme .coach-high-contrast .coach-bubble-coach {
+  background-color: #ffffff !important;
+  border: 1.5px solid #cbd5e1 !important;
+  color: #0f172a !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach * {
+  text-shadow: none !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach p,
+html.light-theme .coach-high-contrast .coach-bubble-coach li,
+html.light-theme .coach-high-contrast .coach-bubble-coach div {
+  color: #0f172a !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach strong {
+  color: #020617 !important;
+  font-weight: 800 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach em {
+  color: #3730a3 !important; /* Deep vibrant indigo */
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach h1,
+html.light-theme .coach-high-contrast .coach-bubble-coach h2,
+html.light-theme .coach-high-contrast .coach-bubble-coach h3 {
+  color: #1e1b4b !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach .coach-heading-badge {
+  background-color: #e0e7ff !important;
+  border-color: #a5b4fc !important;
+  color: #312e81 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach .coach-heading-badge * {
+  color: #312e81 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach blockquote {
+  background-color: #f1f5f9 !important;
+  border-left-color: #4f46e5 !important;
+  color: #1e293b !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach code {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+  color: #0f766e !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-coach .coach-list-dot {
+  background-color: #4f46e5 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-timestamp-coach {
+  color: #475569 !important;
+}
+
+/* User Message Bubble in Light Mode - High Contrast White text on Indigo */
+html.light-theme .coach-high-contrast .coach-bubble-user {
+  background-color: #4338ca !important; /* Indigo 700 */
+  border: 1px solid #3730a3 !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(67, 56, 202, 0.25) !important;
+}
+
+html.light-theme .coach-high-contrast .coach-bubble-user,
+html.light-theme .coach-high-contrast .coach-bubble-user *,
+html.light-theme .coach-high-contrast .coach-bubble-user p,
+html.light-theme .coach-high-contrast .coach-bubble-user div {
+  color: #ffffff !important;
+}
+
+html.light-theme .coach-high-contrast .coach-timestamp-user {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+/* Goal Action Proposal Cards in Light Mode */
+html.light-theme .coach-high-contrast .coach-action-card {
+  background: #f8fafc !important;
+  border: 1.5px solid #818cf8 !important;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.12) !important;
+}
+
+html.light-theme .coach-high-contrast .coach-action-card .coach-action-title {
+  color: #1e1b4b !important;
+}
+
+html.light-theme .coach-high-contrast .coach-action-card .coach-action-badge {
+  background-color: #e0e7ff !important;
+  border-color: #a5b4fc !important;
+  color: #3730a3 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-action-card .coach-action-grid {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-action-card .coach-action-grid span {
+  color: #475569 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-action-card .coach-action-grid strong {
+  color: #0f172a !important;
+}
+
+html.light-theme .coach-high-contrast .coach-action-card button,
+html.light-theme .coach-high-contrast .coach-action-card button * {
+  color: #ffffff !important;
+}
+
+/* Preset Chips in Light Mode */
+html.light-theme .coach-high-contrast .coach-preset-chip {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light-theme .coach-high-contrast .coach-preset-chip:hover {
+  background-color: #4338ca !important;
+  border-color: #4338ca !important;
+  color: #ffffff !important;
+}
+
+/* Input Bar & Footer in Light Mode */
+html.light-theme .coach-high-contrast .coach-chat-footer {
+  background-color: #ffffff !important;
+  border-top-color: #e2e8f0 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-input-field {
+  background-color: #f8fafc !important;
+  border: 1.5px solid #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html.light-theme .coach-high-contrast .coach-input-field::placeholder {
+  color: #64748b !important;
+}
+
+html.light-theme .coach-high-contrast .coach-input-field:focus {
+  background-color: #ffffff !important;
+  border-color: #4f46e5 !important;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15) !important;
+}
+
+html.light-theme .coach-high-contrast .coach-send-btn,
+html.light-theme .coach-high-contrast .coach-send-btn * {
+  color: #ffffff !important;
+}
+
+/* Persona Buttons in Light Mode */
+html.light-theme .coach-high-contrast .coach-persona-btn {
+  color: #334155 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-persona-btn.active {
+  color: #ffffff !important;
+}
+
+html.light-theme .coach-high-contrast .coach-persona-btn.active * {
+  color: #ffffff !important;
+}
+
+/* Shortcut prompt buttons in Sidebar */
+html.light-theme .coach-high-contrast .coach-shortcut-btn {
+  background-color: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-shortcut-btn:hover {
+  background-color: #eef2ff !important;
+  border-color: #a5b4fc !important;
+}
+
+html.light-theme .coach-high-contrast .coach-shortcut-title {
+  color: #0f172a !important;
+}
+
+html.light-theme .coach-high-contrast .coach-shortcut-subtitle {
+  color: #475569 !important;
+}
+
+/* Chat Header Status in Light Mode */
+html.light-theme .coach-high-contrast .coach-chat-header {
+  background-color: #f8fafc !important;
+  border-bottom-color: #e2e8f0 !important;
+}
+
+html.light-theme .coach-high-contrast .coach-chat-header * {
+  color: #0f172a !important;
+}
+
+/* --- DARK THEME RULES --- */
+html.dark .coach-high-contrast,
+html.dark-theme .coach-high-contrast,
+html:not(.light-theme) .coach-high-contrast {
+  color: #f8fafc;
+}
+
+/* Coach Message Bubble in Dark Mode */
+html.dark .coach-high-contrast .coach-bubble-coach,
+html.dark-theme .coach-high-contrast .coach-bubble-coach,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach {
+  background-color: #0f172a !important;
+  border: 1px solid rgba(99, 102, 241, 0.4) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45) !important;
+}
+
+html.dark .coach-high-contrast .coach-bubble-coach p,
+html.dark .coach-high-contrast .coach-bubble-coach li,
+html.dark .coach-high-contrast .coach-bubble-coach div,
+html.dark-theme .coach-high-contrast .coach-bubble-coach p,
+html.dark-theme .coach-high-contrast .coach-bubble-coach li,
+html.dark-theme .coach-high-contrast .coach-bubble-coach div,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach p,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach li,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach div {
+  color: #f8fafc !important;
+}
+
+html.dark .coach-high-contrast .coach-bubble-coach strong,
+html.dark-theme .coach-high-contrast .coach-bubble-coach strong,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach strong {
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+html.dark .coach-high-contrast .coach-bubble-coach em,
+html.dark-theme .coach-high-contrast .coach-bubble-coach em,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach em {
+  color: #a5b4fc !important;
+}
+
+html.dark .coach-high-contrast .coach-bubble-coach h1,
+html.dark .coach-high-contrast .coach-bubble-coach h2,
+html.dark .coach-high-contrast .coach-bubble-coach h3,
+html.dark-theme .coach-high-contrast .coach-bubble-coach h1,
+html.dark-theme .coach-high-contrast .coach-bubble-coach h2,
+html.dark-theme .coach-high-contrast .coach-bubble-coach h3,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach h1,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach h2,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-coach h3 {
+  color: #c7d2fe !important;
+}
+
+html.dark .coach-high-contrast .coach-timestamp-coach,
+html.dark-theme .coach-high-contrast .coach-timestamp-coach,
+html:not(.light-theme) .coach-high-contrast .coach-timestamp-coach {
+  color: #94a3b8 !important;
+}
+
+/* User Message Bubble in Dark Mode */
+html.dark .coach-high-contrast .coach-bubble-user,
+html.dark-theme .coach-high-contrast .coach-bubble-user,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-user {
+  background-color: #4f46e5 !important;
+  border: 1px solid #6366f1 !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.35) !important;
+}
+
+html.dark .coach-high-contrast .coach-bubble-user,
+html.dark .coach-high-contrast .coach-bubble-user *,
+html.dark-theme .coach-high-contrast .coach-bubble-user,
+html.dark-theme .coach-high-contrast .coach-bubble-user *,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-user,
+html:not(.light-theme) .coach-high-contrast .coach-bubble-user * {
+  color: #ffffff !important;
+}
+
+html.dark .coach-high-contrast .coach-timestamp-user,
+html.dark-theme .coach-high-contrast .coach-timestamp-user,
+html:not(.light-theme) .coach-high-contrast .coach-timestamp-user {
+  color: #e0e7ff !important;
+}
+
+/* Goal Action Proposal Cards in Dark Mode */
+html.dark .coach-high-contrast .coach-action-card,
+html.dark-theme .coach-high-contrast .coach-action-card,
+html:not(.light-theme) .coach-high-contrast .coach-action-card {
+  background: linear-gradient(135deg, rgba(30, 27, 75, 0.95), rgba(15, 23, 42, 0.95)) !important;
+  border: 1.5px solid rgba(129, 140, 248, 0.45) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+}
+
+html.dark .coach-high-contrast .coach-action-card .coach-action-grid,
+html.dark-theme .coach-high-contrast .coach-action-card .coach-action-grid,
+html:not(.light-theme) .coach-high-contrast .coach-action-card .coach-action-grid {
+  background-color: rgba(3, 7, 18, 0.6) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.dark .coach-high-contrast .coach-action-card .coach-action-grid span,
+html.dark-theme .coach-high-contrast .coach-action-card .coach-action-grid span,
+html:not(.light-theme) .coach-high-contrast .coach-action-card .coach-action-grid span {
+  color: #94a3b8 !important;
+}
+
+html.dark .coach-high-contrast .coach-action-card .coach-action-grid strong,
+html.dark-theme .coach-high-contrast .coach-action-card .coach-action-grid strong,
+html:not(.light-theme) .coach-high-contrast .coach-action-card .coach-action-grid strong {
+  color: #ffffff !important;
+}
+
 
 

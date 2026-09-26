@@ -2532,6 +2532,10 @@ export default function App() {
             onDeleteGoal={handleDeleteGoal}
             userEnergyProfile={energyProfile}
             onBulkAddEvents={handleBulkAddEvents}
+            onUpdateEvents={(updatedEvts) => {
+              setEvents(updatedEvts);
+              syncToCloud(goals, updatedEvts, availability, notifications, coachMessages);
+            }}
             onAddNotification={triggerSystemNotification}
             onApplyEnergySchedule={(newEvts) => {
               const updatedEvents = [...events, ...newEvts];
