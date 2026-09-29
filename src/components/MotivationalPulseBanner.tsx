@@ -51,13 +51,181 @@ interface ParsedGoalFocus {
   matchedGoal?: Goal;
 }
 
-const MOTIVATIONAL_SPARKS = [
-  "Consistency beats intensity: completing 1 focus session today protects your weekly momentum.",
-  "Deep focus is a muscle: protect your scheduled blocks from unscheduled interruptions.",
-  "Action precedes motivation: showing up for the first 5 minutes ignites the cognitive flow state.",
-  "Stack your highest cognitive load during peak energy hours, and save routines for the recharge zone.",
-  "Small daily disciplines compound into monumental masteries over 90 days."
+export interface MotivationalQuote {
+  quote: string;
+  author: string;
+  theme?: string;
+}
+
+export const MOTIVATIONAL_SPARKS: MotivationalQuote[] = [
+  {
+    quote: "We are what we repeatedly do. Excellence, then, is not an act, but a habit.",
+    author: "Aristotle",
+    theme: "Habits"
+  },
+  {
+    quote: "You do not rise to the level of your goals. You fall to the level of your systems.",
+    author: "James Clear",
+    theme: "Systems"
+  },
+  {
+    quote: "Deep focus is a muscle: protect your scheduled blocks from unscheduled interruptions.",
+    author: "Cal Newport",
+    theme: "Deep Work"
+  },
+  {
+    quote: "Action precedes motivation: showing up for the first 5 minutes ignites the cognitive flow state.",
+    author: "Momentum Rule",
+    theme: "Activation"
+  },
+  {
+    quote: "It does not matter how slowly you go as long as you do not stop.",
+    author: "Confucius",
+    theme: "Persistence"
+  },
+  {
+    quote: "Small daily disciplines compound into monumental masteries over 90 days.",
+    author: "Robin Sharma",
+    theme: "Compounding"
+  },
+  {
+    quote: "Stack your highest cognitive load during peak energy hours, and save routines for the recharge zone.",
+    author: "Chronobiology Law",
+    theme: "Bio-Energy"
+  },
+  {
+    quote: "The secret of getting ahead is getting started.",
+    author: "Mark Twain",
+    theme: "Initiative"
+  },
+  {
+    quote: "First forget inspiration. Habit is more dependable. Habit will sustain you whether you're inspired or not.",
+    author: "Octavia Butler",
+    theme: "Discipline"
+  },
+  {
+    quote: "Concentrate all your thoughts upon the work in hand. The sun's rays do not burn until brought to a focus.",
+    author: "Alexander Graham Bell",
+    theme: "Focus"
+  },
+  {
+    quote: "Consistency beats intensity: completing 1 focus session today protects your weekly momentum.",
+    author: "Atomic Principle",
+    theme: "Consistency"
+  },
+  {
+    quote: "Waste no more time arguing what a good person should be. Be one.",
+    author: "Marcus Aurelius",
+    theme: "Stoicism"
+  },
+  {
+    quote: "The impediment to action advances action. What stands in the way becomes the way.",
+    author: "Marcus Aurelius",
+    theme: "Resilience"
+  },
+  {
+    quote: "Success is the product of daily habits—not once-in-a-lifetime transformations.",
+    author: "James Clear",
+    theme: "Atomic Habits"
+  },
+  {
+    quote: "Do something today that your future self will thank you for.",
+    author: "Sean Patrick Flanery",
+    theme: "Vision"
+  },
+  {
+    quote: "Motivation is what gets you started. Habit is what keeps you going.",
+    author: "Jim Ryun",
+    theme: "Discipline"
+  },
+  {
+    quote: "Discipline is choosing between what you want now and what you want most.",
+    author: "Abraham Lincoln",
+    theme: "Willpower"
+  },
+  {
+    quote: "Simplicity boils down to two steps: Identify the essential. Eliminate the rest.",
+    author: "Leo Babauta",
+    theme: "Essentialism"
+  },
+  {
+    quote: "Energy flows where attention goes. Protect your focus like capital.",
+    author: "Tony Robbins",
+    theme: "Attention"
+  },
+  {
+    quote: "He who has a why to live can bear almost any how.",
+    author: "Friedrich Nietzsche",
+    theme: "Purpose"
+  },
+  {
+    quote: "Amateurs sit and wait for inspiration, the rest of us just get up and go to work.",
+    author: "Stephen King",
+    theme: "Craft"
+  },
+  {
+    quote: "Knowing is not enough, we must apply. Willing is not enough, we must do.",
+    author: "Bruce Lee",
+    theme: "Execution"
+  },
+  {
+    quote: "The ability to perform deep work is becoming rare at the exact time it is becoming most valuable.",
+    author: "Cal Newport",
+    theme: "Deep Work"
+  },
+  {
+    quote: "Rest is not idleness, and to lie sometimes on the grass under trees is not a waste of time.",
+    author: "John Lubbock",
+    theme: "Recovery"
+  },
+  {
+    quote: "It is not that we have a short time to live, but that we waste a lot of it.",
+    author: "Seneca",
+    theme: "Time Mastery"
+  },
+  {
+    quote: "Clarity about what matters provides clarity about what does not.",
+    author: "Cal Newport",
+    theme: "Clarity"
+  },
+  {
+    quote: "Champions don’t do extraordinary things. They do ordinary things without thinking, faster than others react.",
+    author: "Charles Duhigg",
+    theme: "Automaticity"
+  },
+  {
+    quote: "Never give up on a goal just because of the time it will take to accomplish it. Time will pass anyway.",
+    author: "Earl Nightingale",
+    theme: "Patience"
+  },
+  {
+    quote: "Grit is living life like it's a marathon, not a sprint.",
+    author: "Angela Duckworth",
+    theme: "Grit"
+  },
+  {
+    quote: "Your calendar is a blueprint of your future. Schedule your priorities before someone else does.",
+    author: "Time Architecture",
+    theme: "Ownership"
+  },
+  {
+    quote: "One day or day one. You decide.",
+    author: "Daily Mindset",
+    theme: "Action"
+  }
 ];
+
+// Deterministic day-of-year calculation ensures each day has its own dedicated quote
+function getDailySparkIndex(totalSparks: number): number {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const day = now.getDate();
+  const dayOfYear = Math.floor(
+    (Date.UTC(year, month, day) - Date.UTC(year, 0, 0)) / (24 * 60 * 60 * 1000)
+  );
+  return Math.abs((dayOfYear + year * 7) % totalSparks);
+}
 
 export default function MotivationalPulseBanner({
   notifications,
@@ -78,7 +246,22 @@ export default function MotivationalPulseBanner({
       return false;
     }
   });
-  const [sparkIndex, setSparkIndex] = useState(0);
+
+  const todayKey = new Date().toISOString().split("T")[0];
+  const [sparkIndex, setSparkIndex] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem("daily_spark_override");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.dateKey === todayKey && typeof parsed.index === "number") {
+          return parsed.index % MOTIVATIONAL_SPARKS.length;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return getDailySparkIndex(MOTIVATIONAL_SPARKS.length);
+  });
 
   // Safe index clamping if notifications list changes
   const validIndex = Math.min(activeIndex, Math.max(0, notifications.length - 1));
@@ -245,7 +428,16 @@ export default function MotivationalPulseBanner({
   };
 
   const handleCycleSpark = () => {
-    setSparkIndex((sparkIndex + 1) % MOTIVATIONAL_SPARKS.length);
+    const nextIdx = (sparkIndex + 1) % MOTIVATIONAL_SPARKS.length;
+    setSparkIndex(nextIdx);
+    try {
+      localStorage.setItem("daily_spark_override", JSON.stringify({
+        dateKey: new Date().toISOString().split("T")[0],
+        index: nextIdx
+      }));
+    } catch {
+      // ignore
+    }
   };
 
   // Type-specific theme styling
@@ -588,12 +780,18 @@ export default function MotivationalPulseBanner({
 
           {/* ================= INSPIRATIONAL SPARK / PRO-TIP FOOTER ================= */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-white/5 text-xs text-slate-600 dark:text-slate-300">
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0 max-w-full flex-1">
               <Flame className="w-3.5 h-3.5 text-amber-500 shrink-0" />
               <span className="font-bold text-amber-600 dark:text-amber-400 shrink-0">Daily Spark:</span>
               <p className="truncate text-slate-700 dark:text-slate-300 font-medium">
-                "{MOTIVATIONAL_SPARKS[sparkIndex]}"
+                "{MOTIVATIONAL_SPARKS[sparkIndex].quote}"
+                <span className="text-slate-500 dark:text-slate-400 text-[11px] font-normal ml-1.5">— {MOTIVATIONAL_SPARKS[sparkIndex].author}</span>
               </p>
+              {MOTIVATIONAL_SPARKS[sparkIndex].theme && (
+                <span className="hidden lg:inline-block shrink-0 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/25 font-bold uppercase tracking-wider">
+                  {MOTIVATIONAL_SPARKS[sparkIndex].theme}
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-3 ml-auto shrink-0">
@@ -601,7 +799,7 @@ export default function MotivationalPulseBanner({
                 type="button"
                 onClick={handleCycleSpark}
                 className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
-                title="Get another motivational insight"
+                title="Cycle to another motivational insight"
               >
                 <RotateCw className="w-3 h-3" /> New Spark
               </button>

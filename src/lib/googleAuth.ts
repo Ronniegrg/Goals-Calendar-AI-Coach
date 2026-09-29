@@ -8,7 +8,21 @@ import {
   User,
   Auth
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+
+// Safe dynamic or fallback config if firebase-applet-config.json was removed
+let firebaseConfig: Record<string, any> = {};
+try {
+  // Use glob or safe check if present in build
+  const configModules = (import.meta as any).glob('../../firebase-applet-config.json', { eager: true });
+  const found = Object.values(configModules)[0] as any;
+  if (found && found.default) {
+    firebaseConfig = found.default;
+  } else if (found) {
+    firebaseConfig = found;
+  }
+} catch (e) {
+  // Config file not present
+}
 
 let app: any = null;
 export let auth: Auth | null = null;

@@ -36,23 +36,27 @@ import {
   ChevronUp,
   Eye,
   EyeOff,
-  Pause
+  Pause,
+  Shield
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
 import HabitConsistencyHeatmap from "./HabitConsistencyHeatmap";
 import EnergyScheduleAnalytics from "./EnergyScheduleAnalytics";
 import { UserEnergyProfile } from "../types";
+import { isDateShielded, getStreakShieldBank } from "../lib/streakProtection";
 
 interface ProgressDashboardProps {
   goals: Goal[];
   events: CalendarEvent[];
   onNavigateToDate?: (date: Date) => void;
   energyProfile?: UserEnergyProfile;
+  onOpenStreakShield?: () => void;
 }
 
-export default function ProgressDashboard({ goals, events, onNavigateToDate, energyProfile }: ProgressDashboardProps) {
+export default function ProgressDashboard({ goals, events, onNavigateToDate, energyProfile, onOpenStreakShield }: ProgressDashboardProps) {
   const [selectedHeatmapDay, setSelectedHeatmapDay] = useState<number | null>(null);
+  const streakBank = getStreakShieldBank();
 
   // 1. Calculate general numbers
   const completedEvents = events.filter(e => e.completed);
@@ -109,14 +113,18 @@ export default function ProgressDashboard({ goals, events, onNavigateToDate, ene
     });
 
     const goalTitles = dayEvents.map(e => e.title || "Scheduled Goal");
+    const isShielded = isDateShielded(d, streakBank);
+    const dayEffectiveCount = dayEvents.length + (isShielded ? 1 : 0);
 
     return {
       index: idx,
       date: d,
       dateStr: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
       dayOfWeek: d.toLocaleDateString("en-US", { weekday: "short" }),
-      count: dayEvents.length,
-      goalsCompleted: goalTitles,
+      count: dayEffectiveCount,
+      realCount: dayEvents.length,
+      isShielded,
+      goalsCompleted: isShielded ? [...goalTitles, "🛡️ Streak Shield Active"] : goalTitles,
     };
   });
 
@@ -343,15 +351,30 @@ export default function ProgressDashboard({ goals, events, onNavigateToDate, ene
         </div>
 
         {/* ACTIVE STREAK */}
-        <div id="metric_card_streak" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-3">
-          <div className="p-3 bg-rose-500/15 text-rose-300 rounded-xl">
-            <Flame className="w-5 h-5 animate-bounce text-rose-400" />
+        <div id="metric_card_streak" className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-xl flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-3 bg-rose-500/15 text-rose-300 rounded-xl shrink-0">
+              <Flame className="w-5 h-5 animate-bounce text-rose-400" />
+            </div>
+            <div className="select-none min-w-0">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active Streak</p>
+              <h4 id="metrics_streak_count" className="text-xl font-sans font-bold text-white leading-none">{currentStreak} Days</h4>
+              <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium truncate">Best: {maxStreak} Days Streak</p>
+            </div>
           </div>
-          <div className="select-none">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active Streak</p>
-            <h4 id="metrics_streak_count" className="text-xl font-sans font-bold text-white leading-none">{currentStreak} Days</h4>
-            <p className="text-[9px] text-slate-350 mt-1 leading-none font-medium">Best: {maxStreak} Days Streak</p>
-          </div>
+
+          {onOpenStreakShield && (
+            <button
+              type="button"
+              id="open_streak_shield_from_metrics_btn"
+              onClick={onOpenStreakShield}
+              className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[10px] font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0 shadow-xs active:scale-95"
+              title="Open Streak Shield & Buffer Bank: Use Flex Tokens or catch up on missed sessions"
+            >
+              <Shield className="w-3.5 h-3.5 text-amber-400 fill-amber-400/20" />
+              <span>{streakBank.tokens} Tokens</span>
+            </button>
+          )}
         </div>
 
         {/* CARD 3: TOP GOAL 1 OR TOTAL FOCUS HOURS */}

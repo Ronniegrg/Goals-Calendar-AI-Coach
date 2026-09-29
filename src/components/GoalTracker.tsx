@@ -27,11 +27,13 @@ import {
   ShieldCheck,
   CalendarOff,
   ArrowRight,
-  Bot
+  Bot,
+  Shield
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority, EnergyLevel, UserEnergyProfile } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
+import { getStreakShieldBank } from "../lib/streakProtection";
 import { 
   alignDailyEventsByPriority, 
   deduplicateDailyGoalEvents, 
@@ -176,6 +178,7 @@ interface GoalTrackerProps {
   energyProfile?: UserEnergyProfile;
   onOpenEnergyModal?: () => void;
   onNavigateToAiSchedule?: () => void;
+  onOpenStreakShield?: () => void;
 }
 
 export default function GoalTracker({
@@ -198,8 +201,10 @@ export default function GoalTracker({
   onResumeGoal,
   energyProfile,
   onOpenEnergyModal,
-  onNavigateToAiSchedule
+  onNavigateToAiSchedule,
+  onOpenStreakShield
 }: GoalTrackerProps) {
+  const streakBank = getStreakShieldBank();
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
@@ -1129,44 +1134,35 @@ export default function GoalTracker({
   return (
     <div className="space-y-6">
       
-      {/* 0. TOP SEGMENTED TOGGLE: GOALS TRACKER ⇄ AI CONTROLLER SCHEDULE */}
+      {/* 0. PROMINENT ACTIVE MODE INDICATOR & SWITCHER BANNER */}
       {onNavigateToAiSchedule && (
-        <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-3 rounded-2xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center p-1.5 bg-slate-950/80 rounded-xl border border-white/10 w-full sm:w-auto shadow-inner">
-            <button
-              type="button"
-              id="goals_tracker_active_pill"
-              className="flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-600/30"
-            >
-              <Layers className="w-4 h-4 text-white" />
-              <span>Goals & Constraints</span>
-              <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.5 rounded-full font-semibold">
-                {goals.length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              id="switch_to_ai_schedule_controller_btn"
-              onClick={onNavigateToAiSchedule}
-              className="flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer text-slate-400 hover:text-white hover:bg-white/5"
-            >
-              <Bot className="w-4 h-4 text-yellow-300 animate-pulse" />
-              <span>AI Schedule Controller</span>
-              <span className="text-[9px] bg-yellow-400/20 text-yellow-300 border border-yellow-400/30 px-1.5 py-0.2 rounded-full font-bold uppercase tracking-wider">
-                Autopilot
-              </span>
-            </button>
+        <div className="bg-gradient-to-r from-slate-900/95 via-indigo-950/60 to-slate-900/95 backdrop-blur-md border-2 border-indigo-500/40 p-3.5 sm:p-4 rounded-2xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/40 shrink-0">
+              <Layers className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase tracking-wider text-indigo-300">Current View</span>
+                <span className="text-[10px] font-black uppercase tracking-widest bg-indigo-600 text-white px-2 py-0.5 rounded-md shadow-xs">
+                  ● Goals & Constraints Active
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Managing <strong>{goals.length} target goals</strong>, duration limits, and scheduling rules.
+              </p>
+            </div>
           </div>
 
           <button
             type="button"
+            id="switch_to_ai_schedule_controller_btn"
             onClick={onNavigateToAiSchedule}
-            className="text-xs px-4 py-2 rounded-xl font-bold bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-300 hover:text-white transition flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center shadow-xs"
+            className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-md shadow-purple-600/30 hover:scale-[1.02] border border-white/20 shrink-0"
           >
-            <Sparkles className="w-4 h-4 text-yellow-300" />
-            <span>Launch AI Schedule Autopilot</span>
-            <ArrowRight className="w-3.5 h-3.5 text-indigo-400" />
+            <Bot className="w-4 h-4 text-yellow-300 animate-bounce" />
+            <span>Switch to AI Schedule Autopilot</span>
+            <ArrowRight className="w-3.5 h-3.5 text-white" />
           </button>
         </div>
       )}
@@ -1249,6 +1245,22 @@ export default function GoalTracker({
                 {energyProfile?.slumpProtection && (
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Slump Shield Active" />
                 )}
+              </button>
+            )}
+
+            {onOpenStreakShield && (
+              <button
+                type="button"
+                id="open_streak_shield_goal_btn"
+                onClick={onOpenStreakShield}
+                className="text-xs bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm active:scale-95"
+                title="Streak Protection & Buffer Bank: Use Flex Tokens or bank missed sessions to weekend buffers"
+              >
+                <Shield className="w-3.5 h-3.5 text-amber-400 fill-amber-400/20" />
+                <span>Streak Shield</span>
+                <span className="px-1.5 py-0.2 bg-amber-400 text-slate-950 rounded text-[9px] font-black leading-none">
+                  {streakBank.tokens}
+                </span>
               </button>
             )}
             <button

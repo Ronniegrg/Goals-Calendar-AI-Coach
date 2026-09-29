@@ -12,10 +12,12 @@ import {
   Layers,
   Activity,
   Zap,
-  Info
+  Info,
+  Shield
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
+import { isDateShielded } from "../lib/streakProtection";
 
 interface HabitConsistencyHeatmapProps {
   goals: Goal[];
@@ -209,7 +211,8 @@ export default function HabitConsistencyHeatmap({
     // Calculate longest streak and totals
     for (let i = 0; i < pastAndTodayDays.length; i++) {
       const day = pastAndTodayDays[i];
-      if (day.count > 0) {
+      const isShielded = isDateShielded(day.dateKey);
+      if (day.count > 0 || isShielded) {
         runningStreak++;
         activeDaysCount++;
         totalCompletedSessions += day.count;
@@ -225,7 +228,8 @@ export default function HabitConsistencyHeatmap({
     // Calculate current streak going backward from today
     for (let i = pastAndTodayDays.length - 1; i >= 0; i--) {
       const day = pastAndTodayDays[i];
-      if (day.count > 0) {
+      const isShielded = isDateShielded(day.dateKey);
+      if (day.count > 0 || isShielded) {
         currentStreak++;
       } else {
         // If today has 0 count yet, allow checking yesterday before breaking

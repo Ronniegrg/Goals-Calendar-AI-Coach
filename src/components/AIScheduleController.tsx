@@ -456,50 +456,47 @@ export default function AIScheduleController({
   return (
     <div className="space-y-6" id="ai_schedule_controller_view">
       
-      {/* 1. TOP SEGMENTED TOGGLE: GOALS TRACKER ⇄ AI CONTROLLER SCHEDULE */}
-      <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-3 rounded-2xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
-        
-        {/* The Core Toggle Switch */}
-        <div className="flex items-center p-1.5 bg-slate-950/80 rounded-xl border border-white/10 w-full sm:w-auto shadow-inner">
+      {/* 1. PROMINENT ACTIVE MODE INDICATOR & SWITCHER BANNER */}
+      <div className="bg-gradient-to-r from-slate-900/95 via-purple-950/60 to-slate-900/95 backdrop-blur-md border-2 border-purple-500/50 p-3.5 sm:p-4 rounded-2xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-600/40 shrink-0">
+            <Bot className="w-5 h-5 text-yellow-300 animate-bounce" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase tracking-wider text-purple-300">Current View</span>
+              <span className="text-[10px] font-black uppercase tracking-widest bg-amber-400 text-slate-950 px-2 py-0.5 rounded-md shadow-xs flex items-center gap-1 font-bold">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                AI Schedule Autopilot Active
+              </span>
+            </div>
+            <p className="text-xs text-slate-300 mt-0.5">
+              Autonomous schedule deconfliction, recovery buffers, and weekly goal quota booking engine.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 justify-end">
           <button
             type="button"
             id="toggle_to_goals_view_btn"
             onClick={onNavigateToGoals}
-            className="flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer text-slate-400 hover:text-white hover:bg-white/5"
+            className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-white/20 hover:scale-[1.02]"
           >
             <Layers className="w-4 h-4 text-indigo-400" />
-            <span>Goals & Constraints</span>
-            <span className="text-[10px] bg-white/10 text-slate-300 px-1.5 py-0.5 rounded-full font-semibold">
-              {goals.length}
-            </span>
+            <span>Switch to Goals & Constraints</span>
           </button>
 
-          <button
-            type="button"
-            id="toggle_ai_schedule_active_btn"
-            className="flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-600/30"
-          >
-            <Bot className="w-4 h-4 text-yellow-300 animate-pulse" />
-            <span>AI Schedule Controller</span>
-            <span className="text-[9px] bg-yellow-400/20 text-yellow-300 border border-yellow-400/30 px-1.5 py-0.2 rounded-full font-bold uppercase tracking-wider">
-              Autopilot
-            </span>
-          </button>
-        </div>
-
-        {/* Quick Return to Calendar Button */}
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
           <button
             type="button"
             onClick={() => onNavigateToCalendar()}
-            className="text-xs px-3.5 py-2 rounded-xl font-bold bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition flex items-center gap-2 cursor-pointer"
+            className="text-xs px-3.5 py-2.5 rounded-xl font-bold bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition flex items-center gap-2 cursor-pointer"
           >
             <Calendar className="w-4 h-4 text-indigo-400" />
             <span>View Calendar Grid</span>
             <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
           </button>
         </div>
-
       </div>
 
       {/* 2. DYNAMIC AUTOPILOT COCKPIT & LIVE SENTINEL RADAR */}
@@ -509,24 +506,55 @@ export default function AIScheduleController({
         <div className="relative z-10 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
           <div className="space-y-3 max-w-2xl">
             
-            {/* Live Sentinel Status Badge */}
-            <div className="inline-flex items-center gap-2.5 px-3.5 py-1.5 bg-slate-950/80 border border-indigo-400/30 rounded-full text-xs font-bold shadow-inner">
-              <span className="relative flex h-2.5 w-2.5">
-                {isSentinelActive && autopilotMode !== "manual" && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                )}
-                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
-                  autopilotMode === "manual" ? "bg-slate-400" : isSentinelActive ? "bg-emerald-400" : "bg-amber-400"
-                }`}></span>
-              </span>
-              
-              <span className="text-white">
-                {autopilotMode === "full_autonomous" ? "Autonomous Sentinel: Active" : autopilotMode === "copilot_sentinel" ? "Co-Pilot Sentinel: Active" : "Manual Mode: Standby"}
-              </span>
+            {/* Live Sentinel Status Badge & Master ON/OFF Switch */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="inline-flex items-center gap-2.5 px-3.5 py-1.5 bg-slate-950/80 border border-indigo-400/30 rounded-full text-xs font-bold shadow-inner">
+                <span className="relative flex h-2.5 w-2.5">
+                  {isSentinelActive && autopilotMode !== "manual" && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  )}
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
+                    autopilotMode === "manual" ? "bg-rose-400" : isSentinelActive ? "bg-emerald-400" : "bg-amber-400"
+                  }`}></span>
+                </span>
+                
+                <span className="text-white">
+                  {autopilotMode === "manual" 
+                    ? "Autopilot: OFF (Manual Only)" 
+                    : autopilotMode === "full_autonomous" 
+                    ? "Autopilot: ON (Full Self-Driving)" 
+                    : "Autopilot: ON (Co-Pilot)"}
+                </span>
 
-              <span className="text-[10px] text-indigo-300 border-l border-white/20 pl-2">
-                Pulse #{radarPulse} • {lastScanTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-              </span>
+                <span className="text-[10px] text-indigo-300 border-l border-white/20 pl-2">
+                  Pulse #{radarPulse} • {lastScanTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </span>
+              </div>
+
+              {/* Master Power Toggle Button */}
+              {autopilotMode !== "manual" ? (
+                <button
+                  type="button"
+                  id="turn_off_autopilot_master_btn"
+                  onClick={() => handleAutopilotModeChange("manual")}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                  title="Turn off automatic changes. Schedule will only update when you manually approve."
+                >
+                  <Pause className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Turn Off Autopilot</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  id="turn_on_autopilot_master_btn"
+                  onClick={() => handleAutopilotModeChange("full_autonomous")}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 animate-pulse"
+                  title="Turn on automatic schedule monitoring and collision healing."
+                >
+                  <Play className="w-3.5 h-3.5 text-emerald-400 fill-emerald-400" />
+                  <span>Turn On Autopilot</span>
+                </button>
+              )}
             </div>
 
             <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
@@ -534,18 +562,25 @@ export default function AIScheduleController({
               {autopilotMode === "full_autonomous" && (
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-bold flex items-center gap-1">
                   <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-                  <span>Hands-Free Self-Driving</span>
+                  <span>Hands-Free Active</span>
+                </span>
+              )}
+              {autopilotMode === "manual" && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-400/40 text-rose-300 font-bold flex items-center gap-1">
+                  <span>Disabled / Manual Only</span>
                 </span>
               )}
             </h2>
 
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              When in <strong className="text-emerald-400">Full Autonomous</strong> mode, AI continuously protects your schedule: it automatically deconflicts overlaps, reschedules missed sessions, and books your weekly goal targets without waiting for you to ask.
+              {autopilotMode === "manual"
+                ? "Autopilot is currently turned OFF. AI will not change, deconflict, or add sessions automatically. You have 100% manual control."
+                : "When Autopilot is turned ON, AI continuously protects your schedule: it deconflicts overlaps, reschedules missed sessions, and books weekly goals without asking."}
             </p>
 
             {/* Dynamic Autopilot Level Selector */}
             <div className="pt-1 flex flex-wrap items-center gap-2">
-              <span className="text-xs text-slate-400 font-medium">Autopilot Level:</span>
+              <span className="text-xs text-slate-400 font-medium">Mode:</span>
               
               <button
                 type="button"
@@ -581,12 +616,12 @@ export default function AIScheduleController({
                 onClick={() => handleAutopilotModeChange("manual")}
                 className={`text-xs px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
                   autopilotMode === "manual"
-                    ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
+                    ? "bg-rose-600 text-white shadow-lg shadow-rose-600/30 ring-2 ring-rose-400/50"
                     : "bg-slate-950/70 text-slate-300 hover:text-white border border-white/10"
                 }`}
               >
-                <SlidersHorizontal className="w-3.5 h-3.5 text-slate-300" />
-                <span>✋ Manual Review</span>
+                <Pause className="w-3.5 h-3.5 text-rose-300" />
+                <span>🛑 Turn OFF (Manual Review)</span>
               </button>
             </div>
           </div>

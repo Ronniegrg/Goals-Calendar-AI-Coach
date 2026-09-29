@@ -95,6 +95,8 @@ export interface CalendarEvent {
   energyLevel?: EnergyLevel;
   subSteps?: SessionSubStep[];
   subtasks?: SubTask[];
+  isBufferCatchUp?: boolean;
+  isShielded?: boolean;
 }
 
 export interface AvailabilityWindow {
@@ -228,5 +230,23 @@ export interface AutopilotLogEntry {
   description: string;
   badge: string;
   affectedCount: number;
+}
+
+export interface StreakBankRecord {
+  id: string;
+  timestamp: string;
+  type: "freeze_used" | "weekend_catchup" | "token_earned" | "token_gifted";
+  goalName?: string;
+  dateStr: string; // e.g. "2026-09-28"
+  description: string;
+}
+
+export interface StreakShieldBank {
+  tokens: number;           // Current available Flex Tokens (0..maxTokens)
+  maxTokens: number;        // Capacity (e.g. 4)
+  totalRescued: number;     // Total saved streaks
+  frozenDates: string[];    // "YYYY-MM-DD" dates protected by streak freeze
+  lastEarnedWeek?: string;  // e.g. "2026-W39" to limit to 1-2 bonus tokens per week
+  history: StreakBankRecord[];
 }
 

@@ -33,6 +33,7 @@ import EnergyProfileModal from "./components/EnergyProfileModal";
 import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
+import { StreakShieldModal } from "./components/StreakShieldModal";
 import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
@@ -44,8 +45,27 @@ import {
 import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProfile";
 
 export default function App() {
-  // Navigation State
-  const [activeTab, setActiveTab] = useState<"calendar" | "goals" | "dashboard" | "coach" | "notifications" | "ai-schedule">("calendar");
+  // Navigation State with persistent last-selected tab memory
+  const [activeTab, setActiveTabState] = useState<"calendar" | "goals" | "dashboard" | "coach" | "notifications" | "ai-schedule">(() => {
+    try {
+      const saved = localStorage.getItem("app_active_tab");
+      if (saved && ["calendar", "goals", "dashboard", "coach", "notifications", "ai-schedule"].includes(saved)) {
+        return saved as any;
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    return "calendar";
+  });
+
+  const setActiveTab = (tab: "calendar" | "goals" | "dashboard" | "coach" | "notifications" | "ai-schedule") => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem("app_active_tab", tab);
+    } catch (e) {
+      /* ignore */
+    }
+  };
 
   // Sync state & user credentials
   const [userEmail, setUserEmail] = useState("rounigorgees@gmail.com");
@@ -127,6 +147,7 @@ export default function App() {
     return DEFAULT_USER_ENERGY_PROFILE;
   });
   const [showEnergyModal, setShowEnergyModal] = useState<boolean>(false);
+  const [showStreakShieldModal, setShowStreakShieldModal] = useState<boolean>(false);
 
   // Auto Dark/Light Theme State Engine (Default: Auto Mode)
   const [themeMode, setThemeMode] = useState<"auto" | "dark" | "light">(() => {
@@ -2270,103 +2291,144 @@ export default function App() {
       </div>
 
       {/* DASHBOARD TAB NAVIGATION BAR */}
-      <div className="hidden md:block bg-white/90 dark:bg-[#0a0c14]/75 backdrop-blur-md border-b border-slate-200 dark:border-white/10 sticky top-0 z-40 shadow-xs" id="dash_navigation_row">
+      <div className="hidden md:block bg-white/95 dark:bg-[#0a0c14]/90 backdrop-blur-md border-b border-slate-200 dark:border-white/10 sticky top-0 z-40 shadow-xs" id="dash_navigation_row">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex space-x-1.5 py-3 overflow-x-auto scrollbar-none">
-            
-            {/* TABS LIST */}
-            <button
-              id="tab_trigger_calendar"
-              onClick={() => setActiveTab("calendar")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
-                activeTab === "calendar"
-                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
-              }`}
-            >
-              <CalendarIcon className="w-4 h-4" />
-              Schedule Grid
-            </button>
+          <nav aria-label="Main Navigation" className="flex items-center justify-between gap-3 py-2.5">
+            <div className="flex space-x-2 overflow-x-auto scrollbar-none items-center py-1 px-1 -my-1 -mx-1 w-full">
+              
+              {/* TAB 1: SCHEDULE GRID */}
+              <button
+                id="tab_trigger_calendar"
+                onClick={() => setActiveTab("calendar")}
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                  activeTab === "calendar"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
+                }`}
+              >
+                <CalendarIcon className="w-4 h-4 shrink-0" />
+                <span>Schedule Grid</span>
+                {activeTab === "calendar" && (
+                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
+                    Active
+                  </span>
+                )}
+              </button>
 
-            {/* GOALS ⇄ AI CONTROLLER SCHEDULE SEGMENTED TOGGLE */}
-            <div className="flex items-center bg-slate-100 dark:bg-white/5 p-1 rounded-xl border border-slate-200 dark:border-white/10 shrink-0 gap-1">
+              {/* TAB 2: GOALS TRACKER */}
               <button
                 id="tab_trigger_goals"
                 onClick={() => setActiveTab("goals")}
-                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 cursor-pointer ${
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
                   activeTab === "goals"
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
-                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/50"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
                 }`}
                 title="Manage goals, milestones, and constraints"
               >
-                <Layers className="w-3.5 h-3.5" />
+                <Layers className={`w-4 h-4 shrink-0 ${activeTab === "goals" ? "text-white" : "text-indigo-400"}`} />
                 <span>Goals</span>
+                {activeTab === "goals" ? (
+                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none shadow-xs">
+                    Active
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded-full leading-none">
+                    {goals.length}
+                  </span>
+                )}
               </button>
 
+              {/* TAB 3: AI SCHEDULE AUTOPILOT */}
               <button
                 id="tab_trigger_ai_schedule"
                 onClick={() => setActiveTab("ai-schedule")}
-                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 cursor-pointer ${
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
                   activeTab === "ai-schedule"
-                    ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-500/20"
-                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                    ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-pink-600 text-white shadow-md shadow-purple-600/30 ring-2 ring-purple-400/60"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
                 }`}
                 title="Autonomous AI Schedule Controller & Deconflictor"
               >
-                <Bot className="w-3.5 h-3.5 text-yellow-300 animate-pulse" />
+                <Bot className={`w-4 h-4 shrink-0 ${activeTab === "ai-schedule" ? "text-yellow-300" : "text-yellow-400"}`} />
                 <span>AI Schedule</span>
-                <span className="text-[9px] bg-yellow-400/25 text-yellow-500 dark:text-yellow-300 px-1.5 py-0.2 rounded-full font-bold">
+                <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider leading-none transition-all ${
+                  activeTab === "ai-schedule"
+                    ? "bg-amber-400 text-slate-950 shadow-xs"
+                    : "bg-amber-400/20 text-amber-600 dark:text-yellow-300 border border-amber-400/30"
+                }`}>
                   Autopilot
                 </span>
+                {activeTab === "ai-schedule" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" title="Autopilot Sentinel Active" />
+                )}
               </button>
+
+              {/* TAB 4: PROGRESS METRICS */}
+              <button
+                id="tab_trigger_dashboard"
+                onClick={() => setActiveTab("dashboard")}
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                  activeTab === "dashboard"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
+                }`}
+              >
+                <Sparkles className="w-4 h-4 shrink-0" />
+                <span>Progress Metrics</span>
+                {activeTab === "dashboard" && (
+                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
+                    Active
+                  </span>
+                )}
+              </button>
+
+              {/* TAB 5: AI ROUTINE COACH */}
+              <button
+                id="tab_trigger_coach"
+                onClick={() => setActiveTab("coach")}
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                  activeTab === "coach"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
+                }`}
+              >
+                <Bot className="w-4 h-4 shrink-0" />
+                <span>AI Routine Coach</span>
+                {activeTab === "coach" && (
+                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
+                    Active
+                  </span>
+                )}
+              </button>
+
+              {/* TAB 6: ALERTS */}
+              <button
+                id="tab_trigger_notifications"
+                onClick={() => setActiveTab("notifications")}
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                  activeTab === "notifications"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
+                }`}
+              >
+                <Bell className="w-4 h-4 shrink-0" />
+                <span>Alert Logs</span>
+                {activeTab === "notifications" ? (
+                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
+                    Active
+                  </span>
+                ) : (
+                  notifications.filter(n => !n.read).length > 0 && (
+                    <span className="bg-pink-500 text-white rounded-full text-[9px] font-black px-1.5 py-0.5 leading-none shadow-xs animate-pulse">
+                      {notifications.filter(n => !n.read).length}
+                    </span>
+                  )
+                )}
+              </button>
+
             </div>
-
-            <button
-              id="tab_trigger_dashboard"
-              onClick={() => setActiveTab("dashboard")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
-                activeTab === "dashboard"
-                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
-              }`}
-            >
-              <Sparkles className="w-4 h-4" />
-              Progress Metrics
-            </button>
-
-            <button
-              id="tab_trigger_coach"
-              onClick={() => setActiveTab("coach")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 cursor-pointer ${
-                activeTab === "coach"
-                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
-              }`}
-            >
-              <Bot className="w-4 h-4" />
-              AI Routine Coach
-            </button>
-
-            <button
-              id="tab_trigger_notifications"
-              onClick={() => setActiveTab("notifications")}
-              className={`text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 shrink-0 relative cursor-pointer ${
-                activeTab === "notifications"
-                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-                  : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
-              }`}
-            >
-              <Bell className="w-4 h-4" />
-              Alert Logs
-              {notifications.filter(n => !n.read).length > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-pink-500 text-white rounded-full text-[9px] font-bold leading-5 text-center shadow-sm animate-pulse">
-                  {notifications.filter(n => !n.read).length}
-                </span>
-              )}
-            </button>
-
-          </div>
+          </nav>
         </div>
       </div>
 
@@ -2431,6 +2493,7 @@ export default function App() {
               onOpenEnergyModal={() => setShowEnergyModal(true)}
               userEmail="rounigorgees@gmail.com"
               onClearExternalEvents={handleClearExternalEvents}
+              onOpenStreakShield={() => setShowStreakShieldModal(true)}
             />
           </div>
         )}
@@ -2465,6 +2528,7 @@ export default function App() {
             energyProfile={energyProfile}
             onOpenEnergyModal={() => setShowEnergyModal(true)}
             onNavigateToAiSchedule={() => setActiveTab("ai-schedule")}
+            onOpenStreakShield={() => setShowStreakShieldModal(true)}
           />
         )}
 
@@ -2510,6 +2574,7 @@ export default function App() {
               }
               setActiveTab("calendar");
             }}
+            onOpenStreakShield={() => setShowStreakShieldModal(true)}
           />
         )}
 
@@ -2608,28 +2673,40 @@ export default function App() {
 
         <button
           id="tab_trigger_goals_mobile"
-          onClick={() => {
-            if (activeTab === "goals") {
-              setActiveTab("ai-schedule");
-            } else {
-              setActiveTab("goals");
-            }
-          }}
+          onClick={() => setActiveTab("goals")}
           className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
-            activeTab === "goals" || activeTab === "ai-schedule"
+            activeTab === "goals"
               ? "text-indigo-400 font-bold scale-105"
               : "text-slate-400 hover:text-slate-200"
           }`}
-          title="Toggle between Goals and AI Schedule Controller"
+          title="Goals & Constraints"
         >
-          {activeTab === "ai-schedule" ? (
-            <Bot className="w-5 h-5 text-yellow-300 animate-pulse" />
-          ) : (
+          <div className="relative">
             <Layers className="w-5 h-5" />
-          )}
-          <span className="text-[10px] tracking-wide font-medium">
-            {activeTab === "ai-schedule" ? "AI Sched" : "Goals"}
-          </span>
+            {activeTab === "goals" && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+            )}
+          </div>
+          <span className="text-[10px] tracking-wide font-medium">Goals</span>
+        </button>
+
+        <button
+          id="tab_trigger_ai_schedule_mobile"
+          onClick={() => setActiveTab("ai-schedule")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+            activeTab === "ai-schedule"
+              ? "text-purple-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+          title="AI Schedule Autopilot Controller"
+        >
+          <div className="relative">
+            <Bot className={`w-5 h-5 ${activeTab === "ai-schedule" ? "text-yellow-300 animate-bounce" : "text-yellow-400/80"}`} />
+            {activeTab === "ai-schedule" && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            )}
+          </div>
+          <span className="text-[10px] tracking-wide font-medium">Autopilot</span>
         </button>
 
         <button
@@ -2714,6 +2791,23 @@ export default function App() {
               `⚡ Active Chronotype set to ${newProfile.chronotype.toUpperCase()}${feedback}. Calendar dynamically optimized!`,
               "success"
             );
+          }}
+        />
+      )}
+
+      {/* Streak Shield & Emergency Buffer Bank Modal */}
+      {showStreakShieldModal && (
+        <StreakShieldModal
+          isOpen={showStreakShieldModal}
+          onClose={() => setShowStreakShieldModal(false)}
+          events={events}
+          goals={goals}
+          onUpdateEvents={(updatedEvts) => {
+            setEvents(updatedEvts);
+            syncToCloud(goals, updatedEvts, availability, notifications, coachMessages);
+          }}
+          onNotify={(title, message, type) => {
+            triggerSystemNotification(title, message, type);
           }}
         />
       )}

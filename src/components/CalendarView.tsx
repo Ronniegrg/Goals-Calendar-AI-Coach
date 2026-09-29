@@ -49,7 +49,8 @@ import {
   BatteryCharging,
   Flame,
   ShieldAlert,
-  Filter
+  Filter,
+  Shield
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -123,6 +124,7 @@ interface CalendarViewProps {
   onOpenEnergyModal?: () => void;
   userEmail?: string;
   onClearExternalEvents?: () => void;
+  onOpenStreakShield?: () => void;
 }
 
 export default function CalendarView({
@@ -145,7 +147,8 @@ export default function CalendarView({
   energyProfile = DEFAULT_USER_ENERGY_PROFILE,
   onOpenEnergyModal,
   userEmail = "rounigorgees@gmail.com",
-  onClearExternalEvents
+  onClearExternalEvents,
+  onOpenStreakShield
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -3387,6 +3390,20 @@ export default function CalendarView({
               <span>{restDayActive ? "Rest Day Active" : "Rest Day"}</span>
             </button>
 
+            {/* Streak Shield & Buffer Bank Quick Access */}
+            {onOpenStreakShield && (
+              <button
+                id="open_streak_shield_cal_btn"
+                type="button"
+                onClick={onOpenStreakShield}
+                className="p-1.5 sm:px-2.5 sm:py-1.5 border border-amber-300/80 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/15 hover:bg-amber-100 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95"
+                title="Streak Shield & Emergency Buffer Bank: Spend Flex Tokens or move missed sessions to weekend buffers"
+              >
+                <Shield className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 fill-amber-500/20" />
+                <span>Streak Bank</span>
+              </button>
+            )}
+
             {/* Delay Today Quick Trigger */}
             <div ref={delayTodayRef} className="relative z-50 shrink-0">
               <button
@@ -4135,6 +4152,11 @@ export default function CalendarView({
                             {spotlightEventId === evt.id && (
                               <span className="text-[7.5px] bg-amber-500 text-slate-950 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5">
                                 <Compass className="w-2 h-2" /> TARGET
+                              </span>
+                            )}
+                            {(evt.isBufferCatchUp || evt.title?.includes("[Buffer Catch-Up]")) && (
+                              <span className="text-[7.5px] bg-indigo-500/20 text-indigo-300 border border-indigo-400/40 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5" title="Rescheduled Catch-Up Session">
+                                <Shield className="w-2 h-2 text-indigo-400" /> CATCH-UP
                               </span>
                             )}
                           </div>

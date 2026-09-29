@@ -841,5 +841,73 @@ html:not(.light-theme) .coach-high-contrast .coach-action-card .coach-action-gri
   color: #ffffff !important;
 }
 
+/* ==========================================================================
+   NAVIGATION SEGMENTED TAB MODE HIGHLIGHTS (Goals ⇄ AI Schedule Autopilot)
+   Guarantees high visibility, high contrast, and crisp active-state feedback
+   ========================================================================== */
+
+/* Active Goals Mode button */
+.nav-mode-btn-active-goals {
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 10px rgba(79, 70, 229, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+.nav-mode-btn-active-goals * {
+  color: #ffffff !important;
+}
+
+/* Active AI Schedule Autopilot button */
+.nav-mode-btn-active-autopilot {
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #9333ea 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 14px rgba(124, 58, 237, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+  border: 1px solid rgba(245, 158, 11, 0.4) !important;
+}
+.nav-mode-btn-active-autopilot * {
+  color: #ffffff !important;
+}
+
+/* Inactive button in segmented mode container */
+.nav-mode-btn-inactive {
+  background: transparent !important;
+  color: #64748b !important;
+}
+html.dark .nav-mode-btn-inactive,
+html.dark-theme .nav-mode-btn-inactive,
+html:not(.light-theme) .nav-mode-btn-inactive {
+  color: #94a3b8 !important;
+}
+.nav-mode-btn-inactive:hover {
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #0f172a !important;
+}
+html.dark .nav-mode-btn-inactive:hover,
+html.dark-theme .nav-mode-btn-inactive:hover,
+html:not(.light-theme) .nav-mode-btn-inactive:hover {
+  color: #f8fafc !important;
+}
+
+/* Segmented container wrapper highlight */
+.nav-mode-segmented-container {
+  background-color: #f1f5f9;
+  border: 1.5px solid #cbd5e1;
+}
+html.dark .nav-mode-segmented-container,
+html.dark-theme .nav-mode-segmented-container,
+html:not(.light-theme) .nav-mode-segmented-container {
+  background-color: rgba(15, 23, 42, 0.85);
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+}
+.nav-mode-segmented-container.in-goals-mode {
+  border-color: rgba(99, 102, 241, 0.5) !important;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25) !important;
+}
+.nav-mode-segmented-container.in-autopilot-mode {
+  border-color: rgba(168, 85, 247, 0.6) !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3), 0 0 12px rgba(168, 85, 247, 0.2) !important;
+}
+
+
 
 

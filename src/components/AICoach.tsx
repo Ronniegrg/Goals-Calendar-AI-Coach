@@ -287,6 +287,7 @@ interface AICoachProps {
   onDeleteGoal?: (goalId: string) => void;
   userEnergyProfile?: UserEnergyProfile;
   onBulkAddEvents?: (newEvents: CalendarEvent[]) => void;
+  onUpdateEvents?: (events: CalendarEvent[]) => void;
   onAddNotification?: (title: string, message: string, type: any) => void;
 }
 
