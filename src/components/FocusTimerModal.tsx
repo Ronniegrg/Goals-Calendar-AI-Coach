@@ -764,26 +764,34 @@ export default function FocusTimerModal({
 
     const handleGlobalFinish = () => {
       unlockAudioEngine();
+      let finishedData: { eventId?: string; goalId?: string; note?: string; title: string } | null = null;
       setTimerState((prev) => {
         if (!prev) return null;
-        triggerCompletionBell(prev.title);
-        if (onCompleteRef.current) {
-          onCompleteRef.current(prev.eventId, prev.goalId, prev.sessionTakeawayNote?.trim() || undefined);
-        }
+        finishedData = {
+          eventId: prev.eventId,
+          goalId: prev.goalId,
+          note: prev.sessionTakeawayNote?.trim() || undefined,
+          title: prev.title
+        };
         clearSavedProgress(prev.goalId, prev.eventId, prev.title);
-        try {
-          window.dispatchEvent(new CustomEvent("focus_session_completed", {
-            detail: {
-              eventId: prev.eventId,
-              goalId: prev.goalId,
-              title: prev.title,
-              note: prev.sessionTakeawayNote
-            }
-          }));
-        } catch {}
         localStorage.removeItem(STORAGE_KEY);
         return null;
       });
+
+      if (finishedData) {
+        const data = finishedData;
+        triggerCompletionBell(data.title);
+        queueMicrotask(() => {
+          if (onCompleteRef.current) {
+            onCompleteRef.current(data.eventId, data.goalId, data.note);
+          }
+          try {
+            window.dispatchEvent(new CustomEvent("focus_session_completed", {
+              detail: data
+            }));
+          } catch {}
+        });
+      }
     };
 
     const handleGlobalUpdateSubsteps = (e: any) => {
@@ -1071,19 +1079,21 @@ export default function FocusTimerModal({
 
       if (isTimerCompleted) {
         triggerCompletionBell(finishedTitle);
-        if (onCompleteRef.current) {
-          onCompleteRef.current(completedEventId, completedGoalId, completedNote);
-        }
-        try {
-          window.dispatchEvent(new CustomEvent("focus_session_completed", {
-            detail: {
-              eventId: completedEventId,
-              goalId: completedGoalId,
-              title: finishedTitle,
-              note: completedNote
-            }
-          }));
-        } catch {}
+        queueMicrotask(() => {
+          if (onCompleteRef.current) {
+            onCompleteRef.current(completedEventId, completedGoalId, completedNote);
+          }
+          try {
+            window.dispatchEvent(new CustomEvent("focus_session_completed", {
+              detail: {
+                eventId: completedEventId,
+                goalId: completedGoalId,
+                title: finishedTitle,
+                note: completedNote
+              }
+            }));
+          } catch {}
+        });
       }
     }, 1000);
 
@@ -1106,8 +1116,13 @@ export default function FocusTimerModal({
 
   const handleAdjustMinutes = (deltaMins: number) => {
     unlockAudioEngine();
-    if (timerState.eventId && onExtendRef.current) {
-      onExtendRef.current(timerState.eventId, deltaMins);
+    const eventId = timerState.eventId;
+    if (eventId) {
+      queueMicrotask(() => {
+        if (onExtendRef.current) {
+          onExtendRef.current(eventId, deltaMins);
+        }
+      });
     }
 
     updateTimerState((prev) => {
@@ -1216,31 +1231,45 @@ export default function FocusTimerModal({
       return;
     }
 
-    if (timerState.sessionTakeawayNote.trim()) {
-      onCompleteRef.current(timerState.eventId, timerState.goalId, timerState.sessionTakeawayNote.trim());
-    }
+    const note = timerState.sessionTakeawayNote.trim();
+    const eventId = timerState.eventId;
+    const goalId = timerState.goalId;
+
     clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
     updateTimerState(() => null);
     if (propOnClose) propOnClose();
+
+    if (note) {
+      queueMicrotask(() => {
+        if (onCompleteRef.current) {
+          onCompleteRef.current(eventId, goalId, note);
+        }
+      });
+    }
   };
 
   const handleFinishAndComplete = () => {
     unlockAudioEngine();
     triggerCompletionBell(timerState.title);
-    onCompleteRef.current(timerState.eventId, timerState.goalId, timerState.sessionTakeawayNote.trim() || undefined);
+    const eventId = timerState.eventId;
+    const goalId = timerState.goalId;
+    const note = timerState.sessionTakeawayNote.trim() || undefined;
+    const title = timerState.title;
+
     clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
-    try {
-      window.dispatchEvent(new CustomEvent("focus_session_completed", {
-        detail: {
-          eventId: timerState.eventId,
-          goalId: timerState.goalId,
-          title: timerState.title,
-          note: timerState.sessionTakeawayNote.trim() || undefined
-        }
-      }));
-    } catch {}
     updateTimerState(() => null);
     if (propOnClose) propOnClose();
+
+    queueMicrotask(() => {
+      if (onCompleteRef.current) {
+        onCompleteRef.current(eventId, goalId, note);
+      }
+      try {
+        window.dispatchEvent(new CustomEvent("focus_session_completed", {
+          detail: { eventId, goalId, title, note }
+        }));
+      } catch {}
+    });
   };
 
   // Jump to specific sub-step

@@ -1329,21 +1329,18 @@ export default function App() {
 
   // Timer Session Completion & Extension Handlers
   const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
-    let syncTargetEvents: CalendarEvent[] = [];
-    let syncTargetGoals: Goal[] = [];
-
-    setEvents(prevEvents => {
+    queueMicrotask(() => {
       let targetGoal = goalId ? goals.find(item => item.id === goalId) : undefined;
       let targetEvt: CalendarEvent | undefined;
 
       if (eventId) {
-        targetEvt = prevEvents.find(e => e.id === eventId);
+        targetEvt = events.find(e => e.id === eventId);
       }
 
       const todayStr = new Date().toDateString();
 
       if (!targetEvt && targetGoal) {
-        targetEvt = prevEvents.find(e => 
+        targetEvt = events.find(e => 
           !e.completed && 
           (e.goalId === targetGoal!.id || (e.title && targetGoal!.name && e.title.toLowerCase().includes(targetGoal!.name.toLowerCase()))) &&
           new Date(e.start).toDateString() === todayStr
@@ -1357,15 +1354,13 @@ export default function App() {
         );
       }
 
-      let nextEvents = [...prevEvents];
-      let nextGoals = [...goals];
+      let nextEvents = [...events];
       let shouldIncrementGoalCount = false;
-
       const trimmedNote = note && note.trim() ? note.trim() : "";
 
       if (targetEvt) {
         const wasCompleted = targetEvt.completed;
-        nextEvents = prevEvents.map(evt => {
+        nextEvents = events.map(evt => {
           if (evt.id === targetEvt!.id) {
             return {
               ...evt,
@@ -1394,12 +1389,13 @@ export default function App() {
           goalId: targetGoal.id,
           completionNote: trimmedNote || undefined
         };
-        nextEvents = [newEvt, ...prevEvents];
+        nextEvents = [newEvt, ...events];
         shouldIncrementGoalCount = true;
       }
 
+      let nextGoals = [...goals];
       if (targetGoal) {
-        nextGoals = nextGoals.map(g => {
+        nextGoals = goals.map(g => {
           if (g.id === targetGoal!.id) {
             return {
               ...g,
@@ -1410,9 +1406,10 @@ export default function App() {
           }
           return g;
         });
+        setGoals(nextGoals);
       }
 
-      setGoals(nextGoals);
+      setEvents(nextEvents);
 
       const displayTitle = targetGoal ? targetGoal.name : (targetEvt ? targetEvt.title : "Focus Session");
       triggerSystemNotification(
@@ -1421,23 +1418,21 @@ export default function App() {
         "success"
       );
 
-      syncTargetEvents = nextEvents;
-      syncTargetGoals = nextGoals;
-      return nextEvents;
+      setTimeout(() => {
+        syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+      }, 50);
     });
-
-    setTimeout(() => {
-      syncToCloud(syncTargetGoals, syncTargetEvents, availability, notifications, coachMessages);
-    }, 50);
   };
 
   const handleExtendEventDuration = (eventId: string, deltaMins: number) => {
-    const evt = events.find(e => e.id === eventId);
-    if (evt) {
-      const currentEnd = new Date(evt.end);
-      currentEnd.setMinutes(currentEnd.getMinutes() + deltaMins);
-      handleEditEvent(eventId, { end: currentEnd.toISOString() });
-    }
+    queueMicrotask(() => {
+      const evt = events.find(e => e.id === eventId);
+      if (evt) {
+        const currentEnd = new Date(evt.end);
+        currentEnd.setMinutes(currentEnd.getMinutes() + deltaMins);
+        handleEditEvent(eventId, { end: currentEnd.toISOString() });
+      }
+    });
   };
 
   // Handle Reset & Clean Regenerate Calendar

@@ -4403,6 +4403,21 @@ export default function CalendarView({
                                     >
                                       +1w
                                     </button>
+                                    {new Date(evt.start).getTime() > Date.now() && (
+                                      <button
+                                        type="button"
+                                        id={`cal_event_pull_today_${evt.id}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCascadingDelayEvent(evt, "now", "Now (Pulled to Today)");
+                                        }}
+                                        className="col-span-2 py-1 px-1 rounded text-[8.5px] font-bold font-mono transition text-center cursor-pointer bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:hover:bg-emerald-500/40 text-emerald-800 dark:text-emerald-200 border border-emerald-300/60 dark:border-emerald-400/30 flex items-center justify-center gap-1"
+                                        title="Pull this upcoming session to Today and start now"
+                                      >
+                                        <Zap className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400" />
+                                        <span>Pull to Today</span>
+                                      </button>
+                                    )}
                                   </div>
                                 </>
                               )}
@@ -4638,6 +4653,21 @@ export default function CalendarView({
                                       >
                                         +1w
                                       </button>
+                                      {new Date(evt.start).getTime() > Date.now() && (
+                                        <button
+                                          type="button"
+                                          id={`cal_day_pull_today_${evt.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleCascadingDelayEvent(evt, "now", "Now (Pulled to Today)");
+                                          }}
+                                          className="py-1 px-1.5 rounded text-[9px] font-bold font-mono transition text-center cursor-pointer bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:hover:bg-emerald-500/40 text-emerald-800 dark:text-emerald-200 border border-emerald-300/60 dark:border-emerald-400/30 flex items-center gap-0.5"
+                                          title="Pull this upcoming session to Today and start now"
+                                        >
+                                          <Zap className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400" />
+                                          <span>Pull to Today</span>
+                                        </button>
+                                      )}
                                     </div>
                                   </div>
                                 )}

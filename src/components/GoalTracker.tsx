@@ -2357,6 +2357,31 @@ export default function GoalTracker({
                                       +1w
                                     </button>
 
+                                    {nextSession && nextSession.date.getTime() > Date.now() && (
+                                      <button
+                                        type="button"
+                                        id={`study_ahead_goal_btn_${g.id}`}
+                                        onClick={() => {
+                                          triggerFocusTimer({
+                                            title: g.name,
+                                            duration: g.durationMinutes || 45,
+                                            goalId: g.id,
+                                            category: g.category,
+                                            color: g.color || "#6366f1",
+                                            previousSessionNote: g.lastSessionNote,
+                                            subSteps: g.subSteps,
+                                            autoStart: true,
+                                            openModal: false
+                                          });
+                                        }}
+                                        className="bg-emerald-100 dark:bg-emerald-500/20 hover:bg-emerald-200 dark:hover:bg-emerald-500/35 text-emerald-900 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/40 px-2 py-0.5 rounded font-bold text-[11px] transition cursor-pointer active:scale-95 shadow-2xs flex items-center gap-1"
+                                        title="Start studying this upcoming goal right now ahead of schedule"
+                                      >
+                                        <Zap className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                                        <span>Study Ahead</span>
+                                      </button>
+                                    )}
+
                                     {onNavigateToCalendar && nextSession && (
                                       <button
                                         type="button"

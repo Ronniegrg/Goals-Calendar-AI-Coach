@@ -21,7 +21,8 @@ import {
   Sliders,
   Timer,
   Trash2,
-  Hourglass
+  Hourglass,
+  Layers
 } from "lucide-react";
 import { CalendarEvent, Goal, SubTask, SessionSubStep } from "../types";
 import { 
@@ -156,19 +157,61 @@ export default function ActiveExecutionHUD({
     return { currentEvent: null, matchedGoal: undefined, nextEvent: null };
   }, [events, goals, tickerNow]);
 
+  // Tomorrow's upcoming sessions for the "Study Ahead" feature
+  const { allTodayCompleted, tomorrowEvents, nextTomorrowEvent, matchedTomorrowGoal } = useMemo(() => {
+    const nowObj = new Date(tickerNow);
+    const todayStr = nowObj.toDateString();
+
+    const tomorrowObj = new Date(nowObj);
+    tomorrowObj.setDate(nowObj.getDate() + 1);
+    const tomorrowStr = tomorrowObj.toDateString();
+
+    const todayEvents = events.filter(e => new Date(e.start).toDateString() === todayStr);
+    const allTodayCompleted = todayEvents.length > 0 && todayEvents.every(e => e.completed);
+
+    const tomorrowEvts = events
+      .filter(e => new Date(e.start).toDateString() === tomorrowStr && !e.completed)
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    const nextTomorrow = tomorrowEvts[0] || null;
+    const tomorrowGoal = nextTomorrow?.goalId ? goals.find(g => g.id === nextTomorrow.goalId) : undefined;
+
+    return {
+      allTodayCompleted,
+      tomorrowEvents: tomorrowEvts,
+      nextTomorrowEvent: nextTomorrow,
+      matchedTomorrowGoal: tomorrowGoal
+    };
+  }, [events, goals, tickerNow]);
+
+  const [selectedTomorrowEventId, setSelectedTomorrowEventId] = useState<string | null>(null);
+  const [showTomorrowPicker, setShowTomorrowPicker] = useState(false);
+
+  const activeTomorrowEvent = selectedTomorrowEventId
+    ? (tomorrowEvents.find(e => e.id === selectedTomorrowEventId) || nextTomorrowEvent)
+    : nextTomorrowEvent;
+  const activeTomorrowGoal = activeTomorrowEvent?.goalId
+    ? goals.find(g => g.id === activeTomorrowEvent.goalId)
+    : matchedTomorrowGoal;
+
+  // Study Ahead mode triggers when user has no active timer and no remaining uncompleted events today, but has tomorrow events!
+  const isStudyAheadMode = Boolean(!activeTimer && !currentEvent && activeTomorrowEvent);
+  const effectiveEvent = currentEvent || (isStudyAheadMode ? activeTomorrowEvent : null);
+  const effectiveGoal = matchedGoal || (isStudyAheadMode ? activeTomorrowGoal : undefined);
+
   // Compute total planned duration of this study session in minutes
   const totalSessionMinutes = useMemo(() => {
     if (activeTimer) {
       return Math.max(1, Math.round(activeTimer.totalSec / 60));
     }
-    if (currentEvent) {
-      return Math.max(15, Math.round((new Date(currentEvent.end).getTime() - new Date(currentEvent.start).getTime()) / 60000));
+    if (effectiveEvent) {
+      return Math.max(15, Math.round((new Date(effectiveEvent.end).getTime() - new Date(effectiveEvent.start).getTime()) / 60000));
     }
-    if (matchedGoal?.durationMinutes) {
-      return matchedGoal.durationMinutes;
+    if (effectiveGoal?.durationMinutes) {
+      return effectiveGoal.durationMinutes;
     }
     return 45;
-  }, [activeTimer, currentEvent, matchedGoal]);
+  }, [activeTimer, effectiveEvent, effectiveGoal]);
 
   // Subtasks logic (merging active timer subtasks, event subtasks, or goal subtasks)
   const activeSubtasks: SubTask[] = useMemo(() => {
@@ -180,14 +223,14 @@ export default function ActiveExecutionHUD({
         completed: s.completed || false
       }));
     }
-    if (currentEvent?.subtasks && currentEvent.subtasks.length > 0) {
-      return currentEvent.subtasks;
+    if (effectiveEvent?.subtasks && effectiveEvent.subtasks.length > 0) {
+      return effectiveEvent.subtasks;
     }
-    if (matchedGoal?.subtasks && matchedGoal.subtasks.length > 0) {
-      return matchedGoal.subtasks;
+    if (effectiveGoal?.subtasks && effectiveGoal.subtasks.length > 0) {
+      return effectiveGoal.subtasks;
     }
-    if (matchedGoal?.subSteps && matchedGoal.subSteps.length > 0) {
-      return matchedGoal.subSteps.map(s => ({
+    if (effectiveGoal?.subSteps && effectiveGoal.subSteps.length > 0) {
+      return effectiveGoal.subSteps.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes,
@@ -195,7 +238,7 @@ export default function ActiveExecutionHUD({
       }));
     }
     return [];
-  }, [activeTimer, currentEvent, matchedGoal]);
+  }, [activeTimer, effectiveEvent, effectiveGoal]);
 
   const completedSubtasksCount = activeSubtasks.filter(t => t.completed).length;
 
@@ -314,16 +357,16 @@ export default function ActiveExecutionHUD({
   };
 
   // User Actions for Timer:
-  const handleStartStudying = (overrideGoal?: Goal) => {
-    const g = overrideGoal || matchedGoal;
-    const evt = currentEvent;
+  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent) => {
+    const g = overrideGoal || effectiveGoal;
+    const evt = overrideEvent || effectiveEvent;
 
-    const title = g?.name || evt?.title || "Focus Study Session";
-    const duration = g?.durationMinutes || (evt ? Math.max(15, Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)) : 45);
+    const title = evt?.title || g?.name || "Focus Study Session";
+    const duration = evt ? Math.max(15, Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)) : (g?.durationMinutes || 45);
 
     // Convert active subtasks to sessionSubSteps with their duration
     const subStepsToPass: SessionSubStep[] | undefined = activeSubtasks.length > 0 
-      ? activeSubtasks.map((t, idx) => ({
+      ? activeSubtasks.map((t) => ({
           id: t.id,
           title: t.title,
           durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
@@ -344,6 +387,26 @@ export default function ActiveExecutionHUD({
       openModal: false
     });
     setShowGoalPicker(false);
+    setShowTomorrowPicker(false);
+  };
+
+  const handlePullTomorrowEventToToday = (evt: CalendarEvent) => {
+    if (!onEditEvent) return;
+    const now = new Date();
+    const origDurationMs = new Date(evt.end).getTime() - new Date(evt.start).getTime();
+    const durationMs = Math.max(15 * 60000, origDurationMs);
+    const newEnd = new Date(now.getTime() + durationMs);
+
+    onEditEvent(evt.id, {
+      start: now.toISOString(),
+      end: newEnd.toISOString()
+    });
+
+    handleStartStudying(activeTomorrowGoal, {
+      ...evt,
+      start: now.toISOString(),
+      end: newEnd.toISOString()
+    });
   };
 
   const handlePause = () => {
@@ -466,35 +529,42 @@ export default function ActiveExecutionHUD({
     };
   }, [hasActiveSession, subtasksTimeline, realElapsedSec]);
 
-  // If no timer active and no scheduled event today, show nothing
-  if (!hasActiveSession && !currentEvent && goals.length === 0) {
+  // If no timer active and no scheduled event today and no tomorrow event, and no goals, show nothing
+  if (!hasActiveSession && !effectiveEvent && goals.length === 0) {
     return null;
   }
 
-  const primaryTitle = activeTimer ? activeTimer.title : (currentEvent ? currentEvent.title : "Daily Focus Goal");
-  const primaryColor = activeTimer?.color || matchedGoal?.color || "#6366f1";
-  const primaryCategory = activeTimer?.category || matchedGoal?.category;
+  const primaryTitle = activeTimer 
+    ? activeTimer.title 
+    : (effectiveEvent ? effectiveEvent.title : (effectiveGoal ? effectiveGoal.name : "Daily Focus Goal"));
+  const primaryColor = activeTimer?.color || effectiveGoal?.color || "#6366f1";
+  const primaryCategory = activeTimer?.category || effectiveGoal?.category || effectiveEvent?.type;
 
   return (
     <div 
       id="active_execution_hud"
-      className={`relative overflow-hidden rounded-2xl border transition-all duration-300 shadow-md ${
+      className={`relative rounded-2xl border transition-all duration-300 shadow-md ${
         isTimerRunning 
           ? "bg-[#0b0f19] border-emerald-500/40 shadow-emerald-950/40 dark:shadow-emerald-950/50" 
           : isTimerPaused
             ? "bg-[#13110e] border-amber-500/40 shadow-amber-950/30"
-            : "bg-white dark:bg-[#0c0e17] border-slate-200/90 dark:border-indigo-500/30 shadow-slate-200/40 dark:shadow-indigo-950/30"
+            : isStudyAheadMode
+              ? "bg-slate-900/95 dark:bg-[#0c101a] border-emerald-500/40 shadow-xl shadow-emerald-950/20"
+              : "bg-white dark:bg-[#0c0e17] border-slate-200/90 dark:border-indigo-500/30 shadow-slate-200/40 dark:shadow-indigo-950/30"
       }`}
+      style={{ zIndex: 30 }}
     >
       {/* Top glowing status bar */}
       <div 
-        className="h-1.5 w-full transition-all duration-500"
+        className="h-1.5 w-full rounded-t-2xl overflow-hidden transition-all duration-500"
         style={{
           background: isTimerRunning 
             ? "linear-gradient(90deg, #10b981 0%, #06b6d4 50%, #6366f1 100%)"
             : isTimerPaused
               ? "linear-gradient(90deg, #f59e0b 0%, #d97706 100%)"
-              : "linear-gradient(90deg, #6366f1 0%, #a855f7 100%)"
+              : isStudyAheadMode
+                ? "linear-gradient(90deg, #10b981 0%, #34d399 50%, #f59e0b 100%)"
+                : "linear-gradient(90deg, #6366f1 0%, #a855f7 100%)"
         }}
       />
 
@@ -508,11 +578,11 @@ export default function ActiveExecutionHUD({
               className="w-12 h-12 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md transition-transform"
               style={{ backgroundColor: primaryColor }}
             >
-              {renderGoalIcon(activeGoal?.icon || matchedGoal?.icon, activeGoal?.type || matchedGoal?.type, "w-6 h-6")}
+              {renderGoalIcon(activeGoal?.icon || effectiveGoal?.icon, activeGoal?.type || effectiveGoal?.type, "w-6 h-6")}
             </div>
 
             <div className="min-w-0 flex-1 space-y-1">
-              {/* Badges row */}
+              {/* Badges / Context row (Zero-pill discipline: unboxed clean typographic metadata) */}
               <div className="flex items-center gap-2 flex-wrap">
                 {isTimerRunning ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse">
@@ -527,6 +597,24 @@ export default function ActiveExecutionHUD({
                     <Pause className="w-2.5 h-2.5" />
                     STUDY SESSION PAUSED
                   </span>
+                ) : isStudyAheadMode ? (
+                  <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 font-bold text-emerald-400 text-[11px] tracking-wide">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                      {allTodayCompleted ? "Today's Schedule Complete" : "Tomorrow's Goal"}
+                    </span>
+                    <span className="text-slate-600 dark:text-slate-500" aria-hidden="true">•</span>
+                    <span className="text-emerald-300 font-semibold">Study Ahead</span>
+                    {activeTomorrowEvent && (
+                      <>
+                        <span className="text-slate-600 dark:text-slate-500" aria-hidden="true">•</span>
+                        <span className="text-slate-300 flex items-center gap-1 font-medium text-[11px]">
+                          <Calendar className="w-3 h-3 text-emerald-400" />
+                          Tomorrow {formatClockTime(new Date(activeTomorrowEvent.start))} – {formatClockTime(new Date(activeTomorrowEvent.end))} ({totalSessionMinutes}m)
+                        </span>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
                     <Clock className="w-2.5 h-2.5" />
@@ -540,7 +628,7 @@ export default function ActiveExecutionHUD({
                     <Play className="w-3 h-3 text-emerald-400 fill-emerald-400" />
                     Started at {startedTimeString}
                   </span>
-                ) : currentEvent ? (
+                ) : currentEvent && !isStudyAheadMode ? (
                   <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     Scheduled: {formatClockTime(new Date(currentEvent.start))} – {formatClockTime(new Date(currentEvent.end))}
                   </span>
@@ -600,34 +688,36 @@ export default function ActiveExecutionHUD({
           {/* RIGHT: Primary Controls for Start, Pause, Resume, and Finish */}
           <div className="flex items-center gap-2 w-full lg:w-auto justify-end flex-wrap">
             
-            {/* Toggle Micro-tasks Checklist */}
-            <button
-              type="button"
-              id="hud_toggle_subtasks_btn"
-              onClick={() => setShowSubtasks(!showSubtasks)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                showSubtasks || activeSubtasks.length > 0
-                  ? "bg-slate-100 dark:bg-white/10 text-slate-800 dark:text-white border-slate-300 dark:border-white/10"
-                  : "bg-transparent text-slate-600 dark:text-slate-400 border-dashed border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5"
-              }`}
-              title="Micro-task steps with time budgeting"
-            >
-              <ListTodo className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Micro-Tasks</span>
-              {activeSubtasks.length > 0 && (
-                <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
-                  {completedSubtasksCount}/{activeSubtasks.length}
-                </span>
-              )}
-              {allocatedMinutes > 0 && (
-                <span className={`text-[10px] font-mono font-bold ${
-                  isOverallocated ? "text-amber-400" : "text-emerald-400"
-                }`}>
-                  ({allocatedMinutes}m)
-                </span>
-              )}
-              {showSubtasks ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
+            {/* Toggle Micro-tasks Checklist (Only shown when active or when subtasks exist) */}
+            {(hasActiveSession || activeSubtasks.length > 0) && (
+              <button
+                type="button"
+                id="hud_toggle_subtasks_btn"
+                onClick={() => setShowSubtasks(!showSubtasks)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                  showSubtasks || activeSubtasks.length > 0
+                    ? "bg-slate-100 dark:bg-white/10 text-slate-800 dark:text-white border-slate-300 dark:border-white/10"
+                    : "bg-transparent text-slate-600 dark:text-slate-400 border-dashed border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5"
+                }`}
+                title="Micro-task steps with time budgeting"
+              >
+                <ListTodo className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Micro-Tasks</span>
+                {activeSubtasks.length > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
+                    {completedSubtasksCount}/{activeSubtasks.length}
+                  </span>
+                )}
+                {allocatedMinutes > 0 && (
+                  <span className={`text-[10px] font-mono font-bold ${
+                    isOverallocated ? "text-amber-400" : "text-emerald-400"
+                  }`}>
+                    ({allocatedMinutes}m)
+                  </span>
+                )}
+                {showSubtasks ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            )}
 
             {/* LIVE STUDY CONTROLS */}
             {isTimerRunning ? (
@@ -652,6 +742,94 @@ export default function ActiveExecutionHUD({
                 <Play className="w-3.5 h-3.5 fill-white" />
                 <span>Resume Studying</span>
               </button>
+            ) : isStudyAheadMode ? (
+              <>
+                {/* Secondary: Pull to Today */}
+                {onEditEvent && activeTomorrowEvent && (
+                  <button
+                    type="button"
+                    id="hud_pull_to_today_btn"
+                    onClick={() => handlePullTomorrowEventToToday(activeTomorrowEvent)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 transition active:scale-95 cursor-pointer shadow-xs"
+                    title="Move this session from Tomorrow's calendar to Today and start now"
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Pull to Today</span>
+                  </button>
+                )}
+
+                {/* Primary Hero: Study Ahead Now */}
+                <button
+                  type="button"
+                  id="hud_study_ahead_btn"
+                  onClick={() => handleStartStudying(activeTomorrowGoal, activeTomorrowEvent)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
+                  title="Jump ahead and start studying tomorrow's session right now"
+                >
+                  <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                  <span>Study Ahead Now</span>
+                </button>
+
+                {/* Tomorrow's Agenda Dropdown */}
+                {tomorrowEvents.length > 1 && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      id="hud_switch_tomorrow_btn"
+                      onClick={() => setShowTomorrowPicker(!showTomorrowPicker)}
+                      className="px-2.5 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-white text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                      title="Pick from tomorrow's scheduled sessions"
+                    >
+                      <Layers className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>Tomorrow ({tomorrowEvents.length})</span>
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+
+                    {showTomorrowPicker && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-40" 
+                          onClick={() => setShowTomorrowPicker(false)} 
+                        />
+                        <div className="absolute right-0 top-full mt-2 w-72 p-2 bg-white dark:bg-[#121624] border border-slate-200 dark:border-slate-700/80 rounded-xl shadow-2xl z-50 space-y-1 backdrop-blur-md">
+                          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-2 py-1 block border-b border-slate-100 dark:border-slate-800/80 pb-1.5 mb-1">
+                            Tomorrow's Sessions ({tomorrowEvents.length}):
+                          </span>
+                          <div className="max-h-60 overflow-y-auto space-y-1 pr-0.5">
+                            {tomorrowEvents.map(evt => {
+                              const dur = Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000);
+                              const isSelected = activeTomorrowEvent?.id === evt.id;
+                              return (
+                                <button
+                                  key={evt.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedTomorrowEventId(evt.id);
+                                    setShowTomorrowPicker(false);
+                                  }}
+                                  className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition cursor-pointer ${
+                                    isSelected 
+                                      ? "bg-emerald-50 dark:bg-emerald-500/20 text-emerald-900 dark:text-emerald-200 font-bold border border-emerald-300 dark:border-emerald-500/30" 
+                                      : "hover:bg-slate-100 dark:hover:bg-white/10 text-slate-800 dark:text-white"
+                                  }`}
+                                >
+                                  <div className="min-w-0 flex-1 pr-2">
+                                    <div className="truncate font-medium">{evt.title}</div>
+                                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                                      {formatClockTime(new Date(evt.start))} • {dur}m
+                                    </div>
+                                  </div>
+                                  <Play className="w-3 h-3 text-emerald-500 shrink-0" />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </>
             ) : (
               <button
                 type="button"
@@ -676,17 +854,19 @@ export default function ActiveExecutionHUD({
               <Maximize2 className="w-4 h-4" />
             </button>
 
-            {/* Quick Done / Finish Button */}
-            <button
-              type="button"
-              id="hud_mark_complete_btn"
-              onClick={handleFinishSession}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 transition active:scale-95 cursor-pointer"
-              title="Finish and log this session"
-            >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Done</span>
-            </button>
+            {/* Quick Done / Finish Button: ONLY shown when an active session is in progress or today's scheduled event */}
+            {(hasActiveSession || (currentEvent && !isStudyAheadMode)) && (
+              <button
+                type="button"
+                id="hud_mark_complete_btn"
+                onClick={handleFinishSession}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 transition active:scale-95 cursor-pointer"
+                title="Finish and log this session"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Done</span>
+              </button>
+            )}
 
             {/* Switch goal quick dropdown */}
             {!hasActiveSession && goals.length > 1 && (
@@ -703,22 +883,30 @@ export default function ActiveExecutionHUD({
                 </button>
 
                 {showGoalPicker && (
-                  <div className="absolute right-0 top-full mt-1.5 w-64 p-2 bg-[#0d121f] border border-white/15 rounded-xl shadow-2xl z-50 space-y-1">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1 block">
-                      Choose Goal to Study:
-                    </span>
-                    {goals.map(g => (
-                      <button
-                        key={g.id}
-                        type="button"
-                        onClick={() => handleStartStudying(g)}
-                        className="w-full flex items-center justify-between p-2 rounded-lg hover:bg-white/10 text-left text-xs text-white transition cursor-pointer"
-                      >
-                        <span className="truncate">{g.name}</span>
-                        <Play className="w-3 h-3 text-emerald-400 shrink-0" />
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <div 
+                      className="fixed inset-0 z-40" 
+                      onClick={() => setShowGoalPicker(false)} 
+                    />
+                    <div className="absolute right-0 top-full mt-2 w-64 p-2 bg-white dark:bg-[#121624] border border-slate-200 dark:border-slate-700/80 rounded-xl shadow-2xl z-50 space-y-1 backdrop-blur-md">
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-2 py-1 block border-b border-slate-100 dark:border-slate-800/80 pb-1.5 mb-1">
+                        Choose Goal to Study:
+                      </span>
+                      <div className="max-h-60 overflow-y-auto space-y-1 pr-0.5">
+                        {goals.map(g => (
+                          <button
+                            key={g.id}
+                            type="button"
+                            onClick={() => handleStartStudying(g)}
+                            className="w-full flex items-center justify-between p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 text-left text-xs text-slate-800 dark:text-white transition cursor-pointer"
+                          >
+                            <span className="truncate">{g.name}</span>
+                            <Play className="w-3 h-3 text-emerald-400 shrink-0" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
             )}
