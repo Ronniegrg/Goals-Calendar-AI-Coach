@@ -1,4 +1,4 @@
-import { CalendarEvent, Goal, GoalPriority, TimePreference, UserEnergyProfile, EnergyLevel } from "../types";
+import { CalendarEvent, Goal, GoalPriority, TimePreference, UserEnergyProfile, EnergyLevel, AvailabilityWindow } from "../types";
 import { 
   inferGoalEnergyLevel, 
   getEnergyLevelForHour, 
@@ -276,8 +276,91 @@ export function alignDailyEventsByPriority(
 }
 
 /**
+ * 2b. ENFORCE WEEKLY TARGET QUOTAS:
+ * Strictly ensures non-daily goals (e.g. 4x/week, 5x/week, 3x/week) do NOT exceed
+ * their weekly quota in any calendar week. If uncompleted sessions exceed the quota,
+ * prunes excess sessions from the most crowded days so that evenings are not overloaded.
+ */
+export function enforceWeeklyTargetQuotas(
+  events: CalendarEvent[],
+  goals: Goal[]
+): { prunedEvents: CalendarEvent[]; excessRemovedCount: number } {
+  if (!goals || goals.length === 0 || events.length === 0) {
+    return { prunedEvents: events, excessRemovedCount: 0 };
+  }
+
+  // Group events by calendar week (Sunday 00:00:00 to Saturday 23:59:59)
+  const weekMap = new Map<string, CalendarEvent[]>();
+  events.forEach(evt => {
+    const d = new Date(evt.start);
+    const sWeek = new Date(d);
+    sWeek.setDate(d.getDate() - d.getDay());
+    sWeek.setHours(0, 0, 0, 0);
+    const key = sWeek.toISOString();
+    if (!weekMap.has(key)) weekMap.set(key, []);
+    weekMap.get(key)!.push(evt);
+  });
+
+  const idsToPrune = new Set<string>();
+  let excessRemovedCount = 0;
+
+  for (const [, weekEvts] of weekMap.entries()) {
+    // For each goal, check its quota in this week
+    for (const goal of goals) {
+      if (!goal || goal.weeklyTarget >= 7) continue; // 7x goals can run every day
+
+      const goalNameClean = (goal.name || "").trim().toLowerCase();
+      const goalEvts = weekEvts.filter(e => {
+        if (e.type === "external") return false;
+        const isThisGoal = e.goalId === goal.id || (e.title && e.title.trim().toLowerCase().includes(goalNameClean));
+        return isThisGoal;
+      });
+
+      if (goalEvts.length <= goal.weeklyTarget) continue;
+
+      // We have excess sessions in this week!
+      // Completed sessions are permanent anchors and cannot be deleted
+      const completedSessions = goalEvts.filter(e => e.completed);
+      const uncompletedSessions = goalEvts.filter(e => !e.completed);
+
+      const allowedUncompleted = Math.max(0, goal.weeklyTarget - completedSessions.length);
+      const excessCount = uncompletedSessions.length - allowedUncompleted;
+
+      if (excessCount > 0) {
+        // Count how many total events are on each day in this week
+        const dayCrowdCount = new Map<string, number>();
+        weekEvts.forEach(we => {
+          const dayKey = new Date(we.start).toDateString();
+          dayCrowdCount.set(dayKey, (dayCrowdCount.get(dayKey) || 0) + 1);
+        });
+
+        // Sort uncompleted sessions of this goal:
+        // Prioritize pruning from the days with the highest crowd count (e.g. days with 6 or 7 goals)
+        // and latest dates in the week
+        const sortedForPruning = [...uncompletedSessions].sort((a, b) => {
+          const crowdA = dayCrowdCount.get(new Date(a.start).toDateString()) || 0;
+          const crowdB = dayCrowdCount.get(new Date(b.start).toDateString()) || 0;
+          if (crowdB !== crowdA) return crowdB - crowdA; // most crowded day pruned first!
+          return new Date(b.start).getTime() - new Date(a.start).getTime();
+        });
+
+        const toRemove = sortedForPruning.slice(0, excessCount);
+        toRemove.forEach(ev => {
+          idsToPrune.add(ev.id);
+          excessRemovedCount++;
+        });
+      }
+    }
+  }
+
+  const prunedEvents = events.filter(e => !idsToPrune.has(e.id));
+  return { prunedEvents, excessRemovedCount };
+}
+
+/**
  * 3. MASTER SANITIZER & OPTIMIZER:
  * First cleans duplicates (1 session max per goal per day),
+ * prunes excess weekly target quotas,
  * then re-aligns time slots by priority and cognitive energy zones.
  */
 export function sanitizeAndOptimizeSchedule(
@@ -287,17 +370,180 @@ export function sanitizeAndOptimizeSchedule(
 ): { 
   optimizedEvents: CalendarEvent[]; 
   duplicatesRemoved: number; 
+  quotaExcessRemoved: number;
   priorityAdjusted: number;
   slumpAdjusted: number;
   buffersAdded: number;
 } {
   const { deduplicated, removedCount } = deduplicateDailyGoalEvents(events, goals);
-  const { alignedEvents, changedCount, slumpAdjusted, buffersAdded } = alignDailyEventsByPriority(deduplicated, goals, energyProfile);
+  const { prunedEvents, excessRemovedCount } = enforceWeeklyTargetQuotas(deduplicated, goals);
+  const { alignedEvents, changedCount, slumpAdjusted, buffersAdded } = alignDailyEventsByPriority(prunedEvents, goals, energyProfile);
   return {
     optimizedEvents: alignedEvents,
     duplicatesRemoved: removedCount,
+    quotaExcessRemoved: excessRemovedCount,
     priorityAdjusted: changedCount,
     slumpAdjusted,
     buffersAdded
+  };
+}
+
+/**
+ * 4. AUTONOMOUS SELF-HEALING ENGINE (AI SCHEDULE AUTOPILOT):
+ * Continuously and autonomously protects and heals schedule discrepancies:
+ *  - Overdue Incomplete Sessions: Identifies uncompleted sessions whose end time has passed
+ *    and shifts them forward into upcoming open availability slots (starting from today/now).
+ *  - Collisions & Overlaps: Automatically deconflicts overlapping events with 15-minute buffers.
+ */
+export function autonomousSelfHealCalendar({
+  events,
+  goals,
+  availability,
+  energyProfile = DEFAULT_USER_ENERGY_PROFILE,
+  maxDaysAhead = 14
+}: {
+  events: CalendarEvent[];
+  goals: Goal[];
+  availability: AvailabilityWindow[];
+  energyProfile?: UserEnergyProfile;
+  maxDaysAhead?: number;
+}): {
+  healedEvents: CalendarEvent[];
+  overdueRescheduledCount: number;
+  collisionsResolvedCount: number;
+  details: string[];
+} {
+  const now = new Date();
+  const nowMs = now.getTime();
+  const details: string[] = [];
+  let overdueRescheduledCount = 0;
+  let collisionsResolvedCount = 0;
+
+  // Clone list
+  let currentList: CalendarEvent[] = events.map(e => ({ ...e }));
+
+  // Helper: check if a time window collides with existing events in currentList
+  const hasOverlap = (startMs: number, endMs: number, ignoreEventId?: string) => {
+    return currentList.some(ev => {
+      if (ignoreEventId && ev.id === ignoreEventId) return false;
+      const evStart = new Date(ev.start).getTime();
+      const evEnd = new Date(ev.end).getTime();
+      return startMs < evEnd && endMs > evStart;
+    });
+  };
+
+  // Helper: find next open slot for a given duration starting from targetDay
+  const findOpenSlot = (durationMs: number, startFromDate: Date, preferredMinHour: number | null = null, ignoreId?: string): { start: Date; end: Date } | null => {
+    for (let dayOffset = 0; dayOffset <= maxDaysAhead; dayOffset++) {
+      const day = new Date(startFromDate);
+      day.setDate(startFromDate.getDate() + dayOffset);
+      const dayOfWeek = day.getDay();
+
+      const avail = availability.find(a => a.dayOfWeek === dayOfWeek && a.active);
+      let dayStartH = 8;
+      let dayEndH = 22;
+      if (avail) {
+        const [sh] = avail.startTime.split(":").map(Number);
+        const [eh] = avail.endTime.split(":").map(Number);
+        dayStartH = sh || 8;
+        dayEndH = eh || 22;
+      }
+
+      const isToday = day.toDateString() === now.toDateString();
+      let earliestHour = isToday ? Math.max(dayStartH, now.getHours() + (now.getMinutes() + 15) / 60) : dayStartH;
+      if (preferredMinHour !== null) {
+        earliestHour = Math.max(earliestHour, preferredMinHour);
+      }
+
+      for (let h = earliestHour; h <= dayEndH - (durationMs / (3600 * 1000)); h += 0.5) {
+        const slotStart = new Date(day);
+        slotStart.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+        const slotStartMs = slotStart.getTime();
+        const slotEndMs = slotStartMs + durationMs;
+
+        if (slotStartMs <= nowMs + 10 * 60 * 1000) continue;
+
+        if (!hasOverlap(slotStartMs, slotEndMs, ignoreId)) {
+          return { start: slotStart, end: new Date(slotEndMs) };
+        }
+      }
+    }
+    return null;
+  };
+
+  // STEP 1: RESCHEDULE PAST OVERDUE SESSIONS
+  const pastOverdue = currentList.filter(
+    e => !e.completed && e.type !== "external" && new Date(e.end).getTime() < nowMs
+  );
+
+  for (const ov of pastOverdue) {
+    const parentGoal = findGoalForEvent(ov, goals);
+    const durMs = Math.max(15 * 60 * 1000, new Date(ov.end).getTime() - new Date(ov.start).getTime());
+    const minH = getGoalMinStartHour(parentGoal);
+
+    // Find next open slot starting from now
+    const nextSlot = findOpenSlot(durMs, now, minH, ov.id);
+    if (nextSlot) {
+      ov.start = nextSlot.start.toISOString();
+      ov.end = nextSlot.end.toISOString();
+      ov.notes = (ov.notes ? ov.notes + " | " : "") + "🤖 AI Autopilot: Rescheduled overdue session";
+      overdueRescheduledCount++;
+      details.push(
+        `Rescheduled missed session "${ov.title}" to ${nextSlot.start.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} at ${nextSlot.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      );
+    }
+  }
+
+  // STEP 2: DECONFLICT ANY OVERLAPPING SESSIONS
+  // Sort non-completed events chronologically
+  const sorted = [...currentList].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  for (let i = 0; i < sorted.length; i++) {
+    const evA = sorted[i];
+    if (evA.completed) continue;
+
+    for (let j = i + 1; j < sorted.length; j++) {
+      const evB = sorted[j];
+      if (evB.completed) continue;
+
+      const aStart = new Date(evA.start).getTime();
+      const aEnd = new Date(evA.end).getTime();
+      const bStart = new Date(evB.start).getTime();
+      const bEnd = new Date(evB.end).getTime();
+
+      // Check collision
+      if (aStart < bEnd && aEnd > bStart) {
+        // Decide which event to shift: preserve external or higher-priority goal
+        const gA = findGoalForEvent(evA, goals);
+        const gB = findGoalForEvent(evB, goals);
+        const scoreA = evA.type === "external" ? 999 : getPriorityScore(gA?.priority);
+        const scoreB = evB.type === "external" ? 999 : getPriorityScore(gB?.priority);
+
+        const eventToShift = scoreA >= scoreB ? evB : evA;
+        const durMs = Math.max(15 * 60 * 1000, new Date(eventToShift.end).getTime() - new Date(eventToShift.start).getTime());
+        const shiftGoal = findGoalForEvent(eventToShift, goals);
+        const minH = getGoalMinStartHour(shiftGoal);
+
+        // Find new open slot starting right after the collision
+        const shiftFrom = new Date(Math.max(nowMs, aEnd + 15 * 60 * 1000));
+        const newSlot = findOpenSlot(durMs, shiftFrom, minH, eventToShift.id);
+        if (newSlot) {
+          eventToShift.start = newSlot.start.toISOString();
+          eventToShift.end = newSlot.end.toISOString();
+          eventToShift.notes = (eventToShift.notes ? eventToShift.notes + " | " : "") + "🤖 AI Autopilot: Deconflicted overlap";
+          collisionsResolvedCount++;
+          details.push(`Deconflicted overlap for "${eventToShift.title}" with 15m buffer`);
+        }
+      }
+    }
+  }
+
+  // Deduplicate and re-align
+  const { optimizedEvents } = sanitizeAndOptimizeSchedule(currentList, goals, energyProfile);
+
+  return {
+    healedEvents: optimizedEvents,
+    overdueRescheduledCount,
+    collisionsResolvedCount,
+    details
   };
 }

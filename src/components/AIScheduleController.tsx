@@ -58,6 +58,8 @@ interface AIScheduleControllerProps {
     action?: { label: string; onClick: () => void }
   ) => void;
   userEmail?: string;
+  externalAutopilotMode?: AutopilotMode;
+  onAutopilotModeChange?: (mode: AutopilotMode) => void;
 }
 
 export default function AIScheduleController({
@@ -69,13 +71,22 @@ export default function AIScheduleController({
   onNavigateToGoals,
   onNavigateToCalendar,
   onAddNotification,
-  userEmail = "rounigorgees@gmail.com"
+  userEmail = "rounigorgees@gmail.com",
+  externalAutopilotMode,
+  onAutopilotModeChange
 }: AIScheduleControllerProps) {
   // Autopilot settings
   const [autopilotMode, setAutopilotMode] = useState<AutopilotMode>(() => {
+    if (externalAutopilotMode) return externalAutopilotMode;
     const saved = localStorage.getItem("ai_autopilot_mode");
     return (saved as AutopilotMode) || "full_autonomous";
   });
+
+  useEffect(() => {
+    if (externalAutopilotMode && externalAutopilotMode !== autopilotMode) {
+      setAutopilotMode(externalAutopilotMode);
+    }
+  }, [externalAutopilotMode]);
 
   const [activeMode, setActiveMode] = useState<
     "auto_plan_goals" | "deconflict_and_heal" | "catch_up_rebalance" | "energy_chronotype_align" | "custom_directive"
@@ -162,6 +173,7 @@ export default function AIScheduleController({
   const handleAutopilotModeChange = (mode: AutopilotMode) => {
     setAutopilotMode(mode);
     localStorage.setItem("ai_autopilot_mode", mode);
+    onAutopilotModeChange?.(mode);
     
     // Clear any active countdown if switching away
     if (mode !== "copilot_sentinel" && countdownTimerRef.current) {

@@ -125,6 +125,7 @@ interface CalendarViewProps {
   userEmail?: string;
   onClearExternalEvents?: () => void;
   onOpenStreakShield?: () => void;
+  onAutoHealSchedule?: () => void;
 }
 
 export default function CalendarView({
@@ -148,7 +149,8 @@ export default function CalendarView({
   onOpenEnergyModal,
   userEmail = "rounigorgees@gmail.com",
   onClearExternalEvents,
-  onOpenStreakShield
+  onOpenStreakShield,
+  onAutoHealSchedule
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -3088,6 +3090,39 @@ export default function CalendarView({
                   </div>
 
                   <div className="space-y-1">
+                    {/* Autopilot Instant Self-Heal Option */}
+                    {onAutoHealSchedule && (
+                      <button
+                        type="button"
+                        id="focus_opt_auto_heal"
+                        onClick={() => {
+                          setShowFocusIncompleteMenu(false);
+                          onAutoHealSchedule();
+                        }}
+                        className="w-full text-left px-2.5 py-2 rounded-xl bg-gradient-to-r from-purple-600/15 via-indigo-600/15 to-emerald-600/15 hover:from-purple-600/25 hover:via-indigo-600/25 hover:to-emerald-600/25 border border-purple-500/30 text-purple-900 dark:text-purple-200 transition flex items-center justify-between group cursor-pointer mb-1 shadow-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-6 h-6 rounded-lg bg-purple-500/20 text-purple-600 dark:text-purple-300 flex items-center justify-center shrink-0">
+                            <Sparkles className="w-3.5 h-3.5 text-yellow-500 dark:text-yellow-300 animate-pulse" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                              <span>Auto-Reschedule Overdue</span>
+                              <span className="text-[9px] bg-purple-500/20 text-purple-700 dark:text-purple-300 px-1 py-0.2 rounded font-extrabold uppercase">
+                                Autopilot
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                              Shifts all {incompletePriorityCounts.total} past sessions to open slots
+                            </div>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300">
+                          Clear
+                        </span>
+                      </button>
+                    )}
+
                     {/* Option 1: Prioritize Most Critical (Status-Based Ordering) */}
                     <button
                       type="button"
@@ -3910,6 +3945,24 @@ export default function CalendarView({
               >
                 <Check className="w-3.5 h-3.5" />
                 <span>Finish</span>
+              </button>
+            )}
+
+            {/* Auto-Reschedule with Autopilot */}
+            {spotlightBannerInfo.isOverdue && onAutoHealSchedule && (
+              <button
+                type="button"
+                id="spotlight_auto_reschedule_btn"
+                onClick={() => {
+                  setSpotlightBannerInfo(null);
+                  setSpotlightEventId(null);
+                  onAutoHealSchedule();
+                }}
+                className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
+                title="Autopilot: Reschedule this and all overdue sessions to upcoming free slots"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
+                <span>Auto-Reschedule Overdue</span>
               </button>
             )}
 

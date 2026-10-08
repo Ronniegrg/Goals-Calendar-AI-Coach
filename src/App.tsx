@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { 
   Calendar as CalendarIcon, 
   Layers, 
@@ -34,12 +34,13 @@ import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
 import { StreakShieldModal } from "./components/StreakShieldModal";
-import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference } from "./types";
+import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference, AutopilotMode } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
   deduplicateDailyGoalEvents, 
   alignDailyEventsByPriority,
   findGoalForEvent,
+  autonomousSelfHealCalendar,
   getPriorityScore as getSchedulePriorityScore 
 } from "./lib/scheduleOptimizer";
 import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProfile";
@@ -120,10 +121,26 @@ export default function App() {
       return [];
     }
   });
+  const [autopilotMode, setAutopilotMode] = useState<AutopilotMode>(() => {
+    const saved = localStorage.getItem("ai_autopilot_mode");
+    if (saved) return saved as AutopilotMode;
+    const legacyVal = localStorage.getItem("auto_schedule_enabled");
+    if (legacyVal === "false") return "manual";
+    return "full_autonomous";
+  });
   const [autoScheduleEnabled, setAutoScheduleEnabled] = useState<boolean>(() => {
     const val = localStorage.getItem("auto_schedule_enabled");
+    const mode = localStorage.getItem("ai_autopilot_mode");
+    if (mode === "manual") return false;
     return val !== "false";
   });
+
+  const handleSetAutopilotMode = (mode: AutopilotMode) => {
+    setAutopilotMode(mode);
+    localStorage.setItem("ai_autopilot_mode", mode);
+    localStorage.setItem("auto_schedule_enabled", mode !== "manual" ? "true" : "false");
+    setAutoScheduleEnabled(mode !== "manual");
+  };
   const [coachPersona, setCoachPersona] = useState<"mentor" | "drill" | "data">(() => {
     return (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor";
   });
@@ -653,16 +670,17 @@ export default function App() {
         }
 
         const targetDayString = targetDay.toDateString();
-        const weekOffset = Math.floor(dayOffset / 7);
 
-        // Calculate week start & end for non-daily weekly target limits
-        const startOfWeek = new Date(todayStart);
-        startOfWeek.setDate(todayStart.getDate() - todayStart.getDay() + (weekOffset * 7));
+        // Calculate accurate calendar week bounds (Sunday 00:00 to Saturday 23:59) for targetDay
+        const startOfWeek = new Date(targetDay);
+        startOfWeek.setDate(targetDay.getDate() - targetDay.getDay());
+        startOfWeek.setHours(0, 0, 0, 0);
+
         const endOfWeek = new Date(startOfWeek);
         endOfWeek.setDate(startOfWeek.getDate() + 6);
         endOfWeek.setHours(23, 59, 59, 999);
 
-        // Check sessions in this week
+        // Check sessions in this calendar week for this goal
         const sessionsInWeek = [...validEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           if (!isThisGoal) return false;
@@ -675,13 +693,49 @@ export default function App() {
           continue;
         }
 
-        // Check sessions on targetDay
+        // Check sessions on targetDay (strictly 1 session per goal per day)
         const sessionsOnTargetDay = [...validEvents, ...newScheduledEvents].filter(evt => {
           const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
           return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
         }).length;
 
         if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
+
+        // DYNAMIC INTELLIGENT SPACING (NO FIXED DAYS):
+        // Avoid clustering non-daily goals on consecutive days when there are still enough days remaining in the week!
+        const daysRemainingInWeek = Math.max(1, Math.round((endOfWeek.getTime() - targetDay.getTime()) / (24 * 3600 * 1000)) + 1);
+        const sessionsStillNeeded = goal.weeklyTarget - sessionsInWeek;
+
+        if (!isDailyGoal) {
+          const prevDay = new Date(targetDay);
+          prevDay.setDate(targetDay.getDate() - 1);
+          const prevDayString = prevDay.toDateString();
+
+          const hadSessionYesterday = [...validEvents, ...newScheduledEvents].some(evt => {
+            const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
+            return isThisGoal && new Date(evt.start).toDateString() === prevDayString;
+          });
+
+          // Leave natural 1-day breathers between non-daily sessions if week still has open days
+          if (hadSessionYesterday && daysRemainingInWeek > sessionsStillNeeded) {
+            continue;
+          }
+        }
+
+        // RESPECT AVAILABLE HOURS LEFT IN PREFERRED WINDOW (E.G. EVENING):
+        // Calculate total study hours already booked on this targetDay
+        const dayBookedHours = [...validEvents, ...newScheduledEvents]
+          .filter(evt => new Date(evt.start).toDateString() === targetDayString)
+          .reduce((sum, evt) => {
+            return sum + (new Date(evt.end).getTime() - new Date(evt.start).getTime()) / (3600 * 1000);
+          }, 0);
+
+        // Maximum study load per day (3.0 hours max) for non-daily subjects so evenings aren't crammed with 7 subjects!
+        const maxStudyHoursPerDay = 3.0;
+        if (!isDailyGoal && (dayBookedHours + blockDurationHours) > maxStudyHoursPerDay && daysRemainingInWeek > sessionsStillNeeded) {
+          // This day already has enough subjects! Let other open days in the week take this session
+          continue;
+        }
 
         const dayOfWeek = targetDay.getDay();
         let availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek && a.active);
@@ -840,7 +894,7 @@ export default function App() {
         const countOnDay = events.filter(e => {
           const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
           if (!isThisGoal) return false;
-          return new Date(e.start).toDateString() === targetDayString && isEventInGoalTimePrefWindow(e, goal);
+          return new Date(e.start).toDateString() === targetDayString;
         }).length;
 
         if (isDailyGoal && countOnDay === 0) {
@@ -848,9 +902,10 @@ export default function App() {
         }
 
         if (!isDailyGoal) {
-          const weekOffset = Math.floor(dayOffset / 7);
-          const startOfWeek = new Date(todayStart);
-          startOfWeek.setDate(todayStart.getDate() - todayStart.getDay() + (weekOffset * 7));
+          const startOfWeek = new Date(targetDay);
+          startOfWeek.setDate(targetDay.getDate() - targetDay.getDay());
+          startOfWeek.setHours(0, 0, 0, 0);
+
           const endOfWeek = new Date(startOfWeek);
           endOfWeek.setDate(startOfWeek.getDate() + 6);
           endOfWeek.setHours(23, 59, 59, 999);
@@ -859,7 +914,7 @@ export default function App() {
             const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
             if (!isThisGoal) return false;
             const d = new Date(e.start);
-            return d >= startOfWeek && d <= endOfWeek && isEventInGoalTimePrefWindow(e, goal);
+            return d >= startOfWeek && d <= endOfWeek;
           }).length;
 
           if (countInWeek < goal.weeklyTarget) return true;
@@ -902,6 +957,74 @@ export default function App() {
       syncToCloud(nextGoals, events, availability, notifications, coachMessages);
     }
   }, [goals]);
+
+  // 3d. GLOBAL AUTOPILOT ENGINE: Continuously heals overdue past sessions & resolves collisions across the entire app
+  const runGlobalAutopilotSelfHeal = useCallback((manualTrigger = false) => {
+    if (!goals || goals.length === 0) return;
+    if (!manualTrigger && autopilotMode !== "full_autonomous") return;
+
+    const result = autonomousSelfHealCalendar({
+      events,
+      goals,
+      availability,
+      energyProfile
+    });
+
+    if (result.overdueRescheduledCount > 0 || result.collisionsResolvedCount > 0) {
+      setEvents(result.healedEvents);
+      syncToCloud(goals, result.healedEvents, availability, notifications, coachMessages);
+
+      try {
+        const existingLogStr = localStorage.getItem("ai_autopilot_log");
+        const existingLog = existingLogStr ? JSON.parse(existingLogStr) : [];
+        const newEntry = {
+          id: `auto_${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          actionType: result.overdueRescheduledCount > 0 ? "rebalance_overdue" : "deconflict",
+          title: result.overdueRescheduledCount > 0 ? "Autonomous Catch-Up Rebalance" : "Autonomous Collision Deconfliction",
+          description: `Auto-rescheduled ${result.overdueRescheduledCount} missed session(s) forward into open upcoming slots, resolved ${result.collisionsResolvedCount} collision(s).`,
+          badge: "⚡ Hands-Free Auto-Fixed",
+          affectedCount: result.overdueRescheduledCount + result.collisionsResolvedCount
+        };
+        localStorage.setItem("ai_autopilot_log", JSON.stringify([newEntry, ...existingLog.slice(0, 49)]));
+      } catch (e) {
+        // ignore
+      }
+
+      triggerSystemNotification(
+        "🤖 AI Autopilot Self-Healed Schedule",
+        result.overdueRescheduledCount > 0
+          ? `Auto-rescheduled ${result.overdueRescheduledCount} missed session(s) forward into open slots! Focus Incomplete is now 0.`
+          : `Resolved ${result.collisionsResolvedCount} calendar collision(s) with recovery buffers.`,
+        "success"
+      );
+    } else if (manualTrigger) {
+      triggerSystemNotification(
+        "AI Autopilot Active",
+        "🎉 Schedule is already in perfect harmony! No overdue sessions or collisions found.",
+        "success"
+      );
+    }
+  }, [events, goals, availability, energyProfile, autopilotMode, notifications, coachMessages]);
+
+  useEffect(() => {
+    if (autopilotMode !== "full_autonomous") return;
+
+    // Run 1.5s after mount or state changes
+    const initialTimer = setTimeout(() => {
+      runGlobalAutopilotSelfHeal();
+    }, 1500);
+
+    // Watchdog pulse every 15 seconds
+    const interval = setInterval(() => {
+      runGlobalAutopilotSelfHeal();
+    }, 15000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [autopilotMode, runGlobalAutopilotSelfHeal]);
 
   // 4. Handle incoming action parameters (from Google Calendar description quick links)
   useEffect(() => {
@@ -1470,25 +1593,26 @@ export default function App() {
 
   // Handle Align Priorities & Deduplicate Sessions
   const handleAlignPrioritiesAndDeduplicate = () => {
-    const { optimizedEvents, duplicatesRemoved, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, energyProfile);
-    if (duplicatesRemoved > 0 || priorityAdjusted > 0 || (slumpAdjusted && slumpAdjusted > 0) || (buffersAdded && buffersAdded > 0)) {
+    const { optimizedEvents, duplicatesRemoved, quotaExcessRemoved, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, energyProfile);
+    if (duplicatesRemoved > 0 || quotaExcessRemoved > 0 || priorityAdjusted > 0 || (slumpAdjusted && slumpAdjusted > 0) || (buffersAdded && buffersAdded > 0)) {
       setEvents(optimizedEvents);
       syncToCloud(goals, optimizedEvents, availability, notifications, coachMessages);
       const changesList: string[] = [];
+      if (quotaExcessRemoved > 0) changesList.push(`${quotaExcessRemoved} excess sessions trimmed to weekly targets`);
       if (priorityAdjusted > 0) changesList.push(`${priorityAdjusted} priority re-aligned`);
       if (slumpAdjusted && slumpAdjusted > 0) changesList.push(`${slumpAdjusted} shifted from slump hours`);
       if (buffersAdded && buffersAdded > 0) changesList.push(`${buffersAdded} recovery buffers inserted`);
       if (duplicatesRemoved > 0) changesList.push(`${duplicatesRemoved} duplicates removed`);
 
       triggerSystemNotification(
-        "Priority & Bio-Energy Alignment",
-        `🎯 Schedule strictly aligned by priority & ${energyProfile.chronotype} energy curves: ${changesList.join(", ")}.`,
+        "Priority & Weekly Quota Alignment",
+        `🎯 Schedule strictly aligned by priority, weekly quotas & energy curves: ${changesList.join(", ")}.`,
         "success"
       );
     } else {
       triggerSystemNotification(
-        "Priority & Bio-Energy Alignment",
-        `✨ All goals are already strictly prioritized and aligned with your ${energyProfile.chronotype} circadian rhythms.`,
+        "Priority & Weekly Quota Alignment",
+        `✨ All goals are already strictly prioritized and within their weekly targets and circadian rhythms.`,
         "success"
       );
     }
@@ -2489,6 +2613,7 @@ export default function App() {
               userEmail="rounigorgees@gmail.com"
               onClearExternalEvents={handleClearExternalEvents}
               onOpenStreakShield={() => setShowStreakShieldModal(true)}
+              onAutoHealSchedule={() => runGlobalAutopilotSelfHeal(true)}
             />
           </div>
         )}
@@ -2512,10 +2637,9 @@ export default function App() {
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}
-            autoScheduleEnabled={autoScheduleEnabled}
+            autoScheduleEnabled={autopilotMode !== "manual"}
             onToggleAutoSchedule={(val) => {
-              setAutoScheduleEnabled(val);
-              localStorage.setItem("auto_schedule_enabled", val ? "true" : "false");
+              handleSetAutopilotMode(val ? "full_autonomous" : "manual");
             }}
             onCompleteSession={handleCompleteTimerSession}
             onPauseGoal={handlePauseGoal}
@@ -2533,6 +2657,8 @@ export default function App() {
             events={events}
             availability={availability}
             energyProfile={energyProfile}
+            externalAutopilotMode={autopilotMode}
+            onAutopilotModeChange={handleSetAutopilotMode}
             onApplySchedule={(newEvents, summaryMsg) => {
               setEvents(newEvents);
               syncToCloud(goals, newEvents, availability, notifications, coachMessages);
