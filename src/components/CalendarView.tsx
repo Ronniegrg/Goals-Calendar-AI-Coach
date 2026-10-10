@@ -50,9 +50,11 @@ import {
   Flame,
   ShieldAlert,
   Filter,
-  Shield
+  Shield,
+  Bot,
+  RotateCcw
 } from "lucide-react";
-import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep } from "../types";
+import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep, AutopilotMode, AutopilotPacing, DailyBurnoutLimits } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
 import CalendarSyncModal from "./CalendarSyncModal";
@@ -119,6 +121,7 @@ interface CalendarViewProps {
   onResetAndRegenerateCalendar?: (options?: { clearMode?: "uncompleted_goals" | "all_events"; keepExternal?: boolean }) => void;
   onAlignPriorities?: () => void;
   targetDate?: Date;
+  targetEventId?: string | null;
   onNavigateToDate?: (date: Date) => void;
   energyProfile?: UserEnergyProfile;
   onOpenEnergyModal?: () => void;
@@ -126,6 +129,13 @@ interface CalendarViewProps {
   onClearExternalEvents?: () => void;
   onOpenStreakShield?: () => void;
   onAutoHealSchedule?: () => void;
+  autopilotMode?: AutopilotMode;
+  autopilotPacing?: AutopilotPacing;
+  onChangeAutopilotPacing?: (pacing: AutopilotPacing) => void;
+  canUndoAutopilot?: boolean;
+  onUndoAutopilot?: () => void;
+  onLifeHappenedToday?: (chosenDate?: Date) => void;
+  burnoutLimits?: DailyBurnoutLimits;
 }
 
 export default function CalendarView({
@@ -144,13 +154,21 @@ export default function CalendarView({
   onResetAndRegenerateCalendar,
   onAlignPriorities,
   targetDate,
+  targetEventId,
   onNavigateToDate,
   energyProfile = DEFAULT_USER_ENERGY_PROFILE,
   onOpenEnergyModal,
   userEmail = "rounigorgees@gmail.com",
   onClearExternalEvents,
   onOpenStreakShield,
-  onAutoHealSchedule
+  onAutoHealSchedule,
+  autopilotMode = "full_autonomous",
+  autopilotPacing = "balanced",
+  onChangeAutopilotPacing,
+  canUndoAutopilot = false,
+  onUndoAutopilot,
+  onLifeHappenedToday,
+  burnoutLimits
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -306,7 +324,12 @@ export default function CalendarView({
   // Ref for Delay Today dropdown container
   const delayTodayRef = useRef<HTMLDivElement | null>(null);
   const focusIncompleteMenuRef = useRef<HTMLDivElement | null>(null);
+  const autopilotHUDMenuRef = useRef<HTMLDivElement | null>(null);
+  const restDayMenuRef = useRef<HTMLDivElement | null>(null);
   const [showFocusIncompleteMenu, setShowFocusIncompleteMenu] = useState(false);
+  const [showAutopilotHUDMenu, setShowAutopilotHUDMenu] = useState(false);
+  const [showRestDayMenu, setShowRestDayMenu] = useState(false);
+  const [customRestDate, setCustomRestDate] = useState("");
   const [focusPriorityFilter, setFocusPriorityFilter] = useState<"all" | "critical" | "important" | "normal">("all");
   const [restDayActive, setRestDayActive] = useState<boolean>(() => {
     try {
@@ -333,6 +356,16 @@ export default function CalendarView({
         setShowFocusIncompleteMenu(false);
       }
 
+      // Close Autopilot HUD menu if clicked outside
+      if (autopilotHUDMenuRef.current && !autopilotHUDMenuRef.current.contains(target)) {
+        setShowAutopilotHUDMenu(false);
+      }
+
+      // Close Rest Day menu if clicked outside
+      if (restDayMenuRef.current && !restDayMenuRef.current.contains(target)) {
+        setShowRestDayMenu(false);
+      }
+
       // Close Active Shift Cascade menu only if clicked outside
       if (!target.closest(".cascade-shift-container")) {
         setActiveShiftMenuId(null);
@@ -343,6 +376,10 @@ export default function CalendarView({
       if (e.key === "Escape") {
         setShowDelayTodayMenu(false);
         setShowFocusIncompleteMenu(false);
+        setShowAutopilotHUDMenu(false);
+        setShowRestDayMenu(false);
+        setShowFocusIncompleteMenu(false);
+        setShowAutopilotHUDMenu(false);
         setActiveShiftMenuId(null);
       }
     };
@@ -1319,18 +1356,17 @@ export default function CalendarView({
     const scrollContainer = gridScrollRef.current;
     const currentHourDecimal = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
     const containerHeight = scrollContainer.clientHeight || 500;
+    const startOffsetHour = showFull24Hours ? 0 : 7;
 
     if (viewMode === "week") {
-      // 64px per hour (8 AM start)
-      const targetTopPixel = (currentHourDecimal - 8) * 64;
+      const targetTopPixel = (currentHourDecimal - startOffsetHour) * hourHeightWeek;
       const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 2);
       scrollContainer.scrollTo({
         top: scrollToPixel,
         behavior: smooth ? "smooth" : "auto"
       });
     } else if (viewMode === "day") {
-      // 96px per hour (8 AM start)
-      const targetTopPixel = (currentHourDecimal - 8) * 96;
+      const targetTopPixel = (currentHourDecimal - startOffsetHour) * (hourHeightWeek * 1.5);
       const scrollToPixel = Math.max(0, targetTopPixel - containerHeight / 2);
       scrollContainer.scrollTo({
         top: scrollToPixel,
@@ -1360,6 +1396,22 @@ export default function CalendarView({
       behavior: smooth ? "smooth" : "auto"
     });
   };
+
+  // Respond to targetEventId navigation: spotlight the event and scroll grid to its scheduled time
+  useEffect(() => {
+    if (targetEventId) {
+      setSpotlightEventId(targetEventId);
+      const targetEvt = events.find(e => e.id === targetEventId);
+      if (targetEvt) {
+        const sDate = new Date(targetEvt.start);
+        setCurrentDate(sDate);
+        setTimeout(() => {
+          const startDecimal = sDate.getHours() + sDate.getMinutes() / 60;
+          scrollToHour(startDecimal, true);
+        }, 120);
+      }
+    }
+  }, [targetEventId, events]);
 
   const handleFocusMostIncompleteGoal = (
     indexToFocus?: number,
@@ -2660,12 +2712,24 @@ export default function CalendarView({
     );
   };
 
-  // Hours array for Grid: 08:00 to 22:00
-  const hours = Array.from({ length: 15 }, (_, i) => i + 8);
+  // View Mode Density & Inactive Hours State
+  const [showFull24Hours, setShowFull24Hours] = useState<boolean>(() => {
+    return localStorage.getItem("calendar_show_24h") === "true";
+  });
+  const [gridDensity, setGridDensity] = useState<"compact" | "normal" | "roomy">(() => {
+    return (localStorage.getItem("calendar_grid_density") as any) || "normal";
+  });
+
+  const hourHeightWeek = gridDensity === "compact" ? 48 : gridDensity === "roomy" ? 80 : 64;
+  const gridStartHour = showFull24Hours ? 0 : 7;
+  const gridEndHour = showFull24Hours ? 24 : 23;
+
+  // Hours array for Grid: dynamically 07:00 to 23:00 (daytime) or 00:00 to 24:00 (24h)
+  const hours = Array.from({ length: gridEndHour - gridStartHour }, (_, i) => i + gridStartHour);
 
   const currentHourDecimal = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
-  const currentTopPixelWeek = (currentHourDecimal - 8) * 64;
-  const currentTopPixelDay = (currentHourDecimal - 8) * 96;
+  const currentTopPixelWeek = (currentHourDecimal - gridStartHour) * hourHeightWeek;
+  const currentTopPixelDay = (currentHourDecimal - gridStartHour) * (hourHeightWeek * 1.5);
   const todayIdx = weekDates.findIndex(d => isSameDay(d, now));
 
   // Calculate overlapping layout columns for weekly view events
@@ -2864,22 +2928,63 @@ export default function CalendarView({
               </span>
             </div>
 
-            {/* View Mode Switcher */}
-            <div className="bg-slate-200/80 dark:bg-white/10 border border-slate-300 dark:border-white/10 p-1 rounded-xl flex items-center shadow-inner">
-              {(["week", "day", "list"] as const).map((mode) => (
+            {/* View Mode Switcher & Density Controls */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="bg-slate-200/80 dark:bg-white/10 border border-slate-300 dark:border-white/10 p-1 rounded-xl flex items-center shadow-inner">
+                {(["week", "day", "list"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    id={`view_btn_${mode}`}
+                    onClick={() => setViewMode(mode)}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-bold capitalize transition cursor-pointer min-h-[34px] min-w-[50px] flex items-center justify-center ${
+                      viewMode === mode 
+                        ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-extrabold" 
+                        : "text-slate-800 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-300/50 dark:hover:bg-white/5"
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+
+              {/* Daytime vs 24 Hours Toggle */}
+              {viewMode !== "list" && (
                 <button
-                  key={mode}
-                  id={`view_btn_${mode}`}
-                  onClick={() => setViewMode(mode)}
-                  className={`text-xs px-3 py-1.5 rounded-lg font-bold capitalize transition cursor-pointer min-h-[34px] min-w-[50px] flex items-center justify-center ${
-                    viewMode === mode 
-                      ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-extrabold" 
-                      : "text-slate-800 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-300/50 dark:hover:bg-white/5"
+                  type="button"
+                  id="toggle_daytime_hours_btn"
+                  onClick={() => {
+                    const nextVal = !showFull24Hours;
+                    setShowFull24Hours(nextVal);
+                    localStorage.setItem("calendar_show_24h", String(nextVal));
+                  }}
+                  className={`text-xs px-2.5 py-1.5 rounded-xl border font-bold transition flex items-center gap-1 cursor-pointer min-h-[34px] shadow-2xs ${
+                    showFull24Hours
+                      ? "bg-indigo-500/15 border-indigo-500/30 text-indigo-700 dark:text-indigo-300"
+                      : "bg-slate-200/80 dark:bg-white/10 border-slate-300 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-300"
                   }`}
+                  title={showFull24Hours ? "Switch to Daytime view (hides sleep hours 11pm-7am)" : "Switch to full 24-hour day view"}
                 >
-                  {mode}
+                  <span>{showFull24Hours ? "🌌 24h" : "☀️ Daytime"}</span>
                 </button>
-              ))}
+              )}
+
+              {/* Grid Zoom Density Toggle */}
+              {viewMode !== "list" && (
+                <button
+                  type="button"
+                  id="toggle_grid_density_btn"
+                  onClick={() => {
+                    const nextDensity = gridDensity === "normal" ? "roomy" : gridDensity === "roomy" ? "compact" : "normal";
+                    setGridDensity(nextDensity);
+                    localStorage.setItem("calendar_grid_density", nextDensity);
+                  }}
+                  className="text-xs px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-white/10 bg-slate-200/80 dark:bg-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-300 font-bold transition flex items-center gap-1 cursor-pointer min-h-[34px] shadow-2xs"
+                  title="Cycle grid zoom height (Compact, Normal, Roomy)"
+                >
+                  <Sliders className="w-3.5 h-3.5" />
+                  <span className="capitalize">{gridDensity}</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -2962,6 +3067,223 @@ export default function CalendarView({
         {/* Tier 2: Smart Schedule Toolbar (Connect, Focus Incomplete, Re-balance, Priorities, Bio-Energy, Delay, Regenerate) */}
         <div className="relative z-40 px-3 sm:px-4 py-2 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-start gap-2 overflow-visible">
           <div className="flex items-center gap-1.5 flex-wrap">
+            {/* AUTOPILOT STATUS HUD PILL & TRANSPARENCY POPOVER */}
+            <div className="relative inline-flex items-center" ref={autopilotHUDMenuRef}>
+              <button
+                type="button"
+                id="cal_autopilot_hud_btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowAutopilotHUDMenu(prev => !prev);
+                }}
+                className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95 ${
+                  autopilotMode === "full_autonomous"
+                    ? "bg-purple-100 dark:bg-purple-900/30 text-purple-950 dark:text-purple-200 border-purple-400/80 dark:border-purple-500/50"
+                    : autopilotMode === "copilot_sentinel"
+                    ? "bg-blue-100 dark:bg-blue-900/30 text-blue-950 dark:text-blue-200 border-blue-400/80 dark:border-blue-500/50"
+                    : "bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
+                }`}
+                title="AI Schedule Autopilot Sentinel Status & Transparency Panel"
+              >
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                    autopilotMode !== "manual" ? "bg-emerald-400" : "bg-slate-400"
+                  }`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                    autopilotMode !== "manual" ? "bg-emerald-500" : "bg-slate-500"
+                  }`}></span>
+                </span>
+                <Sparkles className="w-3.5 h-3.5 text-yellow-500 dark:text-yellow-300" />
+                <span>
+                  {autopilotMode === "full_autonomous" ? "Autopilot: Active" : autopilotMode === "copilot_sentinel" ? "Autopilot: Co-Pilot" : "Autopilot: Off"}
+                </span>
+                <ChevronDown className="w-3 h-3 text-slate-400" />
+              </button>
+
+              {/* Autopilot Transparency & Control Popover */}
+              {showAutopilotHUDMenu && (
+                <div
+                  className="absolute left-0 top-full mt-1.5 w-80 bg-white dark:bg-slate-900 border border-slate-300 dark:border-white/15 rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 space-y-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/10 pb-2">
+                    <div className="flex items-center gap-1.5">
+                      <Bot className="w-4 h-4 text-purple-500" />
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">
+                        AI Autopilot Sentinel
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">
+                      ● Live Heartbeat
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
+                    Autonomously monitors up to 28 days ahead. Overdue sessions are dynamically caught up, collisions deconflicted, and burnout limits guarded.
+                  </p>
+
+                  {/* Pacing Controls */}
+                  {onChangeAutopilotPacing && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Optimization Pacing
+                      </span>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(["gentle", "balanced", "aggressive"] as AutopilotPacing[]).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => onChangeAutopilotPacing(p)}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold capitalize transition border cursor-pointer ${
+                              autopilotPacing === p
+                                ? "bg-purple-600 text-white border-purple-600"
+                                : "bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-white/10 hover:bg-slate-200"
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Undo Button if available */}
+                  {canUndoAutopilot && onUndoAutopilot && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAutopilotHUDMenu(false);
+                        onUndoAutopilot();
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Undo Last Autopilot Reschedule</span>
+                    </button>
+                  )}
+
+                  {/* Trigger Manual Scan */}
+                  {onAutoHealSchedule && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAutopilotHUDMenu(false);
+                        onAutoHealSchedule();
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
+                      <span>Scan & Self-Heal Schedule Now</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Take Rest Day / Life Happened Button with Flexible Date Dropdown */}
+            {onLifeHappenedToday && (
+              <div className="relative inline-flex items-center" ref={restDayMenuRef}>
+                <button
+                  type="button"
+                  id="cal_life_happened_btn"
+                  onClick={() => setShowRestDayMenu(!showRestDayMenu)}
+                  className="p-1.5 sm:px-2.5 sm:py-1.5 border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 text-emerald-900 dark:text-emerald-300 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95"
+                  title="Life Happened? Automatically bumps remaining sessions into upcoming open slots this week without breaking streaks!"
+                >
+                  <span>🌴</span>
+                  <span>Take Rest Day</span>
+                  <ChevronDown className="w-3 h-3 opacity-70" />
+                </button>
+
+                {/* Rest Day Options Dropdown */}
+                {showRestDayMenu && (
+                  <div className="absolute right-0 top-full mt-1.5 w-64 bg-white dark:bg-[#151828] border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl p-3 z-50 space-y-2 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-white/10">
+                      <span className="text-[11px] font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                        <span>🌴</span> Rest Day / Emergency Shift
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowRestDayMenu(false)}
+                        className="text-slate-400 hover:text-white p-0.5"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                      Reschedules uncompleted sessions into subsequent open availability slots this week without losing streak count.
+                    </p>
+
+                    <div className="space-y-1">
+                      <button
+                        type="button"
+                        id="cal_take_today_off_action"
+                        onClick={() => {
+                          setShowRestDayMenu(false);
+                          onLifeHappenedToday(new Date());
+                        }}
+                        className="w-full text-left px-2.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span>🌴</span>
+                          <span>Take Today Off</span>
+                        </span>
+                        <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">Today</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        id="cal_take_tomorrow_off_action"
+                        onClick={() => {
+                          setShowRestDayMenu(false);
+                          const tomorrow = new Date();
+                          tomorrow.setDate(tomorrow.getDate() + 1);
+                          onLifeHappenedToday(tomorrow);
+                        }}
+                        className="w-full text-left px-2.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span>🌅</span>
+                          <span>Take Tomorrow Off</span>
+                        </span>
+                        <span className="text-[10px] font-mono text-slate-400">Tomorrow</span>
+                      </button>
+                    </div>
+
+                    {/* Custom Date Off */}
+                    <div className="pt-2 border-t border-slate-100 dark:border-white/10 space-y-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 block">Or Choose Specific Date:</span>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="date"
+                          value={customRestDate}
+                          onChange={(e) => setCustomRestDate(e.target.value)}
+                          className="flex-1 text-[11px] p-1.5 bg-slate-100 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-lg text-slate-900 dark:text-white font-mono focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          disabled={!customRestDate}
+                          onClick={() => {
+                            if (customRestDate) {
+                              setShowRestDayMenu(false);
+                              const parts = customRestDate.split("-");
+                              const parsed = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+                              onLifeHappenedToday(parsed);
+                              setCustomRestDate("");
+                            }
+                          }}
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                        >
+                          Shift
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Calendar Sync Hub (Apple, Google, Outlook) */}
             <button
               id="open_sync_sidebar_btn"
@@ -3692,30 +4014,10 @@ export default function CalendarView({
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Choose your preferred calendar to sync or export this session:
+              Choose your preferred calendar to add this session:
             </p>
 
             <div className="space-y-2">
-              {/* Apple Calendar (.ics) */}
-              <button
-                type="button"
-                id="sync_evt_apple_btn"
-                onClick={() => {
-                  const icsData = generateIcsCalendar([eventSyncMenuEvt], goals, {
-                    calendarName: eventSyncMenuEvt.title
-                  });
-                  downloadIcsFile(`${eventSyncMenuEvt.title.replace(/[^a-zA-Z0-9]/g, "_")}.ics`, icsData);
-                  setEventSyncMenuEvt(null);
-                }}
-                className="w-full p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold flex items-center justify-between transition cursor-pointer"
-              >
-                <span className="flex items-center gap-2.5">
-                  <span className="text-base">🍏</span>
-                  <span>Apple Calendar (.ics download)</span>
-                </span>
-                <Download className="w-3.5 h-3.5 text-slate-400" />
-              </button>
-
               {/* Google Calendar Web Intent */}
               <a
                 id="sync_evt_google_link"
@@ -4070,7 +4372,7 @@ export default function CalendarView({
             {/* Hourly schedule rows */}
             <div className="relative flex-1 bg-transparent">
               {hours.map((hour) => (
-                <div key={hour} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200/70 dark:border-white/5 h-16 min-h-16">
+                <div key={hour} style={{ height: `${hourHeightWeek}px`, minHeight: `${hourHeightWeek}px` }} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200/70 dark:border-white/5">
                   {/* Hour Label */}
                   <div className="p-1 px-2.5 text-right text-[10px] font-mono font-medium text-slate-500 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 bg-transparent select-none whitespace-nowrap self-center">
                     {hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}
@@ -4109,7 +4411,7 @@ export default function CalendarView({
               ))}
 
               {/* Google Calendar Current Time Horizontal Line */}
-              {todayIdx !== -1 && currentTopPixelWeek >= 0 && currentTopPixelWeek <= hours.length * 64 && (
+              {todayIdx !== -1 && currentTopPixelWeek >= 0 && currentTopPixelWeek <= hours.length * hourHeightWeek && (
                 <div
                   id="current_time_week_line"
                   className="absolute z-30 pointer-events-none flex items-center left-[80px] right-0"
@@ -4144,12 +4446,12 @@ export default function CalendarView({
                 const startHour = evtStart.getHours() + evtStart.getMinutes() / 60;
                 const endHour = evtEnd.getHours() + evtEnd.getMinutes() / 60;
 
-                const hourHeight = 64; // pixels per hour
-                const minOffsetHour = 8; // we start at 08:00
+                const hourHeight = hourHeightWeek; // pixels per hour
+                const minOffsetHour = gridStartHour; // dynamic start hour
                 const topPixel = (startHour - minOffsetHour) * hourHeight;
                 const durationHours = Math.max(endHour - startHour, 0.25);
                 const rawHeightPixel = durationHours * hourHeight;
-                const heightPixel = Math.max(rawHeightPixel, 28); // clean min height
+                const heightPixel = Math.max(rawHeightPixel, 26); // clean min height
 
                 const colors = getEventColorStyles(evt);
                 const isHovered = hoveredEventId === evt.id;
@@ -4253,6 +4555,23 @@ export default function CalendarView({
                             >
                               <Target className="w-2.5 h-2.5 shrink-0" style={{ color: tiedGoal.color }} />
                               <span className="truncate">{tiedGoal.name}</span>
+                            </span>
+                          );
+                        })()}
+
+                        {/* Target Exam / Milestone Countdown Badge */}
+                        {(() => {
+                          const tiedGoal = goals.find(g => g.id === evt.goalId);
+                          if (!tiedGoal?.targetExamDate) return null;
+                          const examDate = new Date(tiedGoal.targetExamDate);
+                          const diffDays = Math.ceil((examDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                          return (
+                            <span
+                              className="text-[8px] font-extrabold px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 truncate max-w-full inline-flex items-center gap-0.5 mt-0.5 shadow-2xs"
+                              title={`Target: ${tiedGoal.targetExamTitle || 'Exam'} on ${examDate.toLocaleDateString()}`}
+                            >
+                              <span>🎯</span>
+                              <span className="truncate">{tiedGoal.targetExamTitle || "Exam"}: {diffDays > 0 ? `${diffDays}d` : "Due"}</span>
                             </span>
                           );
                         })()}

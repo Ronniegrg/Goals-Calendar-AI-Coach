@@ -79,6 +79,13 @@ export interface Goal {
   pauseReason?: string;
   pauseUntil?: string;
   pausedAt?: string;
+  resourceLink?: string; // Direct link to course portal, GitHub, Notion, etc.
+  resourceLabel?: string; // e.g. "Course Portal", "Lab Console", "GitHub Repo"
+  targetTotalHours?: number; // Total curriculum hours for completion forecaster
+  targetCompletionDate?: string; // Target certification or finish date
+  targetExamDate?: string; // e.g. "2026-11-20"
+  targetExamTitle?: string; // e.g. "CompTIA Security+ Exam"
+  chapters?: { id: string; title: string; completed: boolean }[];
 }
 
 export interface CalendarEvent {
@@ -91,12 +98,28 @@ export interface CalendarEvent {
   completed: boolean;
   notes?: string;
   completionNote?: string;
+  keyTakeaway?: string; // 30-sec post-session reflection note
+  confidenceRating?: "mastered" | "good" | "needs_review";
   icon?: string;
   energyLevel?: EnergyLevel;
   subSteps?: SessionSubStep[];
   subtasks?: SubTask[];
+  activeChapterId?: string;
+  activeChapterTitle?: string;
   isBufferCatchUp?: boolean;
   isShielded?: boolean;
+}
+
+export interface LearningLogEntry {
+  id: string;
+  eventId: string;
+  goalId?: string;
+  goalName: string;
+  goalColor?: string;
+  date: string;
+  durationMinutes: number;
+  takeaway: string;
+  confidenceRating?: "mastered" | "good" | "needs_review";
 }
 
 export interface AvailabilityWindow {
@@ -221,6 +244,12 @@ export interface AIScheduleProposal {
 }
 
 export type AutopilotMode = "full_autonomous" | "copilot_sentinel" | "manual";
+export type AutopilotPacing = "gentle" | "balanced" | "aggressive";
+
+export interface DailyBurnoutLimits {
+  weekdayMaxHours: number; // e.g. 3.5
+  weekendMaxHours: number; // e.g. 5.0
+}
 
 export interface AutopilotLogEntry {
   id: string;

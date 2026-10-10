@@ -22,7 +22,8 @@ import {
   Timer,
   Trash2,
   Hourglass,
-  Layers
+  Layers,
+  BookOpen
 } from "lucide-react";
 import { CalendarEvent, Goal, SubTask, SessionSubStep } from "../types";
 import { 
@@ -36,6 +37,7 @@ import {
   ActiveTimerData 
 } from "./FocusTimerModal";
 import { renderGoalIcon } from "../lib/goalIcons";
+import GoalStartBriefingModal from "./GoalStartBriefingModal";
 
 interface ActiveExecutionHUDProps {
   events: CalendarEvent[];
@@ -78,6 +80,13 @@ export default function ActiveExecutionHUD({
   const [showGoalPicker, setShowGoalPicker] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [newSubtaskMinutes, setNewSubtaskMinutes] = useState<number>(15);
+
+  // Target goal and session for "Where to start" briefing note popup
+  const [briefingTarget, setBriefingTarget] = useState<{
+    goal: Goal;
+    event?: CalendarEvent | null;
+    isStudyAhead: boolean;
+  } | null>(null);
 
   // Sync with global timer events (dispatched by FocusTimerModal on start, pause, resume, tick, finish)
   useEffect(() => {
@@ -356,11 +365,8 @@ export default function ActiveExecutionHUD({
     }
   };
 
-  // User Actions for Timer:
-  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent) => {
-    const g = overrideGoal || effectiveGoal;
-    const evt = overrideEvent || effectiveEvent;
-
+  // Actual execution of study timer
+  const executeStartStudying = (g?: Goal, evt?: CalendarEvent | null, noteOverride?: string) => {
     const title = evt?.title || g?.name || "Focus Study Session";
     const duration = evt ? Math.max(15, Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)) : (g?.durationMinutes || 45);
 
@@ -381,13 +387,41 @@ export default function ActiveExecutionHUD({
       goalId: g?.id || evt?.goalId,
       category: g?.category || evt?.type,
       color: g?.color || "#6366f1",
-      previousSessionNote: g?.lastSessionNote,
+      previousSessionNote: noteOverride !== undefined ? noteOverride : g?.lastSessionNote,
       subSteps: subStepsToPass,
       autoStart: true,
       openModal: false
     });
     setShowGoalPicker(false);
     setShowTomorrowPicker(false);
+  };
+
+  // User Actions for Timer:
+  // When user clicks "Start Studying Now" or "Study Ahead Now":
+  // If the goal has a note saved, show the note so they know where to start!
+  // Otherwise, start normally without interruption.
+  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent) => {
+    const evt = overrideEvent || effectiveEvent;
+    const g = overrideGoal || effectiveGoal || (evt ? goals.find(goal => goal.id === evt.goalId || goal.name.toLowerCase() === evt.title.toLowerCase()) : undefined);
+
+    const isAhead = Boolean(
+      isStudyAheadMode || 
+      (overrideGoal && activeTomorrowGoal && overrideGoal.id === activeTomorrowGoal.id) ||
+      (overrideEvent && tomorrowEvents.some(te => te.id === overrideEvent.id))
+    );
+
+    // Check if goal has a saved note to tell the user where to start
+    if (g && g.lastSessionNote && g.lastSessionNote.trim().length > 0) {
+      setBriefingTarget({
+        goal: g,
+        event: evt,
+        isStudyAhead: isAhead
+      });
+      return;
+    }
+
+    // Otherwise, works normally
+    executeStartStudying(g, evt);
   };
 
   const handlePullTomorrowEventToToday = (evt: CalendarEvent) => {
@@ -974,6 +1008,44 @@ export default function ActiveExecutionHUD({
         {showSubtasks && (
           <div className="mt-4 pt-3.5 border-t border-slate-100 dark:border-white/5 space-y-3.5">
             
+            {/* Goal Syllabus Modules Progress */}
+            {effectiveGoal?.chapters && effectiveGoal.chapters.length > 0 && (
+              <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Syllabus Checkpoints ({effectiveGoal.chapters.filter(c => c.completed).length}/{effectiveGoal.chapters.length})</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {Math.round((effectiveGoal.chapters.filter(c => c.completed).length / effectiveGoal.chapters.length) * 100)}% complete
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {effectiveGoal.chapters.map((ch, idx) => (
+                    <button
+                      key={ch.id}
+                      type="button"
+                      onClick={() => {
+                        if (effectiveGoal && onEditGoal) {
+                          const updated = effectiveGoal.chapters?.map(c => c.id === ch.id ? { ...c, completed: !c.completed } : c) || [];
+                          onEditGoal(effectiveGoal.id, { chapters: updated });
+                        }
+                      }}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-medium border flex items-center gap-1 transition cursor-pointer ${
+                        ch.completed 
+                          ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30 line-through" 
+                          : "bg-white/5 hover:bg-white/10 text-slate-200 border-white/10"
+                      }`}
+                      title={ch.completed ? "Mark incomplete" : "Mark chapter complete"}
+                    >
+                      <Check className={`w-3 h-3 ${ch.completed ? "text-emerald-400" : "opacity-40"}`} />
+                      <span>{idx + 1}. {ch.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Header with Total Allocation & Budgeting Status */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -1200,6 +1272,29 @@ export default function ActiveExecutionHUD({
         )}
 
       </div>
+
+      {/* Goal Carryover Note "Where to Start" Briefing Modal */}
+      {briefingTarget && (
+        <GoalStartBriefingModal
+          isOpen={Boolean(briefingTarget)}
+          onClose={() => setBriefingTarget(null)}
+          goal={briefingTarget.goal}
+          event={briefingTarget.event}
+          isStudyAhead={briefingTarget.isStudyAhead}
+          onConfirmStart={(editedNote) => {
+            executeStartStudying(briefingTarget.goal, briefingTarget.event, editedNote);
+            setBriefingTarget(null);
+          }}
+          onUpdateGoalNote={(goalId, updatedNote) => {
+            if (onEditGoal) {
+              onEditGoal(goalId, {
+                lastSessionNote: updatedNote,
+                lastSessionNoteDate: new Date().toISOString()
+              });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

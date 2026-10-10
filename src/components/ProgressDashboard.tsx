@@ -37,12 +37,17 @@ import {
   Eye,
   EyeOff,
   Pause,
-  Shield
+  Shield,
+  FileText,
+  Copy,
+  Check,
+  X
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
 import HabitConsistencyHeatmap from "./HabitConsistencyHeatmap";
 import EnergyScheduleAnalytics from "./EnergyScheduleAnalytics";
+import WeeklyRetrospectiveForecaster from "./WeeklyRetrospectiveForecaster";
 import { UserEnergyProfile } from "../types";
 import { isDateShielded, getStreakShieldBank } from "../lib/streakProtection";
 
@@ -52,11 +57,46 @@ interface ProgressDashboardProps {
   onNavigateToDate?: (date: Date) => void;
   energyProfile?: UserEnergyProfile;
   onOpenStreakShield?: () => void;
+  onEditGoal?: (goalId: string, fields: Partial<Omit<Goal, "id" | "createdAt">>) => void;
 }
 
-export default function ProgressDashboard({ goals, events, onNavigateToDate, energyProfile, onOpenStreakShield }: ProgressDashboardProps) {
+export default function ProgressDashboard({ goals, events, onNavigateToDate, energyProfile, onOpenStreakShield, onEditGoal }: ProgressDashboardProps) {
   const [selectedHeatmapDay, setSelectedHeatmapDay] = useState<number | null>(null);
+  const [showWeeklyReportModal, setShowWeeklyReportModal] = useState(false);
+  const [copiedReport, setCopiedReport] = useState(false);
   const streakBank = getStreakShieldBank();
+
+  // Compute Weekly Summary details
+  const currentNow = new Date();
+  const dayOfWeek = currentNow.getDay();
+  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const mondayThisWeek = new Date(currentNow);
+  mondayThisWeek.setDate(currentNow.getDate() + diffToMonday);
+  mondayThisWeek.setHours(0, 0, 0, 0);
+
+  const sundayThisWeek = new Date(mondayThisWeek);
+  sundayThisWeek.setDate(mondayThisWeek.getDate() + 6);
+  sundayThisWeek.setHours(23, 59, 59, 999);
+
+  const thisWeekEvents = events.filter(e => {
+    const d = new Date(e.start);
+    return d >= mondayThisWeek && d <= sundayThisWeek;
+  });
+
+  const thisWeekCompleted = thisWeekEvents.filter(e => e.completed);
+  const thisWeekTotalHours = Math.round(
+    thisWeekCompleted.reduce((acc, e) => {
+      const dur = Math.max(15, (new Date(e.end).getTime() - new Date(e.start).getTime()) / 60000);
+      return acc + dur;
+    }, 0) / 60 * 10
+  ) / 10;
+
+  const thisWeekTargetHours = Math.round(
+    goals.reduce((acc, g) => acc + (g.weeklyTarget * (g.durationMinutes || 60)), 0) / 60 * 10
+  ) / 10;
+
+  const allChapters = goals.flatMap(g => (g.chapters || []).map(c => ({ ...c, goalName: g.name })));
+  const completedChapters = allChapters.filter(c => c.completed);
 
   // 1. Calculate general numbers
   const completedEvents = events.filter(e => e.completed);
@@ -335,6 +375,36 @@ export default function ProgressDashboard({ goals, events, onNavigateToDate, ene
   return (
     <div className="space-y-6">
       
+      {/* Executive Weekly Performance Report Banner */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-2xl bg-gradient-to-r from-indigo-900/30 via-purple-900/20 to-slate-900/40 border border-indigo-500/30 shadow-lg">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-indigo-500/20 text-indigo-300 rounded-xl">
+            <FileText className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <span>Executive Weekly Performance Report</span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
+                {mondayThisWeek.toLocaleDateString([], { month: "short", day: "numeric" })} - {sundayThisWeek.toLocaleDateString([], { month: "short", day: "numeric" })}
+              </span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {thisWeekTotalHours}h logged of {thisWeekTargetHours}h target • {thisWeekCompleted.length} of {thisWeekEvents.length} sessions completed
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          id="btn_open_weekly_executive_report"
+          onClick={() => setShowWeeklyReportModal(true)}
+          className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-2 shadow-md shadow-indigo-600/30 transition cursor-pointer active:scale-95 shrink-0"
+        >
+          <FileText className="w-4 h-4" />
+          <span>View Weekly Report</span>
+        </button>
+      </div>
+
       {/* SECTION 1: TOP METRICS HEADERS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" id="metrics_cards_row">
         
@@ -934,12 +1004,173 @@ export default function ProgressDashboard({ goals, events, onNavigateToDate, ene
         </div>
       </div>
 
+      {/* SECTION 4.5: WEEKLY RETROSPECTIVE & CURRICULUM FORECASTER */}
+      <WeeklyRetrospectiveForecaster
+        goals={goals}
+        events={events}
+        onEditGoal={onEditGoal}
+        onNavigateToCalendarDate={onNavigateToDate}
+      />
+
       {/* SECTION 5: WEEKLY CIRCADIAN & ENERGY SCHEDULE ALIGNMENT */}
       <EnergyScheduleAnalytics 
         goals={goals}
         events={events}
         energyProfile={energyProfile}
       />
+
+      {/* EXECUTIVE WEEKLY REPORT MODAL */}
+      {showWeeklyReportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-fade-in">
+          <div className="bg-[#121526] border border-white/10 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-500/20 text-indigo-300 rounded-xl">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Executive Weekly Performance Report</h3>
+                  <p className="text-xs text-slate-400 font-mono">
+                    {mondayThisWeek.toLocaleDateString([], { month: "short", day: "numeric" })} – {sundayThisWeek.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWeeklyReportModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Scorecard Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3 bg-white/5 border border-white/5 rounded-xl text-center">
+                <p className="text-[10px] font-bold text-slate-400 uppercase">Hours Logged</p>
+                <p className="text-lg font-bold text-white font-mono mt-0.5">{thisWeekTotalHours}h</p>
+                <p className="text-[10px] text-slate-400">of {thisWeekTargetHours}h target</p>
+              </div>
+
+              <div className="p-3 bg-white/5 border border-white/5 rounded-xl text-center">
+                <p className="text-[10px] font-bold text-slate-400 uppercase">Consistency</p>
+                <p className="text-lg font-bold text-indigo-300 font-mono mt-0.5">{consistencyScore}%</p>
+                <p className="text-[10px] text-slate-400">Scorecard</p>
+              </div>
+
+              <div className="p-3 bg-white/5 border border-white/5 rounded-xl text-center">
+                <p className="text-[10px] font-bold text-slate-400 uppercase">Streak</p>
+                <p className="text-lg font-bold text-amber-300 font-mono mt-0.5">{currentStreak} Days</p>
+                <p className="text-[10px] text-slate-400">Active run</p>
+              </div>
+
+              <div className="p-3 bg-white/5 border border-white/5 rounded-xl text-center">
+                <p className="text-[10px] font-bold text-slate-400 uppercase">Sessions</p>
+                <p className="text-lg font-bold text-emerald-300 font-mono mt-0.5">{thisWeekCompleted.length}/{thisWeekEvents.length}</p>
+                <p className="text-[10px] text-slate-400">Completed</p>
+              </div>
+            </div>
+
+            {/* Goals Detailed Breakdown */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Goal Progress Breakdown</h4>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {goals.map((g) => {
+                  const goalEventsThisWeek = thisWeekEvents.filter(e => e.goalId === g.id);
+                  const goalCompletedThisWeek = goalEventsThisWeek.filter(e => e.completed);
+                  const hrs = Math.round(goalCompletedThisWeek.length * (g.durationMinutes || 60) / 60 * 10) / 10;
+                  const targetHrs = Math.round(g.weeklyTarget * (g.durationMinutes || 60) / 60 * 10) / 10;
+                  const pct = targetHrs > 0 ? Math.min(100, Math.round((hrs / targetHrs) * 100)) : 100;
+
+                  return (
+                    <div key={g.id} className="p-2.5 bg-white/5 border border-white/5 rounded-xl flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                        <span className="font-bold text-white truncate max-w-[180px]">{g.name}</span>
+                      </div>
+                      <div className="flex items-center gap-3 font-mono text-[11px]">
+                        <span className="text-slate-300">{hrs}h / {targetHrs}h</span>
+                        <span className={`px-1.5 py-0.5 rounded font-bold ${pct >= 100 ? "bg-emerald-500/20 text-emerald-300" : "bg-white/10 text-slate-300"}`}>
+                          {pct}%
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Syllabus Checkpoints Cleared */}
+            {completedChapters.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Syllabus Checkpoints Mastered ({completedChapters.length})</span>
+                </h4>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {completedChapters.map((ch) => (
+                    <span key={ch.id} className="px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] font-medium flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      <span className="truncate max-w-[200px]">{ch.title}</span>
+                      <span className="opacity-60 text-[9px]">({ch.goalName})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Copy Markdown Summary Action */}
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">
+                Ready for Notion, Obsidian, or journaling
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const goalLines = goals.map(g => {
+                    const goalEvts = thisWeekEvents.filter(e => e.goalId === g.id);
+                    const comp = goalEvts.filter(e => e.completed);
+                    const hrs = Math.round(comp.length * (g.durationMinutes || 60) / 60 * 10) / 10;
+                    const target = Math.round(g.weeklyTarget * (g.durationMinutes || 60) / 60 * 10) / 10;
+                    return `- **${g.name}:** ${hrs}h / ${target}h (${Math.round((hrs / Math.max(0.1, target)) * 100)}%)`;
+                  }).join("\n");
+
+                  const chapterLines = completedChapters.length > 0
+                    ? completedChapters.map(c => `- ✅ ${c.title} (${c.goalName})`).join("\n")
+                    : "- None yet this week";
+
+                  const text = `# 📊 Executive Weekly Performance Report
+**Period:** ${mondayThisWeek.toLocaleDateString([], { month: "short", day: "numeric" })} - ${sundayThisWeek.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}
+
+### 🎯 Key Performance Metrics
+- **Consistency Score:** ${consistencyScore}%
+- **Active Streak:** ${currentStreak} Days
+- **Total Hours Completed:** ${thisWeekTotalHours}h / ${thisWeekTargetHours}h
+- **Sessions Completed:** ${thisWeekCompleted.length} of ${thisWeekEvents.length}
+
+### 📚 Goal Breakdown
+${goalLines}
+
+### 🏆 Syllabus Checkpoints Cleared
+${chapterLines}
+`;
+                  if (navigator?.clipboard) {
+                    navigator.clipboard.writeText(text);
+                    setCopiedReport(true);
+                    setTimeout(() => setCopiedReport(false), 2500);
+                  }
+                }}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                  copiedReport ? "bg-emerald-600 text-white" : "bg-indigo-600 hover:bg-indigo-500 text-white"
+                }`}
+              >
+                {copiedReport ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedReport ? "Copied to Clipboard!" : "Copy Markdown Summary"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
     </div>
   );

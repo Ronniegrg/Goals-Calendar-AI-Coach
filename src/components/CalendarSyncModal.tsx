@@ -324,7 +324,7 @@ export default function CalendarSyncModal({
             }`}
           >
             <Send className="w-3.5 h-3.5" />
-            <span>1-Click Push & Export</span>
+            <span>1-Click Push to Calendars</span>
           </button>
 
           <button
@@ -647,32 +647,10 @@ export default function CalendarSyncModal({
           )}
 
           {/* ────────────────────────────────────────────────────────── */}
-          {/* TAB 2: 1-CLICK PUSH & EXPORT */}
+          {/* TAB 2: 1-CLICK PUSH TO CALENDARS */}
           {/* ────────────────────────────────────────────────────────── */}
           {activeTab === "push" && (
             <div className="space-y-6">
-              {/* Full Calendar File Export Card */}
-              <div className="p-4 rounded-xl bg-white/[0.03] border border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <Download className="w-4 h-4 text-emerald-400" />
-                    Download Full Schedule File (.ics)
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Export all {userGoalEvents.length} scheduled workout and study sessions as a universal file you can double-click or drag into any calendar app.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  id="btn_download_full_ics"
-                  onClick={handleDownloadFullIcs}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-600/20 transition cursor-pointer shrink-0 active:scale-98"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download .ics File</span>
-                </button>
-              </div>
-
               {/* 1-Click Upcoming Sessions Web Intent Pusher */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">

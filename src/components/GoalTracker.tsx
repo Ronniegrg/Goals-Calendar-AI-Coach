@@ -28,11 +28,13 @@ import {
   CalendarOff,
   ArrowRight,
   Bot,
-  Shield
+  Shield,
+  ExternalLink
 } from "lucide-react";
-import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority, EnergyLevel, UserEnergyProfile } from "../types";
+import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
+import GoalStartBriefingModal from "./GoalStartBriefingModal";
 import { getStreakShieldBank } from "../lib/streakProtection";
 import { 
   alignDailyEventsByPriority, 
@@ -169,7 +171,7 @@ interface GoalTrackerProps {
   onBulkAddEvents: (newEvents: CalendarEvent[]) => void;
   onBulkEditEvents?: (updates: { id: string; fields: Partial<Omit<CalendarEvent, "id">> }[]) => void;
   onAddNotification: (title: string, message: string, type: "upcoming" | "warning" | "motivation" | "success" | "sync", action?: { label: string; onClick: () => void }) => void;
-  onNavigateToCalendar?: (date?: Date) => void;
+  onNavigateToCalendar?: (date?: Date, eventId?: string) => void;
   autoScheduleEnabled?: boolean;
   onToggleAutoSchedule?: (val: boolean) => void;
   onCompleteSession?: (eventId?: string, goalId?: string, note?: string) => void;
@@ -179,6 +181,8 @@ interface GoalTrackerProps {
   onOpenEnergyModal?: () => void;
   onNavigateToAiSchedule?: () => void;
   onOpenStreakShield?: () => void;
+  burnoutLimits?: DailyBurnoutLimits;
+  onUpdateBurnoutLimits?: (limits: DailyBurnoutLimits) => void;
 }
 
 export default function GoalTracker({
@@ -202,7 +206,9 @@ export default function GoalTracker({
   energyProfile,
   onOpenEnergyModal,
   onNavigateToAiSchedule,
-  onOpenStreakShield
+  onOpenStreakShield,
+  burnoutLimits,
+  onUpdateBurnoutLimits
 }: GoalTrackerProps) {
   const streakBank = getStreakShieldBank();
   // Goal Form State
@@ -268,6 +274,12 @@ export default function GoalTracker({
   const [timerOpen, setTimerOpen] = useState(false);
   const [timerGoal, setTimerGoal] = useState<Goal | null>(null);
 
+  // Target goal for "Where to start" briefing note popup
+  const [briefingTarget, setBriefingTarget] = useState<{
+    goal: Goal;
+    isStudyAhead: boolean;
+  } | null>(null);
+
   const getPauseReasonLabel = (reason?: string) => {
     switch (reason) {
       case "exam_week": return "📝 Exam Week";
@@ -279,16 +291,36 @@ export default function GoalTracker({
     }
   };
 
-  const handleStartTimer = (g: Goal) => {
+  const executeStartTimer = (g: Goal, noteOverride?: string, isStudyAhead = false) => {
     triggerFocusTimer({
       title: g.name,
-      duration: g.durationMinutes || 60,
+      duration: isStudyAhead ? (g.durationMinutes || 45) : (g.durationMinutes || 60),
       goalId: g.id,
       category: g.category || g.type,
       color: g.color || "#6366f1",
-      previousSessionNote: g.lastSessionNote,
-      subSteps: g.subSteps
+      previousSessionNote: noteOverride !== undefined ? noteOverride : g.lastSessionNote,
+      subSteps: g.subSteps,
+      autoStart: true,
+      openModal: !isStudyAhead
     });
+  };
+
+  const handleStartTimer = (g: Goal) => {
+    // If goal has saved carryover note, show where to start briefing
+    if (g.lastSessionNote && g.lastSessionNote.trim().length > 0) {
+      setBriefingTarget({ goal: g, isStudyAhead: false });
+      return;
+    }
+    executeStartTimer(g, undefined, false);
+  };
+
+  const handleStartStudyAhead = (g: Goal) => {
+    // If goal has saved carryover note, show where to start briefing
+    if (g.lastSessionNote && g.lastSessionNote.trim().length > 0) {
+      setBriefingTarget({ goal: g, isStudyAhead: true });
+      return;
+    }
+    executeStartTimer(g, undefined, true);
   };
 
   const handleCompleteTimerSession = (_eventId?: string, goalId?: string, note?: string) => {
@@ -502,7 +534,8 @@ export default function GoalTracker({
       totalPending: uncompleted.length,
       isPast: startDate.getTime() < now.getTime(),
       date: startDate,
-      upcomingList: uncompleted.slice(0, 3)
+      upcomingList: uncompleted.slice(0, 3),
+      event: nextEvt
     };
   };
 
@@ -671,6 +704,14 @@ export default function GoalTracker({
   const [icon, setIcon] = useState("target");
   const [priority, setPriority] = useState<GoalPriority>("normal");
   const [energyLevel, setEnergyLevel] = useState<EnergyLevel>("moderate");
+  const [resourceLink, setResourceLink] = useState("");
+  const [resourceLabel, setResourceLabel] = useState("");
+  const [targetTotalHours, setTargetTotalHours] = useState<number>(40);
+  const [targetCompletionDate, setTargetCompletionDate] = useState("");
+  const [targetExamDate, setTargetExamDate] = useState("");
+  const [targetExamTitle, setTargetExamTitle] = useState("");
+  const [chapters, setChapters] = useState<{ id: string; title: string; completed: boolean }[]>([]);
+  const [newChapterInput, setNewChapterInput] = useState("");
 
   // Catalog filter and sort state
   const [priorityFilter, setPriorityFilter] = useState<"all" | GoalPriority>("all");
@@ -702,6 +743,77 @@ export default function GoalTracker({
       document.getElementById("add_goal_form_anchor")?.scrollIntoView({ behavior: "smooth" });
       document.getElementById("goal_name_input")?.focus();
     }, 100);
+  };
+
+  const handleGenerateSyllabusChapters = () => {
+    const query = `${name} ${targetExamTitle} ${category}`.toLowerCase();
+    let generatedTitles: string[] = [];
+
+    if (query.includes("security") || query.includes("cyber") || query.includes("comptia") || query.includes("cissp") || query.includes("ceh")) {
+      generatedTitles = [
+        "1. Threats, Attacks & Vulnerability Surface Analysis",
+        "2. Security Architecture, Zero Trust & Cryptography",
+        "3. Implementation: Identity, Access & Endpoint Controls",
+        "4. Operations, Incident Response & Digital Forensics",
+        "5. Governance, Risk Management & Compliance Drills"
+      ];
+    } else if (query.includes("python") || query.includes("javascript") || query.includes("react") || query.includes("code") || query.includes("develop") || query.includes("programm") || query.includes("software")) {
+      generatedTitles = [
+        "1. Syntax, Data Types & Control Structures",
+        "2. Modular Architecture, Functions & Standard Libraries",
+        "3. Object-Oriented Design & Data Structures",
+        "4. Asynchronous Patterns, APIs & Error Handling",
+        "5. Full Project Implementation & Automated Testing"
+      ];
+    } else if (query.includes("aws") || query.includes("cloud") || query.includes("azure") || query.includes("gcp") || query.includes("devops")) {
+      generatedTitles = [
+        "1. Cloud Core Fundamentals & Global Infrastructure",
+        "2. Identity & Access Management (IAM) & Security Models",
+        "3. Compute Services & Serverless Architecture",
+        "4. Virtual Networking, VPC Peering & DNS Routing",
+        "5. Storage, High Availability & Practice Mock Exams"
+      ];
+    } else if (query.includes("math") || query.includes("calculus") || query.includes("algebra") || query.includes("physic") || query.includes("chemist")) {
+      generatedTitles = [
+        "1. Foundational Axioms, Definitions & Formulas",
+        "2. Core Theorems & Standard Problem Sets",
+        "3. Advanced Methods & Complex Application Scenarios",
+        "4. Timed Problem-Solving & Error Analysis Drills",
+        "5. Comprehensive Final Review & Mock Exam"
+      ];
+    } else if (query.includes("run") || query.includes("marathon") || query.includes("workout") || query.includes("gym") || query.includes("fitness")) {
+      generatedTitles = [
+        "1. Base Aerobic Capacity & Form Diagnostics",
+        "2. Progressive Overload & Volume Building Phase",
+        "3. Threshold Tempo & High-Intensity Intervals",
+        "4. Tapering, Mobility & Active Recovery",
+        "5. Race Day / Peak Performance Benchmarking"
+      ];
+    } else if (query.includes("spanish") || query.includes("french") || query.includes("german") || query.includes("language") || query.includes("japan")) {
+      generatedTitles = [
+        "1. Phonetics, Common Vocabulary & Everyday Phrases",
+        "2. Essential Grammar & Present/Past Conjugations",
+        "3. Conversational Dialogue & Listening Comprehension",
+        "4. Reading Articles & Intermediate Sentence Construction",
+        "5. Fluency Drills, Speech Practice & Idiomatic Mastery"
+      ];
+    } else {
+      const subject = name.trim() || targetExamTitle.trim() || "Course";
+      generatedTitles = [
+        `1. Introduction & Foundational Concepts of ${subject}`,
+        `2. Core Principles, Methodologies & Tooling`,
+        `3. Intermediate Applications & Guided Case Studies`,
+        `4. Hands-on Exercises & Problem-Solving Drills`,
+        `5. Advanced Synthesis, Final Review & Assessment`
+      ];
+    }
+
+    const newModules = generatedTitles.map((t, idx) => ({
+      id: `ch_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+      title: t,
+      completed: false
+    }));
+    setChapters(newModules);
   };
 
   const handleCustomizeRecommendation = (rec: Partial<Goal>) => {
@@ -782,7 +894,14 @@ export default function GoalTracker({
         color,
         icon,
         priority,
-        energyLevel
+        energyLevel,
+        resourceLink: resourceLink.trim() || undefined,
+        resourceLabel: resourceLabel.trim() || undefined,
+        targetTotalHours: Number(targetTotalHours) || undefined,
+        targetCompletionDate: targetCompletionDate || undefined,
+        targetExamDate: targetExamDate || undefined,
+        targetExamTitle: targetExamTitle.trim() || undefined,
+        chapters: chapters.length > 0 ? chapters : undefined
       });
 
       onAddNotification(
@@ -810,7 +929,14 @@ export default function GoalTracker({
         color,
         icon,
         priority,
-        energyLevel
+        energyLevel,
+        resourceLink: resourceLink.trim() || undefined,
+        resourceLabel: resourceLabel.trim() || undefined,
+        targetTotalHours: Number(targetTotalHours) || undefined,
+        targetCompletionDate: targetCompletionDate || undefined,
+        targetExamDate: targetExamDate || undefined,
+        targetExamTitle: targetExamTitle.trim() || undefined,
+        chapters: chapters.length > 0 ? chapters : undefined
       });
 
       onAddNotification(
@@ -879,6 +1005,14 @@ export default function GoalTracker({
     setIcon("target");
     setPriority("normal");
     setEnergyLevel("moderate");
+    setResourceLink("");
+    setResourceLabel("");
+    setTargetTotalHours(40);
+    setTargetCompletionDate("");
+    setTargetExamDate("");
+    setTargetExamTitle("");
+    setChapters([]);
+    setNewChapterInput("");
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -889,6 +1023,14 @@ export default function GoalTracker({
     setType(g.type);
     setCategory(g.category);
     setWeeklyTarget(g.weeklyTarget);
+    setResourceLink(g.resourceLink || "");
+    setResourceLabel(g.resourceLabel || "");
+    setTargetTotalHours(g.targetTotalHours || 40);
+    setTargetCompletionDate(g.targetCompletionDate || "");
+    setTargetExamDate(g.targetExamDate || "");
+    setTargetExamTitle(g.targetExamTitle || "");
+    setChapters(g.chapters ? [...g.chapters] : []);
+    setNewChapterInput("");
     if (g.weeklyTarget > 7) {
       setIsCustomTarget(true);
       setCustomTargetVal(String(g.weeklyTarget));
@@ -1186,7 +1328,40 @@ export default function GoalTracker({
             {autoScheduleEnabled && <span className="block mt-1 text-[11px] text-emerald-300 font-medium">⚡ Running silently in the background: New goals/presets will be scheduled instantly without interference!</span>}
           </p>
         </div>
-        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto shrink-0 justify-end">
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto shrink-0 justify-end flex-wrap">
+          {/* Daily Burnout Hours Guardrail */}
+          {onUpdateBurnoutLimits && (
+            <div className="flex items-center gap-2 bg-[#0d0f19]/80 border border-white/10 px-3 py-2 rounded-xl text-xs text-slate-300">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Daily Cap:</span>
+              <label className="flex items-center gap-1 text-[11px]" title="Maximum study hours per weekday">
+                <span className="text-slate-400">Wkday</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="12"
+                  step="0.5"
+                  value={burnoutLimits?.weekdayMaxHours || 3.5}
+                  onChange={(e) => onUpdateBurnoutLimits({ weekdayMaxHours: Number(e.target.value) || 3.5, weekendMaxHours: burnoutLimits?.weekendMaxHours || 5.0 })}
+                  className="w-12 bg-slate-900 border border-white/20 rounded px-1.5 py-0.5 text-center text-white text-[11px] font-mono font-bold"
+                />
+                <span>h</span>
+              </label>
+              <label className="flex items-center gap-1 text-[11px]" title="Maximum study hours per weekend day">
+                <span className="text-slate-400">Wkend</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="14"
+                  step="0.5"
+                  value={burnoutLimits?.weekendMaxHours || 5.0}
+                  onChange={(e) => onUpdateBurnoutLimits({ weekdayMaxHours: burnoutLimits?.weekdayMaxHours || 3.5, weekendMaxHours: Number(e.target.value) || 5.0 })}
+                  className="w-12 bg-slate-900 border border-white/20 rounded px-1.5 py-0.5 text-center text-white text-[11px] font-mono font-bold"
+                />
+                <span>h</span>
+              </label>
+            </div>
+          )}
+
           {onToggleAutoSchedule && (
             <label className="flex items-center gap-2 bg-[#0d0f19]/80 border border-white/10 hover:border-white/20 px-4 py-2.5 rounded-xl cursor-pointer select-none transition text-xs font-bold text-indigo-200">
               <input
@@ -1667,6 +1842,172 @@ export default function GoalTracker({
             {/* Goal Icon Selector */}
             <GoalIconPicker selectedIcon={icon} onSelectIcon={setIcon} accentColor={color} />
 
+            {/* 1-Click Study Material & Curriculum Forecaster Settings */}
+            <div className="pt-3 border-t border-white/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Study Materials & Completion Forecast</span>
+                </span>
+                <span className="text-[10px] text-slate-400">1-Click Launch</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    Course / Portal URL (1-Click Launch)
+                  </label>
+                  <input
+                    type="url"
+                    value={resourceLink}
+                    onChange={(e) => setResourceLink(e.target.value)}
+                    placeholder="https://coursera.org/... or GitHub repo"
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    Launch Button Label
+                  </label>
+                  <input
+                    type="text"
+                    value={resourceLabel}
+                    onChange={(e) => setResourceLabel(e.target.value)}
+                    placeholder="e.g. Course Portal, Lab Terminal"
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    Total Curriculum Hours (For Pace Forecaster)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="1000"
+                    value={targetTotalHours}
+                    onChange={(e) => setTargetTotalHours(Number(e.target.value))}
+                    placeholder="e.g. 40 hours"
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    Target Completion Date (Optional)
+                  </label>
+                  <input
+                    type="date"
+                    value={targetCompletionDate}
+                    onChange={(e) => setTargetCompletionDate(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+              </div>
+
+              {/* Exam / Milestone Target & Chapter Checklist */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-white/5">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    Exam / Target Milestone Name
+                  </label>
+                  <input
+                    type="text"
+                    value={targetExamTitle}
+                    onChange={(e) => setTargetExamTitle(e.target.value)}
+                    placeholder="e.g. CompTIA Security+, Python Exam"
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    Exam / Milestone Date (Countdown)
+                  </label>
+                  <input
+                    type="date"
+                    value={targetExamDate}
+                    onChange={(e) => setTargetExamDate(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+              </div>
+
+              {/* Syllabus / Chapter Checklist Builder */}
+              <div className="space-y-2 pt-2 border-t border-white/5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Syllabus / Chapter Checkpoints ({chapters.length})</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleGenerateSyllabusChapters}
+                    className="text-[10px] font-bold text-indigo-300 hover:text-indigo-200 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 px-2 py-0.5 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                    title="Automatically generate curriculum modules based on goal title and subject"
+                  >
+                    <Sparkles className="w-3 h-3 text-yellow-300" />
+                    <span>Auto-Generate Modules</span>
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newChapterInput}
+                    onChange={(e) => setNewChapterInput(e.target.value)}
+                    placeholder="e.g. Chapter 1: Network Protocols & Ports"
+                    className="flex-1 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (newChapterInput.trim()) {
+                          setChapters(prev => [...prev, { id: `ch_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`, title: newChapterInput.trim(), completed: false }]);
+                          setNewChapterInput("");
+                        }
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (newChapterInput.trim()) {
+                        setChapters(prev => [...prev, { id: `ch_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`, title: newChapterInput.trim(), completed: false }]);
+                        setNewChapterInput("");
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                  >
+                    Add Chapter
+                  </button>
+                </div>
+
+                {chapters.length > 0 && (
+                  <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                    {chapters.map((ch, idx) => (
+                      <div key={ch.id} className="flex items-center justify-between px-2.5 py-1.5 bg-white/5 border border-white/5 rounded-lg text-xs">
+                        <span className="text-slate-300 truncate">
+                          {idx + 1}. {ch.title}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setChapters(prev => prev.filter(c => c.id !== ch.id))}
+                          className="text-slate-500 hover:text-rose-400 transition ml-2 p-0.5 cursor-pointer"
+                          title="Remove chapter"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Custom Palette options */}
             <div className="flex items-center justify-between flex-wrap gap-3 pt-2 border-t border-white/5">
               <div className="flex flex-col sm:flex-row sm:items-center gap-2">
@@ -2027,6 +2368,81 @@ export default function GoalTracker({
                       </p>
                     </div>
 
+                    {/* Target Exam / Milestone Countdown Widget */}
+                    {g.targetExamDate && (() => {
+                      const examDate = new Date(g.targetExamDate);
+                      const diffDays = Math.ceil((examDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                      const totalPlannedHours = (g.weeklyTarget * (g.durationMinutes || 60) * Math.max(1, Math.round(diffDays / 7))) / 60;
+                      const targetHours = g.targetTotalHours || 40;
+                      const isBehind = totalPlannedHours < targetHours;
+
+                      return (
+                        <div className="p-2.5 bg-gradient-to-r from-purple-950/40 to-indigo-950/40 border border-purple-500/30 rounded-xl text-xs space-y-1 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-purple-200 flex items-center gap-1.5 text-[11px]">
+                              <span>🎯</span>
+                              <span className="truncate">{g.targetExamTitle || "Exam / Target Deadline"}</span>
+                            </span>
+                            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded ${
+                              diffDays <= 7 ? "bg-rose-500/20 text-rose-300" : diffDays <= 30 ? "bg-amber-500/20 text-amber-300" : "bg-purple-500/20 text-purple-300"
+                            }`}>
+                              {diffDays > 0 ? `${diffDays}d left` : "Today / Due"}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-300 flex items-center justify-between">
+                            <span>Pace: {g.weeklyTarget}x/wk ({(g.weeklyTarget * (g.durationMinutes || 60) / 60).toFixed(1)}h/wk)</span>
+                            <span>Target: {targetHours}h</span>
+                          </div>
+                          {isBehind && diffDays > 0 && (
+                            <div className="text-[9.5px] text-amber-300 font-medium">
+                              ⚠️ Projected {totalPlannedHours.toFixed(0)}h of {targetHours}h. Recommended pace: {Math.ceil(targetHours / Math.max(1, diffDays / 7))}h/wk.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Syllabus / Chapter Progress Widget */}
+                    {g.chapters && g.chapters.length > 0 && (() => {
+                      const completedChs = g.chapters.filter(c => c.completed).length;
+                      const chPercent = Math.round((completedChs / g.chapters.length) * 100);
+
+                      return (
+                        <div className="p-2.5 bg-[#0a0c16] border border-white/10 rounded-xl text-xs space-y-1.5 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+                              <BookOpen className="w-3 h-3 text-indigo-400" />
+                              <span>Syllabus Progress</span>
+                            </span>
+                            <span className="text-[10px] font-mono text-indigo-300">
+                              {completedChs}/{g.chapters.length} ({chPercent}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 h-1 rounded-full overflow-hidden">
+                            <div className="h-full bg-indigo-500 transition-all duration-300" style={{ width: `${chPercent}%` }} />
+                          </div>
+                          <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                            {g.chapters.map((ch, idx) => (
+                              <label key={ch.id} className="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={ch.completed}
+                                  onChange={() => {
+                                    const updatedChapters = g.chapters?.map(c => c.id === ch.id ? { ...c, completed: !c.completed } : c) || [];
+                                    onEditGoal(g.id, { chapters: updatedChapters });
+                                  }}
+                                  className="rounded border-white/20 text-indigo-600 bg-slate-900 w-3 h-3 cursor-pointer"
+                                />
+                                <span className={`truncate ${ch.completed ? "line-through text-slate-500" : "font-medium"}`}>
+                                  {idx + 1}. {ch.title}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* Subtasks Section */}
                     <div className="pt-3 border-t border-white/5 mt-3 space-y-1.5" id={`goal_subtasks_sec_${g.id}`}>
                       {(() => {
@@ -2306,7 +2722,7 @@ export default function GoalTracker({
                                   </div>
                                 ) : nextSession ? (
                                   <div 
-                                    onClick={() => onNavigateToCalendar?.(nextSession.date)}
+                                    onClick={() => onNavigateToCalendar?.(nextSession.date, nextSession.event?.id)}
                                     className="flex items-center justify-between text-xs bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-500/30 px-2.5 py-1.5 rounded-lg text-indigo-950 dark:text-indigo-200 transition cursor-pointer shadow-2xs"
                                     title="Click to view this session in the Calendar"
                                   >
@@ -2361,19 +2777,7 @@ export default function GoalTracker({
                                       <button
                                         type="button"
                                         id={`study_ahead_goal_btn_${g.id}`}
-                                        onClick={() => {
-                                          triggerFocusTimer({
-                                            title: g.name,
-                                            duration: g.durationMinutes || 45,
-                                            goalId: g.id,
-                                            category: g.category,
-                                            color: g.color || "#6366f1",
-                                            previousSessionNote: g.lastSessionNote,
-                                            subSteps: g.subSteps,
-                                            autoStart: true,
-                                            openModal: false
-                                          });
-                                        }}
+                                        onClick={() => handleStartStudyAhead(g)}
                                         className="bg-emerald-100 dark:bg-emerald-500/20 hover:bg-emerald-200 dark:hover:bg-emerald-500/35 text-emerald-900 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/40 px-2 py-0.5 rounded font-bold text-[11px] transition cursor-pointer active:scale-95 shadow-2xs flex items-center gap-1"
                                         title="Start studying this upcoming goal right now ahead of schedule"
                                       >
@@ -2386,7 +2790,7 @@ export default function GoalTracker({
                                       <button
                                         type="button"
                                         id={`view_calendar_goal_btn_${g.id}`}
-                                        onClick={() => onNavigateToCalendar(nextSession.date)}
+                                        onClick={() => onNavigateToCalendar(nextSession.date, nextSession.event?.id)}
                                         className="bg-indigo-100 dark:bg-indigo-500/20 hover:bg-indigo-200 dark:hover:bg-indigo-500/35 text-indigo-900 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-500/40 px-2 py-0.5 rounded font-bold text-[11px] transition cursor-pointer active:scale-95 shadow-2xs flex items-center gap-1"
                                         title="Open Calendar tab and view this goal's scheduled session"
                                       >
@@ -2772,6 +3176,26 @@ export default function GoalTracker({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Goal Carryover Note "Where to Start" Briefing Modal */}
+      {briefingTarget && (
+        <GoalStartBriefingModal
+          isOpen={Boolean(briefingTarget)}
+          onClose={() => setBriefingTarget(null)}
+          goal={briefingTarget.goal}
+          isStudyAhead={briefingTarget.isStudyAhead}
+          onConfirmStart={(editedNote) => {
+            executeStartTimer(briefingTarget.goal, editedNote, briefingTarget.isStudyAhead);
+            setBriefingTarget(null);
+          }}
+          onUpdateGoalNote={(goalId, updatedNote) => {
+            onEditGoal(goalId, {
+              lastSessionNote: updatedNote,
+              lastSessionNoteDate: new Date().toISOString()
+            });
+          }}
+        />
       )}
     </div>
   );

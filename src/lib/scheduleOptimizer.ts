@@ -1,4 +1,4 @@
-import { CalendarEvent, Goal, GoalPriority, TimePreference, UserEnergyProfile, EnergyLevel, AvailabilityWindow } from "../types";
+import { CalendarEvent, Goal, GoalPriority, TimePreference, UserEnergyProfile, EnergyLevel, AvailabilityWindow, DailyBurnoutLimits } from "../types";
 import { 
   inferGoalEnergyLevel, 
   getEnergyLevelForHour, 
@@ -400,13 +400,17 @@ export function autonomousSelfHealCalendar({
   goals,
   availability,
   energyProfile = DEFAULT_USER_ENERGY_PROFILE,
-  maxDaysAhead = 14
+  maxDaysAhead = 14,
+  burnoutLimits,
+  pacing = "balanced"
 }: {
   events: CalendarEvent[];
   goals: Goal[];
   availability: AvailabilityWindow[];
   energyProfile?: UserEnergyProfile;
   maxDaysAhead?: number;
+  burnoutLimits?: DailyBurnoutLimits;
+  pacing?: "gentle" | "balanced" | "aggressive";
 }): {
   healedEvents: CalendarEvent[];
   overdueRescheduledCount: number;
@@ -438,6 +442,20 @@ export function autonomousSelfHealCalendar({
       const day = new Date(startFromDate);
       day.setDate(startFromDate.getDate() + dayOffset);
       const dayOfWeek = day.getDay();
+
+      // Check burnout limits for this day
+      if (burnoutLimits) {
+        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+        const maxDailyCap = isWeekend ? (burnoutLimits.weekendMaxHours || 5) : (burnoutLimits.weekdayMaxHours || 3.5);
+        const dayDateStr = day.toDateString();
+        const existingHoursOnDay = currentList
+          .filter(e => !e.completed && new Date(e.start).toDateString() === dayDateStr && e.id !== ignoreId)
+          .reduce((acc, ev) => acc + (new Date(ev.end).getTime() - new Date(ev.start).getTime()) / (3600 * 1000), 0);
+
+        if (existingHoursOnDay + (durationMs / (3600 * 1000)) > maxDailyCap) {
+          continue; // Skip overloaded day to safeguard cognitive capacity
+        }
+      }
 
       const avail = availability.find(a => a.dayOfWeek === dayOfWeek && a.active);
       let dayStartH = 8;
@@ -494,44 +512,45 @@ export function autonomousSelfHealCalendar({
     }
   }
 
-  // STEP 2: DECONFLICT ANY OVERLAPPING SESSIONS
-  // Sort non-completed events chronologically
-  const sorted = [...currentList].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-  for (let i = 0; i < sorted.length; i++) {
-    const evA = sorted[i];
-    if (evA.completed) continue;
+  // STEP 2: DECONFLICT ANY OVERLAPPING SESSIONS (if balanced or aggressive)
+  if (pacing !== "gentle") {
+    const sorted = [...currentList].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    for (let i = 0; i < sorted.length; i++) {
+      const evA = sorted[i];
+      if (evA.completed) continue;
 
-    for (let j = i + 1; j < sorted.length; j++) {
-      const evB = sorted[j];
-      if (evB.completed) continue;
+      for (let j = i + 1; j < sorted.length; j++) {
+        const evB = sorted[j];
+        if (evB.completed) continue;
 
-      const aStart = new Date(evA.start).getTime();
-      const aEnd = new Date(evA.end).getTime();
-      const bStart = new Date(evB.start).getTime();
-      const bEnd = new Date(evB.end).getTime();
+        const aStart = new Date(evA.start).getTime();
+        const aEnd = new Date(evA.end).getTime();
+        const bStart = new Date(evB.start).getTime();
+        const bEnd = new Date(evB.end).getTime();
 
-      // Check collision
-      if (aStart < bEnd && aEnd > bStart) {
-        // Decide which event to shift: preserve external or higher-priority goal
-        const gA = findGoalForEvent(evA, goals);
-        const gB = findGoalForEvent(evB, goals);
-        const scoreA = evA.type === "external" ? 999 : getPriorityScore(gA?.priority);
-        const scoreB = evB.type === "external" ? 999 : getPriorityScore(gB?.priority);
+        // Check collision
+        if (aStart < bEnd && aEnd > bStart) {
+          // Decide which event to shift: preserve external or higher-priority goal
+          const gA = findGoalForEvent(evA, goals);
+          const gB = findGoalForEvent(evB, goals);
+          const scoreA = evA.type === "external" ? 999 : getPriorityScore(gA?.priority);
+          const scoreB = evB.type === "external" ? 999 : getPriorityScore(gB?.priority);
 
-        const eventToShift = scoreA >= scoreB ? evB : evA;
-        const durMs = Math.max(15 * 60 * 1000, new Date(eventToShift.end).getTime() - new Date(eventToShift.start).getTime());
-        const shiftGoal = findGoalForEvent(eventToShift, goals);
-        const minH = getGoalMinStartHour(shiftGoal);
+          const eventToShift = scoreA >= scoreB ? evB : evA;
+          const durMs = Math.max(15 * 60 * 1000, new Date(eventToShift.end).getTime() - new Date(eventToShift.start).getTime());
+          const shiftGoal = findGoalForEvent(eventToShift, goals);
+          const minH = getGoalMinStartHour(shiftGoal);
 
-        // Find new open slot starting right after the collision
-        const shiftFrom = new Date(Math.max(nowMs, aEnd + 15 * 60 * 1000));
-        const newSlot = findOpenSlot(durMs, shiftFrom, minH, eventToShift.id);
-        if (newSlot) {
-          eventToShift.start = newSlot.start.toISOString();
-          eventToShift.end = newSlot.end.toISOString();
-          eventToShift.notes = (eventToShift.notes ? eventToShift.notes + " | " : "") + "🤖 AI Autopilot: Deconflicted overlap";
-          collisionsResolvedCount++;
-          details.push(`Deconflicted overlap for "${eventToShift.title}" with 15m buffer`);
+          // Find new open slot starting right after the collision
+          const shiftFrom = new Date(Math.max(nowMs, aEnd + 15 * 60 * 1000));
+          const newSlot = findOpenSlot(durMs, shiftFrom, minH, eventToShift.id);
+          if (newSlot) {
+            eventToShift.start = newSlot.start.toISOString();
+            eventToShift.end = newSlot.end.toISOString();
+            eventToShift.notes = (eventToShift.notes ? eventToShift.notes + " | " : "") + "🤖 AI Autopilot: Deconflicted overlap";
+            collisionsResolvedCount++;
+            details.push(`Deconflicted overlap for "${eventToShift.title}" with 15m buffer`);
+          }
         }
       }
     }
@@ -546,4 +565,229 @@ export function autonomousSelfHealCalendar({
     collisionsResolvedCount,
     details
   };
+}
+
+/**
+ * 5. LIFE HAPPENED / TAKE TODAY OFF ENGINE:
+ * Gracefully takes all uncompleted events scheduled for today and pushes them into
+ * tomorrow and subsequent open availability slots this week, preserving completed progress.
+ */
+export function handleLifeHappenedToday({
+  events,
+  goals,
+  availability,
+  energyProfile = DEFAULT_USER_ENERGY_PROFILE,
+  burnoutLimits,
+  targetDate
+}: {
+  events: CalendarEvent[];
+  goals: Goal[];
+  availability: AvailabilityWindow[];
+  energyProfile?: UserEnergyProfile;
+  burnoutLimits?: DailyBurnoutLimits;
+  targetDate?: Date;
+}): {
+  updatedEvents: CalendarEvent[];
+  movedCount: number;
+  details: string[];
+} {
+  const chosenDate = targetDate ? new Date(targetDate) : new Date();
+  const targetDayStr = chosenDate.toDateString();
+  const dayAfter = new Date(chosenDate);
+  dayAfter.setDate(chosenDate.getDate() + 1);
+  dayAfter.setHours(8, 0, 0, 0);
+
+  const currentList = events.map(e => ({ ...e }));
+  const todayPending = currentList.filter(
+    e => !e.completed && e.type !== "external" && new Date(e.start).toDateString() === targetDayStr
+  );
+
+  let movedCount = 0;
+  const details: string[] = [];
+
+  for (const ev of todayPending) {
+    const parentGoal = findGoalForEvent(ev, goals);
+    const durMs = Math.max(15 * 60 * 1000, new Date(ev.end).getTime() - new Date(ev.start).getTime());
+    const minH = getGoalMinStartHour(parentGoal);
+
+    // Look for slot starting from dayAfter
+    let targetDayOffset = 1;
+    let placed = false;
+
+    while (targetDayOffset <= 6 && !placed) {
+      const candDay = new Date(dayAfter);
+      candDay.setDate(dayAfter.getDate() + (targetDayOffset - 1));
+      const dayOfWeek = candDay.getDay();
+
+      const avail = availability.find(a => a.dayOfWeek === dayOfWeek && a.active);
+      if (avail) {
+        const [sh] = avail.startTime.split(":").map(Number);
+        const [eh] = avail.endTime.split(":").map(Number);
+        const startH = Math.max(sh || 8, minH || 8);
+        const endH = eh || 21;
+
+        for (let h = startH; h <= endH - (durMs / (3600 * 1000)); h += 0.5) {
+          const s = new Date(candDay);
+          s.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+          const eTime = s.getTime() + durMs;
+
+          const collides = currentList.some(other => {
+            if (other.id === ev.id) return false;
+            return s.getTime() < new Date(other.end).getTime() && eTime > new Date(other.start).getTime();
+          });
+
+          if (!collides) {
+            ev.start = s.toISOString();
+            ev.end = new Date(eTime).toISOString();
+            ev.notes = (ev.notes ? ev.notes + " | " : "") + "🌴 Shifted: Life Happened / Rest Day";
+            placed = true;
+            movedCount++;
+            details.push(`Moved "${ev.title}" to ${s.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} at ${s.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+            break;
+          }
+        }
+      }
+      targetDayOffset++;
+    }
+  }
+
+  const { optimizedEvents } = sanitizeAndOptimizeSchedule(currentList, goals, energyProfile);
+
+  return {
+    updatedEvents: optimizedEvents,
+    movedCount,
+    details
+  };
+}
+
+/**
+ * 6. ICALENDAR (.ICS) EXPORT ENGINE:
+ * Generates RFC 5545 standard .ics file format for Google Calendar, Apple Calendar, and Outlook.
+ */
+export function exportCalendarToICS(events: CalendarEvent[]): string {
+  const formatICSDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  };
+
+  const escapeICS = (str: string) => {
+    return (str || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/;/g, "\\;")
+      .replace(/,/g, "\\,")
+      .replace(/\n/g, "\\n");
+  };
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//AI Study Scheduler//Autonomous Schedule Engine//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:AI Study & Life Schedule"
+  ];
+
+  events.forEach(ev => {
+    lines.push("BEGIN:VEVENT");
+    lines.push(`UID:study-scheduler-${ev.id}@ais-app`);
+    lines.push(`DTSTAMP:${formatICSDate(new Date().toISOString())}`);
+    lines.push(`DTSTART:${formatICSDate(ev.start)}`);
+    lines.push(`DTEND:${formatICSDate(ev.end)}`);
+    lines.push(`SUMMARY:${escapeICS(ev.title)}`);
+
+    let description = ev.notes || "Autonomous Study Session";
+    if (ev.activeChapterTitle) {
+      description += `\\nActive Chapter: ${ev.activeChapterTitle}`;
+    }
+    if (ev.keyTakeaway) {
+      description += `\\nReflection Takeaway: ${ev.keyTakeaway}`;
+    }
+    lines.push(`DESCRIPTION:${escapeICS(description)}`);
+    lines.push(`STATUS:${ev.completed ? "CONFIRMED" : "TENTATIVE"}`);
+    lines.push("END:VEVENT");
+  });
+
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+export function downloadICSFile(events: CalendarEvent[], filename = "My_Study_Schedule.ics") {
+  const icsData = exportCalendarToICS(events);
+  const blob = new Blob([icsData], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * 7. SPACED REPETITION RETENTION SCHEDULER:
+ * Creates quick 15-minute recall booster blocks at +3 and +7 days to cement long-term memory.
+ */
+export function scheduleSpacedRepetitionBlocks({
+  completedEvent,
+  goal,
+  events,
+  availability
+}: {
+  completedEvent: CalendarEvent;
+  goal?: Goal;
+  events: CalendarEvent[];
+  availability: AvailabilityWindow[];
+}): {
+  addedReviewEvents: CalendarEvent[];
+} {
+  const result: CalendarEvent[] = [];
+  const intervals = [3, 7]; // Days ahead for retention intervals
+
+  for (const intervalDays of intervals) {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + intervalDays);
+    const dayOfWeek = targetDate.getDay();
+
+    const avail = availability.find(a => a.dayOfWeek === dayOfWeek && a.active);
+    let startH = 9;
+    let endH = 20;
+    if (avail) {
+      const [sh] = avail.startTime.split(":").map(Number);
+      const [eh] = avail.endTime.split(":").map(Number);
+      startH = sh || 9;
+      endH = eh || 20;
+    }
+
+    // Try finding an open 15-minute slot
+    for (let h = startH; h <= endH - 0.25; h += 0.5) {
+      const s = new Date(targetDate);
+      s.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0);
+      const eTime = s.getTime() + 15 * 60 * 1000;
+
+      const collides = events.some(other => {
+        return s.getTime() < new Date(other.end).getTime() && eTime > new Date(other.start).getTime();
+      }) || result.some(r => {
+        return s.getTime() < new Date(r.end).getTime() && eTime > new Date(r.start).getTime();
+      });
+
+      if (!collides) {
+        result.push({
+          id: `review_${completedEvent.id}_d${intervalDays}_${Date.now()}`,
+          title: `Refresher (${intervalDays}d Recall): ${completedEvent.title}`,
+          type: "study",
+          start: s.toISOString(),
+          end: new Date(eTime).toISOString(),
+          completed: false,
+          goalId: completedEvent.goalId,
+          notes: `🧠 Spaced Repetition Refresher (${intervalDays}-day interval) for "${completedEvent.title}"`,
+          isBufferCatchUp: true,
+          energyLevel: "light_recharge"
+        });
+        break;
+      }
+    }
+  }
+
+  return { addedReviewEvents: result };
 }

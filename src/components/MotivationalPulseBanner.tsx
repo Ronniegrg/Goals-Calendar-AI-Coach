@@ -29,6 +29,7 @@ interface MotivationalPulseBannerProps {
   goals: Goal[];
   onNavigateToTab?: (tab: "calendar" | "goals" | "dashboard" | "coach" | "notifications") => void;
   onNavigateToDate?: (date: Date) => void;
+  onNavigateToCalendar?: (date?: Date, eventId?: string) => void;
   onMarkNotificationRead?: (id: string) => void;
   onDismissNotification?: (id: string) => void;
   onTriggerDailyDigest?: () => void;
@@ -233,6 +234,7 @@ export default function MotivationalPulseBanner({
   goals,
   onNavigateToTab,
   onNavigateToDate,
+  onNavigateToCalendar,
   onMarkNotificationRead,
   onDismissNotification,
   onTriggerDailyDigest,
@@ -278,6 +280,100 @@ export default function MotivationalPulseBanner({
       .filter(e => new Date(e.start).toDateString() === todayStr)
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
   }, [events]);
+
+  // Robust Calendar View navigation with automatic date matching and smooth scrolling
+  const handleViewCalendar = (specificEvent?: CalendarEvent) => {
+    let targetDate = new Date();
+    let targetEventId: string | undefined = specificEvent?.id;
+
+    if (specificEvent) {
+      targetDate = new Date(specificEvent.start);
+    } else if (activeNotification) {
+      // 1. Check if notification text quotes a specific event/goal name, e.g. Success: "Cybersecurity " marked as done!
+      const quoteMatch = activeNotification.message?.match(/"([^"]+)"/);
+      const quotedTerm = quoteMatch ? quoteMatch[1].trim().toLowerCase() : "";
+
+      const msg = (activeNotification.message || "").toLowerCase();
+      const title = (activeNotification.title || "").toLowerCase();
+
+      // Find an event that matches
+      const foundEvent = events.find(e => {
+        if (!e.title) return false;
+        const eTitle = e.title.trim().toLowerCase();
+        if (quotedTerm && (eTitle === quotedTerm || eTitle.includes(quotedTerm) || quotedTerm.includes(eTitle))) {
+          return true;
+        }
+        return msg.includes(eTitle) || title.includes(eTitle);
+      });
+
+      if (foundEvent) {
+        targetDate = new Date(foundEvent.start);
+        targetEventId = foundEvent.id;
+      } else {
+        // 2. Also check if a goal name is referenced in notification title/message
+        const matchedGoal = goals.find(g => {
+          const gName = g.name.trim().toLowerCase();
+          return msg.includes(gName) || title.includes(gName);
+        });
+        if (matchedGoal) {
+          const goalEvt = events.find(e => e.goalId === matchedGoal.id || (e.title && e.title.toLowerCase().includes(matchedGoal.name.toLowerCase())));
+          if (goalEvt) {
+            targetDate = new Date(goalEvt.start);
+            targetEventId = goalEvt.id;
+          }
+        } else if (activeNotification.timestamp) {
+          const notifDate = new Date(activeNotification.timestamp);
+          if (!isNaN(notifDate.getTime())) {
+            targetDate = notifDate;
+          }
+        }
+      }
+    }
+
+    if (onNavigateToCalendar) {
+      onNavigateToCalendar(targetDate, targetEventId);
+    } else {
+      if (onNavigateToDate) {
+        onNavigateToDate(targetDate);
+      }
+      if (onNavigateToTab) {
+        onNavigateToTab("calendar");
+      }
+    }
+
+    // Scroll window smoothly down to the calendar section
+    const performScroll = () => {
+      const calendarEl = document.getElementById("calendar_section_card") || document.getElementById("calendar_view_container");
+      if (calendarEl) {
+        const rect = calendarEl.getBoundingClientRect();
+        const absoluteTop = rect.top + window.pageYOffset - 24;
+        window.scrollTo({ top: Math.max(0, absoluteTop), behavior: "smooth" });
+        calendarEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        calendarEl.classList.add("ring-4", "ring-indigo-500", "ring-offset-4", "ring-offset-slate-900");
+        setTimeout(() => {
+          calendarEl.classList.remove("ring-4", "ring-indigo-500", "ring-offset-4", "ring-offset-slate-900");
+        }, 2000);
+      }
+
+      if (targetEventId) {
+        const eventEl = document.getElementById(`event_card_week_${targetEventId}`) ||
+                        document.getElementById(`event_card_day_${targetEventId}`) ||
+                        document.getElementById(`event_card_list_${targetEventId}`);
+        if (eventEl) {
+          eventEl.scrollIntoView({ behavior: "smooth", block: "center" });
+          eventEl.classList.add("ring-4", "ring-amber-400", "ring-offset-2", "animate-pulse");
+          setTimeout(() => {
+            eventEl.classList.remove("ring-4", "ring-amber-400", "ring-offset-2", "animate-pulse");
+          }, 2500);
+        }
+      }
+    };
+
+    requestAnimationFrame(performScroll);
+    setTimeout(performScroll, 60);
+    setTimeout(performScroll, 200);
+    setTimeout(performScroll, 450);
+  };
 
   // Parse structured daily briefing message if current notification contains daily digest info
   const parsedData = useMemo(() => {
@@ -622,7 +718,9 @@ export default function MotivationalPulseBanner({
                           key={`${block.title}-${idx}`}
                           onClick={() => {
                             if (block.matchedEvent) {
-                              onNavigateToDate?.(new Date(block.matchedEvent.start));
+                              handleViewCalendar(block.matchedEvent);
+                            } else {
+                              handleViewCalendar();
                             }
                           }}
                           className="group flex items-center justify-between gap-2.5 p-2.5 rounded-xl border border-slate-200/80 dark:border-white/10 bg-slate-50/70 dark:bg-white/5 hover:border-indigo-300 dark:hover:border-indigo-500/40 hover:bg-white dark:hover:bg-white/10 transition cursor-pointer shadow-2xs"
@@ -769,10 +867,13 @@ export default function MotivationalPulseBanner({
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={() => onNavigateToTab?.("calendar")}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white transition cursor-pointer shadow-xs"
+                  id="pulse_view_calendar_btn"
+                  onClick={() => handleViewCalendar()}
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white transition cursor-pointer shadow-xs flex items-center gap-1.5 active:scale-95"
+                  title="View this event and schedule on the calendar"
                 >
-                  View Calendar
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>View Calendar</span>
                 </button>
               </div>
             </div>

@@ -34,13 +34,14 @@ import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
 import { StreakShieldModal } from "./components/StreakShieldModal";
-import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference, AutopilotMode } from "./types";
+import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference, AutopilotMode, AutopilotPacing, DailyBurnoutLimits } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
   deduplicateDailyGoalEvents, 
   alignDailyEventsByPriority,
   findGoalForEvent,
   autonomousSelfHealCalendar,
+  handleLifeHappenedToday,
   getPriorityScore as getSchedulePriorityScore 
 } from "./lib/scheduleOptimizer";
 import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProfile";
@@ -141,6 +142,71 @@ export default function App() {
     localStorage.setItem("auto_schedule_enabled", mode !== "manual" ? "true" : "false");
     setAutoScheduleEnabled(mode !== "manual");
   };
+
+  const [autopilotUndoSnapshot, setAutopilotUndoSnapshot] = useState<CalendarEvent[] | null>(null);
+  const [autopilotPacing, setAutopilotPacing] = useState<AutopilotPacing>(() => {
+    return (localStorage.getItem("ai_autopilot_pacing") as AutopilotPacing) || "balanced";
+  });
+  const [burnoutLimits, setBurnoutLimits] = useState<DailyBurnoutLimits>(() => {
+    try {
+      const saved = localStorage.getItem("daily_burnout_limits");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { weekdayMaxHours: 3.5, weekendMaxHours: 5.0 };
+  });
+
+  const handleSetAutopilotPacing = (pacing: AutopilotPacing) => {
+    setAutopilotPacing(pacing);
+    localStorage.setItem("ai_autopilot_pacing", pacing);
+  };
+
+  const handleSetBurnoutLimits = (limits: DailyBurnoutLimits) => {
+    setBurnoutLimits(limits);
+    localStorage.setItem("daily_burnout_limits", JSON.stringify(limits));
+  };
+
+  const handleUndoAutopilot = () => {
+    if (!autopilotUndoSnapshot) return;
+    setEvents(autopilotUndoSnapshot);
+    syncToCloud(goals, autopilotUndoSnapshot, availability, notifications, coachMessages);
+    setAutopilotUndoSnapshot(null);
+    triggerSystemNotification("Autopilot Undo", "Rolled back schedule to pre-autopilot state.", "success");
+  };
+
+  const handleTriggerLifeHappened = (chosenDate?: Date) => {
+    const target = chosenDate || new Date();
+    const isToday = target.toDateString() === new Date().toDateString();
+    const result = handleLifeHappenedToday({
+      events,
+      goals,
+      availability,
+      energyProfile,
+      burnoutLimits,
+      targetDate: target
+    });
+    if (result.movedCount > 0) {
+      setAutopilotUndoSnapshot([...events]);
+      setEvents(result.updatedEvents);
+      syncToCloud(goals, result.updatedEvents, availability, notifications, coachMessages);
+      triggerSystemNotification(
+        `🌴 Rest Day Activated (${isToday ? "Today" : target.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })})`,
+        `Shifted ${result.movedCount} session(s) forward across the week with zero streak penalty!`,
+        "success"
+      );
+    } else {
+      triggerSystemNotification(
+        "🌴 Rest Day",
+        `No pending sessions found for ${isToday ? "today" : target.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}! Enjoy your rest.`,
+        "success"
+      );
+    }
+  };
+
+  const handleUpdateGoalChapters = (goalId: string, chapters: { id: string; title: string; completed: boolean }[]) => {
+    const nextGoals = goals.map(g => g.id === goalId ? { ...g, chapters } : g);
+    setGoals(nextGoals);
+    syncToCloud(nextGoals, events, availability, notifications, coachMessages);
+  };
   const [coachPersona, setCoachPersona] = useState<"mentor" | "drill" | "data">(() => {
     return (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor";
   });
@@ -176,6 +242,7 @@ export default function App() {
   });
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
   const [calendarTargetDate, setCalendarTargetDate] = useState<Date | undefined>(undefined);
+  const [calendarTargetEventId, setCalendarTargetEventId] = useState<string | null>(null);
   const [activeToast, setActiveToast] = useState<{
     id: string;
     title: string;
@@ -967,10 +1034,13 @@ export default function App() {
       events,
       goals,
       availability,
-      energyProfile
+      energyProfile,
+      burnoutLimits,
+      pacing: autopilotPacing
     });
 
     if (result.overdueRescheduledCount > 0 || result.collisionsResolvedCount > 0) {
+      setAutopilotUndoSnapshot([...events]);
       setEvents(result.healedEvents);
       syncToCloud(goals, result.healedEvents, availability, notifications, coachMessages);
 
@@ -1005,7 +1075,7 @@ export default function App() {
         "success"
       );
     }
-  }, [events, goals, availability, energyProfile, autopilotMode, notifications, coachMessages]);
+  }, [events, goals, availability, energyProfile, autopilotMode, notifications, coachMessages, burnoutLimits, autopilotPacing]);
 
   useEffect(() => {
     if (autopilotMode !== "full_autonomous") return;
@@ -2261,6 +2331,53 @@ export default function App() {
     }
   };
 
+  // Unified Calendar Navigation with date context and smooth scroll to calendar
+  const handleNavigateToCalendar = useCallback((targetDate?: Date, eventId?: string) => {
+    if (targetDate && !isNaN(targetDate.getTime())) {
+      setCalendarTargetDate(new Date(targetDate));
+    } else {
+      setCalendarTargetDate(new Date());
+    }
+    if (eventId) {
+      setCalendarTargetEventId(eventId);
+    }
+    setActiveTab("calendar");
+
+    const performScroll = () => {
+      // 1. Scroll window directly to calendar section card
+      const calendarEl = document.getElementById("calendar_section_card") || document.getElementById("calendar_view_container");
+      if (calendarEl) {
+        const rect = calendarEl.getBoundingClientRect();
+        const absoluteTop = rect.top + window.pageYOffset - 24;
+        window.scrollTo({ top: Math.max(0, absoluteTop), behavior: "smooth" });
+        calendarEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        calendarEl.classList.add("ring-4", "ring-indigo-500", "ring-offset-4", "ring-offset-slate-900");
+        setTimeout(() => {
+          calendarEl.classList.remove("ring-4", "ring-indigo-500", "ring-offset-4", "ring-offset-slate-900");
+        }, 2200);
+      }
+
+      // 2. Locate event card if an ID was passed, scroll and highlight
+      if (eventId) {
+        const eventEl = document.getElementById(`event_card_week_${eventId}`) ||
+                        document.getElementById(`event_card_day_${eventId}`) ||
+                        document.getElementById(`event_card_list_${eventId}`);
+        if (eventEl) {
+          eventEl.scrollIntoView({ behavior: "smooth", block: "center" });
+          eventEl.classList.add("ring-4", "ring-amber-400", "ring-offset-2", "animate-pulse");
+          setTimeout(() => {
+            eventEl.classList.remove("ring-4", "ring-amber-400", "ring-offset-2", "animate-pulse");
+          }, 3000);
+        }
+      }
+    };
+
+    requestAnimationFrame(performScroll);
+    setTimeout(performScroll, 60);
+    setTimeout(performScroll, 200);
+    setTimeout(performScroll, 450);
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#0a0c14] text-white flex flex-col font-sans antialiased pb-24 md:pb-12 selection:bg-indigo-500/30 selection:text-indigo-200" style={{ backgroundImage: "radial-gradient(circle at 0% 0%, #1e1b4b 0%, transparent 60%), radial-gradient(circle at 100% 100%, #311042 0%, transparent 60%)" }}>
       
@@ -2418,7 +2535,10 @@ export default function App() {
               {/* TAB 1: SCHEDULE GRID */}
               <button
                 id="tab_trigger_calendar"
-                onClick={() => setActiveTab("calendar")}
+                onClick={() => {
+                  setActiveTab("calendar");
+                  handleNavigateToCalendar();
+                }}
                 className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
                   activeTab === "calendar"
                     ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
@@ -2427,11 +2547,32 @@ export default function App() {
               >
                 <CalendarIcon className="w-4 h-4 shrink-0" />
                 <span>Schedule Grid</span>
-                {activeTab === "calendar" && (
-                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
-                    Active
-                  </span>
-                )}
+                {(() => {
+                  const todayCount = events.filter(e => new Date(e.start).toDateString() === new Date().toDateString()).length;
+                  if (todayCount > 0) {
+                    return (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
+                        activeTab === "calendar"
+                          ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
+                          : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
+                      }`} title={`${todayCount} sessions scheduled today`}>
+                        {todayCount}
+                      </span>
+                    );
+                  }
+                  if (events.length > 0) {
+                    return (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
+                        activeTab === "calendar"
+                          ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
+                          : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
+                      }`} title={`${events.length} total scheduled events`}>
+                        {events.length}
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
               </button>
 
               {/* TAB 2: GOALS TRACKER */}
@@ -2447,15 +2588,13 @@ export default function App() {
               >
                 <Layers className={`w-4 h-4 shrink-0 ${activeTab === "goals" ? "text-white" : "text-indigo-400"}`} />
                 <span>Goals</span>
-                {activeTab === "goals" ? (
-                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none shadow-xs">
-                    Active
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-bold bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded-full leading-none">
-                    {goals.length}
-                  </span>
-                )}
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
+                  activeTab === "goals"
+                    ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
+                    : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
+                }`}>
+                  {goals.length}
+                </span>
               </button>
 
               {/* TAB 3: AI SCHEDULE AUTOPILOT */}
@@ -2495,11 +2634,6 @@ export default function App() {
               >
                 <Sparkles className="w-4 h-4 shrink-0" />
                 <span>Progress Metrics</span>
-                {activeTab === "dashboard" && (
-                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
-                    Active
-                  </span>
-                )}
               </button>
 
               {/* TAB 5: AI ROUTINE COACH */}
@@ -2514,11 +2648,6 @@ export default function App() {
               >
                 <Bot className="w-4 h-4 shrink-0" />
                 <span>AI Routine Coach</span>
-                {activeTab === "coach" && (
-                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
-                    Active
-                  </span>
-                )}
               </button>
 
               {/* TAB 6: ALERTS */}
@@ -2533,17 +2662,19 @@ export default function App() {
               >
                 <Bell className="w-4 h-4 shrink-0" />
                 <span>Alert Logs</span>
-                {activeTab === "notifications" ? (
-                  <span className="text-[9px] font-black bg-white text-indigo-700 px-1.5 py-0.5 rounded-full uppercase leading-none">
-                    Active
+                {notifications.filter(n => !n.read).length > 0 ? (
+                  <span className="bg-pink-500 text-white rounded-full text-[9px] font-black px-1.5 py-0.5 leading-none shadow-xs animate-pulse">
+                    {notifications.filter(n => !n.read).length}
                   </span>
-                ) : (
-                  notifications.filter(n => !n.read).length > 0 && (
-                    <span className="bg-pink-500 text-white rounded-full text-[9px] font-black px-1.5 py-0.5 leading-none shadow-xs animate-pulse">
-                      {notifications.filter(n => !n.read).length}
-                    </span>
-                  )
-                )}
+                ) : notifications.length > 0 ? (
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
+                    activeTab === "notifications"
+                      ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
+                      : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
+                  }`}>
+                    {notifications.length}
+                  </span>
+                ) : null}
               </button>
 
             </div>
@@ -2566,6 +2697,7 @@ export default function App() {
                 goals={goals}
                 onNavigateToTab={setActiveTab}
                 onNavigateToDate={setCalendarTargetDate}
+                onNavigateToCalendar={handleNavigateToCalendar}
                 onMarkNotificationRead={handleMarkNotificationRead}
                 onDismissNotification={handleDismissNotification}
                 onTriggerDailyDigest={() => generateAndTriggerDailyDigest(new Date().toDateString())}
@@ -2588,7 +2720,7 @@ export default function App() {
               onToggleCompleteEvent={handleToggleEventComplete}
               onEditEvent={handleEditEvent}
               onEditGoal={handleEditGoal}
-              onNavigateToCalendar={() => setCalendarTargetDate(new Date())}
+              onNavigateToCalendar={() => handleNavigateToCalendar(new Date())}
             />
 
             <CalendarView 
@@ -2596,6 +2728,7 @@ export default function App() {
               goals={goals}
               availability={availability}
               targetDate={calendarTargetDate}
+              targetEventId={calendarTargetEventId}
               onNavigateToDate={setCalendarTargetDate}
               onAddEvent={handleAddEvent}
               onToggleCompleteEvent={handleToggleEventComplete}
@@ -2614,6 +2747,13 @@ export default function App() {
               onClearExternalEvents={handleClearExternalEvents}
               onOpenStreakShield={() => setShowStreakShieldModal(true)}
               onAutoHealSchedule={() => runGlobalAutopilotSelfHeal(true)}
+              autopilotMode={autopilotMode}
+              autopilotPacing={autopilotPacing}
+              onChangeAutopilotPacing={handleSetAutopilotPacing}
+              canUndoAutopilot={autopilotUndoSnapshot !== null}
+              onUndoAutopilot={handleUndoAutopilot}
+              onLifeHappenedToday={handleTriggerLifeHappened}
+              burnoutLimits={burnoutLimits}
             />
           </div>
         )}
@@ -2628,12 +2768,7 @@ export default function App() {
             onEditGoal={handleEditGoal}
             onEditEvent={handleEditEvent}
             onBulkEditEvents={handleBulkEditEvents}
-            onNavigateToCalendar={(targetDate?: Date) => {
-              if (targetDate) {
-                setCalendarTargetDate(targetDate);
-              }
-              setActiveTab("calendar");
-            }}
+            onNavigateToCalendar={handleNavigateToCalendar}
             onUpdateAvailability={handleUpdateAvailability}
             onBulkAddEvents={handleBulkAddEvents}
             onAddNotification={triggerSystemNotification}
@@ -2648,6 +2783,8 @@ export default function App() {
             onOpenEnergyModal={() => setShowEnergyModal(true)}
             onNavigateToAiSchedule={() => setActiveTab("ai-schedule")}
             onOpenStreakShield={() => setShowStreakShieldModal(true)}
+            burnoutLimits={burnoutLimits}
+            onUpdateBurnoutLimits={handleSetBurnoutLimits}
           />
         )}
 
@@ -2668,17 +2805,12 @@ export default function App() {
                 "success",
                 {
                   label: "View Calendar",
-                  onClick: () => setActiveTab("calendar")
+                  onClick: () => handleNavigateToCalendar()
                 }
               );
             }}
             onNavigateToGoals={() => setActiveTab("goals")}
-            onNavigateToCalendar={(targetDate?: Date) => {
-              if (targetDate) {
-                setCalendarTargetDate(targetDate);
-              }
-              setActiveTab("calendar");
-            }}
+            onNavigateToCalendar={handleNavigateToCalendar}
             onAddNotification={triggerSystemNotification}
             userEmail={userEmail}
           />
@@ -2878,6 +3010,8 @@ export default function App() {
 
       {/* Persistent Global Focus Session Countdown Timer Modal & Floating Mini Bar */}
       <FocusTimerModal
+        goals={goals}
+        onUpdateGoalChapters={handleUpdateGoalChapters}
         onCompleteSession={handleCompleteTimerSession}
         onExtendEventDuration={handleExtendEventDuration}
       />

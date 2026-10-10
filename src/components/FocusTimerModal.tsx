@@ -37,9 +37,14 @@ import {
   Copy,
   Edit3,
   Info,
-  Zap
+  Zap,
+  Waves,
+  CloudRain,
+  Wind,
+  ExternalLink
 } from "lucide-react";
-import { SessionSubStep, CustomSessionTemplate } from "../types";
+import { SessionSubStep, CustomSessionTemplate, Goal } from "../types";
+import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
 
 export interface ActiveTimerData {
   title: string;
@@ -431,6 +436,8 @@ interface FocusTimerModalProps {
   color?: string;
   previousSessionNote?: string;
   subSteps?: SessionSubStep[];
+  goals?: Goal[];
+  onUpdateGoalChapters?: (goalId: string, chapters: { id: string; title: string; completed: boolean }[]) => void;
   onCompleteSession: (eventId?: string, goalId?: string, note?: string) => void;
   onExtendEventDuration?: (eventId: string, deltaMins: number) => void;
 }
@@ -446,6 +453,8 @@ export default function FocusTimerModal({
   color: propColor = "#6366f1",
   previousSessionNote: propPreviousSessionNote,
   subSteps: propSubSteps,
+  goals,
+  onUpdateGoalChapters,
   onCompleteSession,
   onExtendEventDuration
 }: FocusTimerModalProps) {
@@ -497,6 +506,25 @@ export default function FocusTimerModal({
     const saved = localStorage.getItem(REPEAT_SOUND_KEY);
     return saved !== null ? saved === "true" : true;
   });
+
+  // Ambient Focus Soundscape Generator State
+  const [activeSoundscape, setActiveSoundscape] = useState<SoundscapeType>("none");
+  const [soundscapeVolume, setSoundscapeVolume] = useState<number>(() => soundscapeEngine.getVolume());
+
+  const handleToggleSoundscape = (type: SoundscapeType) => {
+    if (activeSoundscape === type) {
+      soundscapeEngine.stop();
+      setActiveSoundscape("none");
+    } else {
+      soundscapeEngine.play(type);
+      setActiveSoundscape(type);
+    }
+  };
+
+  const handleSoundscapeVolumeChange = (newVol: number) => {
+    setSoundscapeVolume(newVol);
+    soundscapeEngine.setVolume(newVol);
+  };
 
   const [showAudioSettings, setShowAudioSettings] = useState<boolean>(false);
   const [showSubStepsEditor, setShowSubStepsEditor] = useState<boolean>(false);
@@ -563,6 +591,17 @@ export default function FocusTimerModal({
   useEffect(() => {
     localStorage.setItem(REPEAT_SOUND_KEY, String(repeatSound));
   }, [repeatSound]);
+
+  const activeGoal = useMemo(() => {
+    if (!goals || goals.length === 0 || !timerState) return null;
+    return goals.find(g => g.id === timerState.goalId || g.name.toLowerCase() === timerState.title.toLowerCase());
+  }, [goals, timerState?.goalId, timerState?.title]);
+
+  const handleToggleChapter = (chapterId: string) => {
+    if (!activeGoal || !activeGoal.chapters || !onUpdateGoalChapters) return;
+    const updated = activeGoal.chapters.map(ch => ch.id === chapterId ? { ...ch, completed: !ch.completed } : ch);
+    onUpdateGoalChapters(activeGoal.id, updated);
+  };
 
   // Request browser desktop notification permission on mount
   useEffect(() => {
@@ -1100,8 +1139,6 @@ export default function FocusTimerModal({
     return () => clearInterval(interval);
   }, [timerState?.isRunning, soundEnabled, soundChoice, soundVolume, repeatSound]);
 
-  if (!timerState) return null;
-
   // Format time display (HH:MM:SS or MM:SS)
   const formatTime = (seconds: number) => {
     const hrs = Math.floor(seconds / 3600);
@@ -1205,6 +1242,35 @@ export default function FocusTimerModal({
     });
     if (propOnClose) propOnClose();
   };
+
+  // Keyboard Shortcuts: Space to Play/Pause, M for Ambient Soundscape toggle
+  useEffect(() => {
+    if (!timerState?.isOpen) return;
+
+    const handleTimerHotkeys = (e: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || "").toLowerCase();
+      if (activeTag === "input" || activeTag === "textarea") return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (timerState?.isRunning) {
+          handlePause();
+        } else {
+          handleStart();
+        }
+      } else if (e.key === "m" || e.key === "M") {
+        if (activeSoundscape !== "none") {
+          soundscapeEngine.stop();
+          setActiveSoundscape("none");
+        } else {
+          handleToggleSoundscape("brown_noise");
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleTimerHotkeys);
+    return () => window.removeEventListener("keydown", handleTimerHotkeys);
+  }, [timerState?.isOpen, timerState?.isRunning, activeSoundscape]);
 
   const handleExpand = () => {
     unlockAudioEngine();
@@ -1751,6 +1817,9 @@ export default function FocusTimerModal({
     setShowCustomBreakdownBuilder(false);
   };
 
+  // If timerState is null, do not render modal or mini-bar
+  if (!timerState) return null;
+
   // Render Floating Mini-Timer Bar when minimized OR when modal closed with active/saved progress
   if (timerState.isMinimized || (!timerState.isOpen && (timerState.isRunning || isPartialSession || timerState.isCompleted))) {
     return (
@@ -2156,6 +2225,117 @@ export default function FocusTimerModal({
                   {repeatSound ? "Enabled (3 Rings)" : "Single Ring"}
                 </button>
               </div>
+
+              {/* AMBIENT FOCUS SOUNDSCAPES GENERATOR */}
+              <div className="pt-2 border-t border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-200">
+                    <Waves className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Live Focus Soundscape</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400">
+                    {activeSoundscape === "none" ? "Muted" : "Active Playing"}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {[
+                    { id: "none" as SoundscapeType, label: "Mute", icon: "🔇" },
+                    { id: "brown_noise" as SoundscapeType, label: "Brown Noise", icon: "🌊" },
+                    { id: "rain" as SoundscapeType, label: "Gentle Rain", icon: "🌧️" },
+                    { id: "binaural_432" as SoundscapeType, label: "432Hz Alpha", icon: "🧘" }
+                  ].map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => handleToggleSoundscape(s.id)}
+                      className={`px-2 py-1.5 rounded-xl text-xs font-medium border text-center transition flex items-center justify-center gap-1.5 ${
+                        activeSoundscape === s.id
+                          ? "bg-cyan-500/20 text-cyan-200 border-cyan-500/40 font-bold"
+                          : "bg-white/5 text-slate-400 border-white/10 hover:text-slate-200 hover:bg-white/10"
+                      }`}
+                    >
+                      <span>{s.icon}</span>
+                      <span>{s.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {activeSoundscape !== "none" && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Volume1 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <input
+                      type="range"
+                      min="0.05"
+                      max="1.0"
+                      step="0.05"
+                      value={soundscapeVolume}
+                      onChange={(e) => handleSoundscapeVolumeChange(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                      title="Soundscape Volume"
+                    />
+                    <span className="text-[10px] font-mono text-cyan-300 w-8 text-right">
+                      {Math.round(soundscapeVolume * 100)}%
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Goal Syllabus / Chapters Checklist Banner */}
+        {activeGoal && activeGoal.chapters && activeGoal.chapters.length > 0 && (
+          <div className="mb-3 p-3 bg-indigo-950/40 border border-indigo-500/30 rounded-2xl animate-fade-in space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Bookmark className="w-3.5 h-3.5 text-indigo-400" />
+                <span className="text-xs font-bold text-slate-200">
+                  {activeGoal.name} Syllabus Progress
+                </span>
+                <span className="text-[10px] font-mono text-indigo-300">
+                  ({activeGoal.chapters.filter(c => c.completed).length}/{activeGoal.chapters.length})
+                </span>
+              </div>
+              {activeGoal.resourceLink && (
+                <a
+                  href={activeGoal.resourceLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-indigo-300 hover:text-indigo-200 flex items-center gap-1 underline underline-offset-2"
+                >
+                  <span>{activeGoal.resourceLabel || "Launch Material"}</span>
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              )}
+            </div>
+
+            {/* Chapters Checklist */}
+            <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+              {activeGoal.chapters.map((ch, idx) => (
+                <button
+                  key={ch.id}
+                  type="button"
+                  onClick={() => handleToggleChapter(ch.id)}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-xl border text-xs transition flex items-center justify-between gap-2 ${
+                    ch.completed
+                      ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300/80 line-through"
+                      : "bg-white/5 border-white/10 text-slate-200 hover:bg-white/10"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`w-4 h-4 rounded flex items-center justify-center shrink-0 text-[10px] border ${
+                      ch.completed ? "bg-emerald-500 text-white border-emerald-500" : "border-slate-500 text-slate-400"
+                    }`}>
+                      {ch.completed ? "✓" : idx + 1}
+                    </span>
+                    <span className="truncate">{ch.title}</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 shrink-0">
+                    {ch.completed ? "Done" : "Pending"}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         )}
