@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { 
   Sparkles, 
   Clock, 
@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { AppNotification, CalendarEvent, Goal } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
+import { getActiveTimerSnapshot, ActiveTimerData } from "./FocusTimerModal";
 
 interface MotivationalPulseBannerProps {
   notifications: AppNotification[];
@@ -40,6 +41,7 @@ interface ParsedScheduleBlock {
   title: string;
   timeStr: string;
   isCompleted?: boolean;
+  isStudyingNow?: boolean;
   matchedEvent?: CalendarEvent;
   matchedGoal?: Goal;
 }
@@ -265,13 +267,60 @@ export default function MotivationalPulseBanner({
     return getDailySparkIndex(MOTIVATIONAL_SPARKS.length);
   });
 
+  // Active focus timer synchronization to detect when user is currently studying
+  const [activeTimerSnapshot, setActiveTimerSnapshot] = useState<ActiveTimerData | null>(() => getActiveTimerSnapshot());
+
+  useEffect(() => {
+    const handleTimerChange = (e: any) => {
+      setActiveTimerSnapshot(e.detail || null);
+    };
+    window.addEventListener("focus_timer_state_change" as any, handleTimerChange);
+    return () => {
+      window.removeEventListener("focus_timer_state_change" as any, handleTimerChange);
+    };
+  }, []);
+
+  const isTimerActive = Boolean(
+    activeTimerSnapshot &&
+    !activeTimerSnapshot.isCompleted &&
+    (activeTimerSnapshot.isRunning || (activeTimerSnapshot.timeRemaining && activeTimerSnapshot.timeRemaining > 0))
+  );
+
+  // Filter out upcoming pre-session alerts if the user is ALREADY studying that session or subject
+  const filteredNotifications = useMemo(() => {
+    if (!isTimerActive || !activeTimerSnapshot) return notifications;
+
+    const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+    const timerTitleClean = clean(activeTimerSnapshot.title);
+    const activeGoal = activeTimerSnapshot.goalId ? goals.find(g => g.id === activeTimerSnapshot.goalId) : undefined;
+    const activeGoalClean = clean(activeGoal?.name);
+
+    return notifications.filter(n => {
+      if (n.type !== "upcoming") return true;
+      const msg = (n.message || "").toLowerCase();
+      const title = (n.title || "").toLowerCase();
+      const full = `${title} ${msg}`;
+
+      const isStartAlert = full.includes("starts at") || full.includes("prepare") || full.includes("upcoming session");
+      if (!isStartAlert) return true;
+
+      if (timerTitleClean && (msg.includes(timerTitleClean) || title.includes(timerTitleClean))) return false;
+      if (activeGoalClean && (msg.includes(activeGoalClean) || title.includes(activeGoalClean))) return false;
+      if (timerTitleClean) {
+        const words = timerTitleClean.split(/\s+/).filter(w => w.length >= 3);
+        if (words.some(w => msg.includes(w) || title.includes(w))) return false;
+      }
+      return true;
+    });
+  }, [notifications, goals, isTimerActive, activeTimerSnapshot]);
+
   // Safe index clamping if notifications list changes
-  const validIndex = Math.min(activeIndex, Math.max(0, notifications.length - 1));
-  const activeNotification: AppNotification | undefined = notifications[validIndex];
+  const validIndex = Math.min(activeIndex, Math.max(0, filteredNotifications.length - 1));
+  const activeNotification: AppNotification | undefined = filteredNotifications[validIndex];
 
   const unreadCount = useMemo(() => {
-    return notifications.filter(n => !n.read).length;
-  }, [notifications]);
+    return filteredNotifications.filter(n => !n.read).length;
+  }, [filteredNotifications]);
 
   // Determine today's actual events from calendar
   const todayEvents = useMemo(() => {
@@ -415,11 +464,21 @@ export default function MotivationalPulseBanner({
           const matchedG = matchedEvt?.goalId 
             ? goals.find(g => g.id === matchedEvt.goalId)
             : goals.find(g => title.toLowerCase().includes(g.name.toLowerCase()));
+          const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+          const cleanTitle = clean(title);
+          const isStudyingNow = Boolean(
+            isTimerActive && activeTimerSnapshot && (
+              (activeTimerSnapshot.eventId && matchedEvt && activeTimerSnapshot.eventId === matchedEvt.id) ||
+              (activeTimerSnapshot.goalId && matchedG && activeTimerSnapshot.goalId === matchedG.id) ||
+              (clean(activeTimerSnapshot.title) && (clean(activeTimerSnapshot.title).includes(cleanTitle) || cleanTitle.includes(clean(activeTimerSnapshot.title))))
+            )
+          );
 
           blocks.push({
             title,
             timeStr,
             isCompleted: matchedEvt?.completed || false,
+            isStudyingNow,
             matchedEvent: matchedEvt,
             matchedGoal: matchedG
           });
@@ -512,14 +571,14 @@ export default function MotivationalPulseBanner({
   };
 
   const handleNextNotification = () => {
-    if (notifications.length > 1) {
-      setActiveIndex((validIndex + 1) % notifications.length);
+    if (filteredNotifications.length > 1) {
+      setActiveIndex((validIndex + 1) % filteredNotifications.length);
     }
   };
 
   const handlePrevNotification = () => {
-    if (notifications.length > 1) {
-      setActiveIndex((validIndex - 1 + notifications.length) % notifications.length);
+    if (filteredNotifications.length > 1) {
+      setActiveIndex((validIndex - 1 + filteredNotifications.length) % filteredNotifications.length);
     }
   };
 
@@ -595,7 +654,7 @@ export default function MotivationalPulseBanner({
         {/* Right: Controls & Toggles */}
         <div className="flex items-center gap-1.5 sm:gap-2 ml-auto">
           {/* Notification Pagination Switcher */}
-          {notifications.length > 1 && (
+          {filteredNotifications.length > 1 && (
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-lg p-0.5 text-xs">
               <button 
                 type="button"
@@ -606,7 +665,7 @@ export default function MotivationalPulseBanner({
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
               <span className="px-1.5 font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                {validIndex + 1}/{notifications.length}
+                {validIndex + 1}/{filteredNotifications.length}
               </span>
               <button 
                 type="button"
@@ -672,7 +731,11 @@ export default function MotivationalPulseBanner({
             <span className="text-slate-300 dark:text-white/20 select-none">•</span>
             <span className="truncate text-slate-600 dark:text-slate-400">
               {parsedData.blocks.length > 0 
-                ? parsedData.blocks.map(b => `${b.title}${b.timeStr ? ` (${b.timeStr})` : ""}`).join(" • ")
+                ? parsedData.blocks.map(b => {
+                    if (b.isStudyingNow) return `${b.title} (Studying Now — finishes early)`;
+                    if (b.isCompleted) return `${b.title} (Completed ✓)`;
+                    return `${b.title}${b.timeStr ? ` (${b.timeStr})` : ""}`;
+                  }).join(" • ")
                 : activeNotification?.message || "No upcoming blocks today."}
             </span>
           </div>
@@ -748,7 +811,12 @@ export default function MotivationalPulseBanner({
 
                           {/* Time Badge */}
                           <div className="flex items-center gap-1.5 shrink-0">
-                            {block.timeStr ? (
+                            {block.isStudyingNow ? (
+                              <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-700 dark:text-amber-300 shadow-2xs flex items-center gap-1 animate-pulse">
+                                <Zap className="w-2.5 h-2.5 text-amber-500" />
+                                <span>Studying Now</span>
+                              </span>
+                            ) : block.timeStr ? (
                               <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded-md bg-white dark:bg-[#0a0c14] border border-slate-200 dark:border-white/10 text-indigo-700 dark:text-indigo-300 shadow-2xs">
                                 {block.timeStr}
                               </span>

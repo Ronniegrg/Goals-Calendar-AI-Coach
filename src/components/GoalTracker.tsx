@@ -292,6 +292,24 @@ export default function GoalTracker({
   };
 
   const executeStartTimer = (g: Goal, noteOverride?: string, isStudyAhead = false) => {
+    // Suppress pre-session alerts for matching today events of this goal
+    try {
+      const todayStr = new Date().toDateString();
+      const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+      let changed = false;
+      events.forEach(ev => {
+        if (!existing.includes(ev.id) && new Date(ev.start).toDateString() === todayStr) {
+          if (ev.goalId === g.id || (ev.title && ev.title.toLowerCase().includes(g.name.toLowerCase()))) {
+            existing.push(ev.id);
+            changed = true;
+          }
+        }
+      });
+      if (changed) {
+        localStorage.setItem("notified_event_alert_ids", JSON.stringify(existing));
+      }
+    } catch {}
+
     triggerFocusTimer({
       title: g.name,
       duration: isStudyAhead ? (g.durationMinutes || 45) : (g.durationMinutes || 60),

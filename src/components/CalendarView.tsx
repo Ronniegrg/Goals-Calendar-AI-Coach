@@ -243,6 +243,14 @@ export default function CalendarView({
     const durationMins = overrideDuration || Math.max(5, Math.round((endMs - startMs) / (1000 * 60)));
     
     const associatedGoal = goals.find(g => g.id === evt.goalId);
+
+    // Suppress redundant pre-session alerts because user is studying this event right now
+    try {
+      const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+      if (!existing.includes(evt.id)) {
+        localStorage.setItem("notified_event_alert_ids", JSON.stringify([...existing, evt.id]));
+      }
+    } catch {}
     
     triggerFocusTimer({
       title: evt.title,
@@ -260,6 +268,25 @@ export default function CalendarView({
 
   const handleOpenTimerForGoal = (goal: Goal, e?: React.MouseEvent, overrideDuration?: number) => {
     if (e) e.stopPropagation();
+
+    // Suppress pre-session alerts for matching today events of this goal
+    try {
+      const todayStr = new Date().toDateString();
+      const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+      let changed = false;
+      events.forEach(ev => {
+        if (!existing.includes(ev.id) && new Date(ev.start).toDateString() === todayStr) {
+          if (ev.goalId === goal.id || (ev.title && ev.title.toLowerCase().includes(goal.name.toLowerCase()))) {
+            existing.push(ev.id);
+            changed = true;
+          }
+        }
+      });
+      if (changed) {
+        localStorage.setItem("notified_event_alert_ids", JSON.stringify(existing));
+      }
+    } catch {}
+
     triggerFocusTimer({
       title: goal.name,
       duration: overrideDuration || goal.durationMinutes || 60,
@@ -274,25 +301,38 @@ export default function CalendarView({
     });
   };
 
-  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
+  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string, title?: string) => {
     let targetEvtId = eventId;
     const trimmedNote = note && note.trim() ? note.trim() : "";
 
-    // If eventId wasn't directly provided, try to find an uncompleted event for this goal today
-    if (!targetEvtId && goalId && events) {
+    // If eventId wasn't directly provided, try to find an uncompleted event for this goal or title today
+    if (!targetEvtId && events) {
       const todayStr = new Date().toDateString();
-      const g = goals.find(item => item.id === goalId);
-      const matchingEvt = events.find(e => 
-        !e.completed && 
-        (e.goalId === goalId || (g && e.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
-        new Date(e.start).toDateString() === todayStr
-      );
+      const g = goalId ? goals.find(item => item.id === goalId) : undefined;
+      const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+      const cleanTitle = clean(title);
+
+      const matchingEvt = events.find(e => {
+        if (e.completed) return false;
+        if (new Date(e.start).toDateString() !== todayStr) return false;
+        if (goalId && e.goalId === goalId) return true;
+        if (g && clean(e.title).includes(clean(g.name))) return true;
+        if (cleanTitle && (clean(e.title).includes(cleanTitle) || cleanTitle.includes(clean(e.title)))) return true;
+        return false;
+      });
       if (matchingEvt) {
         targetEvtId = matchingEvt.id;
       }
     }
 
     if (targetEvtId) {
+      try {
+        const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+        if (!existing.includes(targetEvtId)) {
+          localStorage.setItem("notified_event_alert_ids", JSON.stringify([...existing, targetEvtId]));
+        }
+      } catch {}
+
       if (onEditEvent) {
         onEditEvent(targetEvtId, { completed: true, completionNote: trimmedNote || undefined });
       } else {
@@ -457,10 +497,36 @@ export default function CalendarView({
   const [rebalanceStatus, setRebalanceStatus] = useState<string | null>(null);
 
   // Spotlight / Start From Incomplete Goals State
-  const [spotlightEventId, setSpotlightEventId] = useState<string | null>(null);
+  const [spotlightEventId, setSpotlightEventId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("calendar_spotlight_event_id");
+    } catch {
+      return null;
+    }
+  });
   const [spotlightGoalId, setSpotlightGoalId] = useState<string | null>(null);
   const [currentIncompleteIndex, setCurrentIncompleteIndex] = useState<number>(0);
   const [currentTodayGoalIndex, setCurrentTodayGoalIndex] = useState<number>(0);
+
+  const updateSpotlight = (eventId: string | null, goalId?: string | null) => {
+    setSpotlightEventId(eventId);
+    setSpotlightGoalId(goalId || null);
+    try {
+      if (eventId) {
+        localStorage.setItem("calendar_spotlight_event_id", eventId);
+      } else {
+        localStorage.removeItem("calendar_spotlight_event_id");
+      }
+      if (goalId) {
+        localStorage.setItem("calendar_spotlight_goal_id", goalId);
+      } else {
+        localStorage.removeItem("calendar_spotlight_goal_id");
+      }
+    } catch {}
+    window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+      detail: { eventId, goalId: goalId || null }
+    }));
+  };
   const [spotlightBannerInfo, setSpotlightBannerInfo] = useState<{
     goal: Goal;
     event?: CalendarEvent;
@@ -1400,8 +1466,8 @@ export default function CalendarView({
   // Respond to targetEventId navigation: spotlight the event and scroll grid to its scheduled time
   useEffect(() => {
     if (targetEventId) {
-      setSpotlightEventId(targetEventId);
       const targetEvt = events.find(e => e.id === targetEventId);
+      updateSpotlight(targetEventId, targetEvt?.goalId);
       if (targetEvt) {
         const sDate = new Date(targetEvt.start);
         setCurrentDate(sDate);
@@ -1437,7 +1503,7 @@ export default function CalendarView({
 
     if (activePastIncomplete.length === 0) {
       setSpotlightBannerInfo(null);
-      setSpotlightEventId(null);
+      updateSpotlight(null, null);
       const priorityLabel = effectivePriority !== "all" ? ` [${effectivePriority.toUpperCase()}]` : "";
       setRebalanceStatus(`🎉 No past incomplete${priorityLabel} sessions! All scheduled sessions up to now are complete.`);
       setTimeout(() => setRebalanceStatus(null), 4000);
@@ -1449,13 +1515,12 @@ export default function CalendarView({
     setCurrentIncompleteIndex((idx + 1) % activePastIncomplete.length);
 
     const { goal, event, deficit } = targetItem;
-    setSpotlightGoalId(goal.id);
 
     const sDate = new Date(event.start);
     // Navigate calendar directly to this past session's date
     setCurrentDate(sDate);
     onNavigateToDate?.(sDate);
-    setSpotlightEventId(event.id);
+    updateSpotlight(event.id, goal.id);
 
     // Smooth scroll to the session time in grid
     setTimeout(() => {
@@ -1478,7 +1543,7 @@ export default function CalendarView({
   const handleFocusTodayFirstGoal = (indexToFocus?: number) => {
     if (todayGoalSessions.length === 0) {
       setSpotlightBannerInfo(null);
-      setSpotlightEventId(null);
+      updateSpotlight(null, null);
       setRebalanceStatus("📅 No goal sessions scheduled for today! Click + Goal or + Event to add one.");
       setTimeout(() => setRebalanceStatus(null), 4000);
       return;
@@ -1511,8 +1576,7 @@ export default function CalendarView({
       createdAt: ""
     };
 
-    setSpotlightGoalId(tiedGoal.id);
-    setSpotlightEventId(targetEvt.id);
+    updateSpotlight(targetEvt.id, tiedGoal.id);
 
     // Navigate to today's date
     const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1602,8 +1666,7 @@ export default function CalendarView({
         createdAt: ""
       };
 
-      setSpotlightGoalId(tiedGoal.id);
-      setSpotlightEventId(nextTarget!.id);
+      updateSpotlight(nextTarget!.id, tiedGoal.id);
       setCurrentTodayGoalIndex((nextIndex + 1) % allToday.length);
 
       // Navigate to today's date
@@ -1636,7 +1699,7 @@ export default function CalendarView({
     } else {
       // All goals scheduled for today completed!
       setSpotlightBannerInfo(null);
-      setSpotlightEventId(null);
+      updateSpotlight(null, null);
       setRebalanceStatus("🎉 Fantastic! All scheduled goals for today are completed!");
       setTimeout(() => setRebalanceStatus(null), 4000);
     }
@@ -1686,8 +1749,7 @@ export default function CalendarView({
       const nextIndex = 0;
       const nextTarget = remaining[0];
 
-      setSpotlightGoalId(nextTarget.goal.id);
-      setSpotlightEventId(nextTarget.event.id);
+      updateSpotlight(nextTarget.event.id, nextTarget.goal.id);
       setCurrentIncompleteIndex((nextIndex + 1) % remaining.length);
 
       const sDate = new Date(nextTarget.event.start);
@@ -1717,7 +1779,7 @@ export default function CalendarView({
     } else {
       // All past incomplete sessions completed!
       setSpotlightBannerInfo(null);
-      setSpotlightEventId(null);
+      updateSpotlight(null, null);
       const priorityLabel = currentFilter !== "all" ? ` [${currentFilter.toUpperCase()}]` : "";
       setRebalanceStatus(`🎉 All past incomplete${priorityLabel} sessions are completed!`);
       setTimeout(() => setRebalanceStatus(null), 3500);
@@ -4257,7 +4319,7 @@ export default function CalendarView({
                 id="spotlight_auto_reschedule_btn"
                 onClick={() => {
                   setSpotlightBannerInfo(null);
-                  setSpotlightEventId(null);
+                  updateSpotlight(null, null);
                   onAutoHealSchedule();
                 }}
                 className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
@@ -4297,7 +4359,7 @@ export default function CalendarView({
               type="button"
               onClick={() => {
                 setSpotlightBannerInfo(null);
-                setSpotlightEventId(null);
+                updateSpotlight(null, null);
               }}
               className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg transition cursor-pointer"
               title="Dismiss banner"

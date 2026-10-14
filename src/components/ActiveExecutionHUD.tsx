@@ -81,6 +81,22 @@ export default function ActiveExecutionHUD({
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [newSubtaskMinutes, setNewSubtaskMinutes] = useState<number>(15);
 
+  // Active target session & target goal synchronized from the calendar (e.g. React)
+  const [targetedEventId, setTargetedEventId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("calendar_spotlight_event_id");
+    } catch {
+      return null;
+    }
+  });
+  const [targetedGoalId, setTargetedGoalId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("calendar_spotlight_goal_id");
+    } catch {
+      return null;
+    }
+  });
+
   // Target goal and session for "Where to start" briefing note popup
   const [briefingTarget, setBriefingTarget] = useState<{
     goal: Goal;
@@ -100,6 +116,26 @@ export default function ActiveExecutionHUD({
     window.addEventListener("focus_timer_state_change" as any, handleTimerChange);
     return () => {
       window.removeEventListener("focus_timer_state_change" as any, handleTimerChange);
+    };
+  }, []);
+
+  // Listen for calendar target session changes (e.g. when user clicks Focus Today's Goal or clicks a target session)
+  useEffect(() => {
+    const handleTargetChange = (e: any) => {
+      const eventId = e.detail?.eventId || null;
+      const goalId = e.detail?.goalId || null;
+      setTargetedEventId(eventId);
+      setTargetedGoalId(goalId);
+      // Clear manual goal override so the targeted calendar session/goal (React) takes immediate priority
+      setSelectedGoalId(null);
+      try {
+        localStorage.removeItem("hud_selected_goal_id");
+      } catch {}
+    };
+
+    window.addEventListener("calendar_target_session_change" as any, handleTargetChange);
+    return () => {
+      window.removeEventListener("calendar_target_session_change" as any, handleTargetChange);
     };
   }, []);
 
@@ -132,7 +168,38 @@ export default function ActiveExecutionHUD({
       .filter(e => new Date(e.start).toDateString() === todayStr)
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    // Check if an event is currently slotted on the calendar
+    // 1. Explicit calendar target session (e.g. React when spotlighted/targeted on calendar)
+    if (targetedEventId) {
+      const targeted = todayEvents.find(e => e.id === targetedEventId && !e.completed) ||
+                       events.find(e => e.id === targetedEventId && !e.completed);
+      if (targeted) {
+        const g = targeted.goalId ? goals.find(item => item.id === targeted.goalId) : undefined;
+        return { currentEvent: targeted, matchedGoal: g, nextEvent: null };
+      }
+    }
+
+    // 2. Explicit calendar target goal (e.g. React goal spotlighted on calendar)
+    if (targetedGoalId) {
+      const g = goals.find(item => item.id === targetedGoalId);
+      if (g) {
+        const matchingEvt = todayEvents.find(e => !e.completed && (
+          e.goalId === g.id ||
+          (e.title && g.name && (
+            e.title.toLowerCase().includes(g.name.toLowerCase()) ||
+            g.name.toLowerCase().includes(e.title.toLowerCase())
+          ))
+        )) || events.find(e => !e.completed && (
+          e.goalId === g.id ||
+          (e.title && g.name && (
+            e.title.toLowerCase().includes(g.name.toLowerCase()) ||
+            g.name.toLowerCase().includes(e.title.toLowerCase())
+          ))
+        ));
+        return { currentEvent: matchingEvt || null, matchedGoal: g, nextEvent: null };
+      }
+    }
+
+    // 3. Check if an event is currently slotted on the calendar right now (e.g. at current clock time)
     const slotted = todayEvents.find(e => {
       if (e.completed) return false;
       const startMs = new Date(e.start).getTime();
@@ -145,7 +212,7 @@ export default function ActiveExecutionHUD({
       return { currentEvent: slotted, matchedGoal: g, nextEvent: null };
     }
 
-    // Check upcoming today
+    // 4. Check upcoming today
     const upcoming = todayEvents.find(e => {
       if (e.completed) return false;
       return new Date(e.start).getTime() > nowMs;
@@ -156,7 +223,7 @@ export default function ActiveExecutionHUD({
       return { currentEvent: upcoming, matchedGoal: g, nextEvent: upcoming };
     }
 
-    // Fallback: uncompleted today that has passed its scheduled end
+    // 5. Fallback: uncompleted today that has passed its scheduled end
     const pendingToday = todayEvents.find(e => !e.completed);
     if (pendingToday) {
       const g = pendingToday.goalId ? goals.find(item => item.id === pendingToday.goalId) : undefined;
@@ -164,7 +231,7 @@ export default function ActiveExecutionHUD({
     }
 
     return { currentEvent: null, matchedGoal: undefined, nextEvent: null };
-  }, [events, goals, tickerNow]);
+  }, [events, goals, tickerNow, targetedEventId, targetedGoalId]);
 
   // Tomorrow's upcoming sessions for the "Study Ahead" feature
   const { allTodayCompleted, tomorrowEvents, nextTomorrowEvent, matchedTomorrowGoal } = useMemo(() => {
@@ -196,6 +263,16 @@ export default function ActiveExecutionHUD({
   const [selectedTomorrowEventId, setSelectedTomorrowEventId] = useState<string | null>(null);
   const [showTomorrowPicker, setShowTomorrowPicker] = useState(false);
 
+  // User-selected goal from "Other Goals" picker (in-memory override for this study session, not persisted across sessions)
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+
+  // Proactively clean up any stale hud_selected_goal_id from localStorage
+  useEffect(() => {
+    try {
+      localStorage.removeItem("hud_selected_goal_id");
+    } catch {}
+  }, []);
+
   const activeTomorrowEvent = selectedTomorrowEventId
     ? (tomorrowEvents.find(e => e.id === selectedTomorrowEventId) || nextTomorrowEvent)
     : nextTomorrowEvent;
@@ -203,10 +280,46 @@ export default function ActiveExecutionHUD({
     ? goals.find(g => g.id === activeTomorrowEvent.goalId)
     : matchedTomorrowGoal;
 
+  // Find goal explicitly chosen via "Other Goals"
+  const userSelectedGoal = useMemo(() => {
+    if (!selectedGoalId) return undefined;
+    return goals.find(g => g.id === selectedGoalId);
+  }, [selectedGoalId, goals]);
+
+  // If a goal was chosen via "Other Goals", find an event that genuinely belongs to that goal (if one exists today)
+  const userSelectedGoalEvent = useMemo(() => {
+    if (!userSelectedGoal) return null;
+    const nowObj = new Date(tickerNow);
+    const todayStr = nowObj.toDateString();
+    const todayEvents = events.filter(e => new Date(e.start).toDateString() === todayStr);
+    return todayEvents.find(e => 
+      !e.completed && (
+        (e.goalId && e.goalId === userSelectedGoal.id) ||
+        (e.title && userSelectedGoal.name && (
+          e.title.toLowerCase() === userSelectedGoal.name.toLowerCase() ||
+          e.title.toLowerCase().includes(userSelectedGoal.name.toLowerCase()) ||
+          userSelectedGoal.name.toLowerCase().includes(e.title.toLowerCase())
+        ))
+      )
+    ) || null;
+  }, [userSelectedGoal, events, tickerNow]);
+
   // Study Ahead mode triggers when user has no active timer and no remaining uncompleted events today, but has tomorrow events!
   const isStudyAheadMode = Boolean(!activeTimer && !currentEvent && activeTomorrowEvent);
-  const effectiveEvent = currentEvent || (isStudyAheadMode ? activeTomorrowEvent : null);
-  const effectiveGoal = matchedGoal || (isStudyAheadMode ? activeTomorrowGoal : undefined);
+
+  // If a scheduled target session exists on the calendar (e.g. React), it ALWAYS takes priority in the HUD!
+  // userSelectedGoal is only used as an override when studying ahead or when no target session exists today.
+  const hasTarget = Boolean(currentEvent || matchedGoal);
+
+  const effectiveEvent = (hasTarget ? currentEvent : null) 
+    || (userSelectedGoal ? userSelectedGoalEvent : null) 
+    || (isStudyAheadMode ? activeTomorrowEvent : null)
+    || currentEvent;
+
+  const effectiveGoal = (hasTarget ? matchedGoal : null) 
+    || userSelectedGoal 
+    || matchedGoal 
+    || (isStudyAheadMode ? activeTomorrowGoal : undefined);
 
   // Compute total planned duration of this study session in minutes
   const totalSessionMinutes = useMemo(() => {
@@ -219,8 +332,14 @@ export default function ActiveExecutionHUD({
     if (effectiveGoal?.durationMinutes) {
       return effectiveGoal.durationMinutes;
     }
+    if (userSelectedGoal) {
+      if (userSelectedGoalEvent) {
+        return Math.max(15, Math.round((new Date(userSelectedGoalEvent.end).getTime() - new Date(userSelectedGoalEvent.start).getTime()) / 60000));
+      }
+      return userSelectedGoal.durationMinutes || 45;
+    }
     return 45;
-  }, [activeTimer, effectiveEvent, effectiveGoal]);
+  }, [activeTimer, effectiveEvent, effectiveGoal, userSelectedGoal, userSelectedGoalEvent]);
 
   // Subtasks logic (merging active timer subtasks, event subtasks, or goal subtasks)
   const activeSubtasks: SubTask[] = useMemo(() => {
@@ -262,10 +381,10 @@ export default function ActiveExecutionHUD({
 
   // Synchronize subtasks to event, goal, and active timer
   const persistSubtasks = (updated: SubTask[]) => {
-    if (currentEvent?.id && onEditEvent) {
-      onEditEvent(currentEvent.id, { subtasks: updated });
-    } else if (matchedGoal?.id && onEditGoal) {
-      onEditGoal(matchedGoal.id, { subtasks: updated });
+    if (effectiveEvent?.id && onEditEvent) {
+      onEditEvent(effectiveEvent.id, { subtasks: updated });
+    } else if (effectiveGoal?.id && onEditGoal) {
+      onEditGoal(effectiveGoal.id, { subtasks: updated });
     }
 
     if (activeTimer) {
@@ -356,19 +475,28 @@ export default function ActiveExecutionHUD({
     if (allocatedMinutes <= 0) return;
     if (activeTimer) {
       setActiveTimerDuration(allocatedMinutes);
-    } else if (currentEvent?.id && onEditEvent) {
-      const startMs = new Date(currentEvent.start).getTime();
+    } else if (effectiveEvent?.id && onEditEvent) {
+      const startMs = new Date(effectiveEvent.start).getTime();
       const newEnd = new Date(startMs + allocatedMinutes * 60000).toISOString();
-      onEditEvent(currentEvent.id, { end: newEnd });
-    } else if (matchedGoal?.id && onEditGoal) {
-      onEditGoal(matchedGoal.id, { durationMinutes: allocatedMinutes });
+      onEditEvent(effectiveEvent.id, { end: newEnd });
+    } else if (effectiveGoal?.id && onEditGoal) {
+      onEditGoal(effectiveGoal.id, { durationMinutes: allocatedMinutes });
     }
   };
 
   // Actual execution of study timer
   const executeStartStudying = (g?: Goal, evt?: CalendarEvent | null, noteOverride?: string) => {
-    const title = evt?.title || g?.name || "Focus Study Session";
-    const duration = evt ? Math.max(15, Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60000)) : (g?.durationMinutes || 45);
+    // Only use evt if it genuinely belongs to g, never an unrelated scheduled event from another goal (e.g. Python when studying Cybersecurity)
+    const isMatchingEvent = evt && (!g || evt.goalId === g.id || (evt.title && g.name && (
+      evt.title.toLowerCase().includes(g.name.toLowerCase()) ||
+      g.name.toLowerCase().includes(evt.title.toLowerCase())
+    )));
+    const matchedEvt = isMatchingEvent ? evt : null;
+
+    const title = matchedEvt?.title || g?.name || "Focus Study Session";
+    const duration = matchedEvt 
+      ? Math.max(15, Math.round((new Date(matchedEvt.end).getTime() - new Date(matchedEvt.start).getTime()) / 60000)) 
+      : (g?.durationMinutes || 45);
 
     // Convert active subtasks to sessionSubSteps with their duration
     const subStepsToPass: SessionSubStep[] | undefined = activeSubtasks.length > 0 
@@ -378,20 +506,49 @@ export default function ActiveExecutionHUD({
           durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
           completed: t.completed
         }))
-      : (evt?.subSteps || g?.subSteps);
+      : (matchedEvt?.subSteps || g?.subSteps);
+
+    // Suppress upcoming pre-session alerts because user is studying now
+    try {
+      const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+      let changed = false;
+      if (matchedEvt?.id && !existing.includes(matchedEvt.id)) {
+        existing.push(matchedEvt.id);
+        changed = true;
+      }
+      const goalToMatch = g || (matchedEvt?.goalId ? goals.find(item => item.id === matchedEvt.goalId) : undefined);
+      if (goalToMatch) {
+        const todayStr = new Date().toDateString();
+        events.forEach(e => {
+          if (!existing.includes(e.id) && new Date(e.start).toDateString() === todayStr) {
+            if (e.goalId === goalToMatch.id || (e.title && e.title.toLowerCase().includes(goalToMatch.name.toLowerCase()))) {
+              existing.push(e.id);
+              changed = true;
+            }
+          }
+        });
+      }
+      if (changed) {
+        localStorage.setItem("notified_event_alert_ids", JSON.stringify(existing));
+      }
+    } catch {}
 
     triggerFocusTimer({
       title,
       duration,
-      eventId: evt?.id,
-      goalId: g?.id || evt?.goalId,
-      category: g?.category || evt?.type,
+      eventId: matchedEvt?.id,
+      goalId: g?.id || matchedEvt?.goalId,
+      category: g?.category || matchedEvt?.type,
       color: g?.color || "#6366f1",
       previousSessionNote: noteOverride !== undefined ? noteOverride : g?.lastSessionNote,
       subSteps: subStepsToPass,
       autoStart: true,
       openModal: false
     });
+    setSelectedGoalId(null);
+    try {
+      localStorage.removeItem("hud_selected_goal_id");
+    } catch {}
     setShowGoalPicker(false);
     setShowTomorrowPicker(false);
   };
@@ -401,27 +558,48 @@ export default function ActiveExecutionHUD({
   // If the goal has a note saved, show the note so they know where to start!
   // Otherwise, start normally without interruption.
   const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent) => {
-    const evt = overrideEvent || effectiveEvent;
-    const g = overrideGoal || effectiveGoal || (evt ? goals.find(goal => goal.id === evt.goalId || goal.name.toLowerCase() === evt.title.toLowerCase()) : undefined);
+    // When called from the main "Start Studying Now" button with no override, ALWAYS study the scheduled target session (e.g. React)!
+    const targetGoal = overrideGoal || effectiveGoal || matchedGoal || userSelectedGoal;
+
+    // Find event specifically matching targetGoal
+    let targetEvent: CalendarEvent | null | undefined = overrideEvent;
+    if (!targetEvent && targetGoal) {
+      const nowObj = new Date(tickerNow);
+      const todayStr = nowObj.toDateString();
+      const todayEvents = events.filter(e => new Date(e.start).toDateString() === todayStr);
+      targetEvent = todayEvents.find(e => 
+        !e.completed && (
+          (e.goalId && e.goalId === targetGoal.id) ||
+          (e.title && targetGoal.name && (
+            e.title.toLowerCase() === targetGoal.name.toLowerCase() ||
+            e.title.toLowerCase().includes(targetGoal.name.toLowerCase()) ||
+            targetGoal.name.toLowerCase().includes(e.title.toLowerCase())
+          ))
+        )
+      ) || null;
+    }
+    if (!targetEvent && !overrideGoal) {
+      targetEvent = effectiveEvent;
+    }
 
     const isAhead = Boolean(
       isStudyAheadMode || 
-      (overrideGoal && activeTomorrowGoal && overrideGoal.id === activeTomorrowGoal.id) ||
-      (overrideEvent && tomorrowEvents.some(te => te.id === overrideEvent.id))
+      (targetGoal && activeTomorrowGoal && targetGoal.id === activeTomorrowGoal.id) ||
+      (targetEvent && tomorrowEvents.some(te => te.id === targetEvent.id))
     );
 
     // Check if goal has a saved note to tell the user where to start
-    if (g && g.lastSessionNote && g.lastSessionNote.trim().length > 0) {
+    if (targetGoal && targetGoal.lastSessionNote && targetGoal.lastSessionNote.trim().length > 0) {
       setBriefingTarget({
-        goal: g,
-        event: evt,
+        goal: targetGoal,
+        event: targetEvent,
         isStudyAhead: isAhead
       });
       return;
     }
 
     // Otherwise, works normally
-    executeStartStudying(g, evt);
+    executeStartStudying(targetGoal, targetEvent);
   };
 
   const handlePullTomorrowEventToToday = (evt: CalendarEvent) => {
@@ -465,15 +643,14 @@ export default function ActiveExecutionHUD({
         autoStart: activeTimer.isRunning,
         openModal: true
       });
-    } else if (currentEvent) {
-      const dur = Math.max(15, Math.round((new Date(currentEvent.end).getTime() - new Date(currentEvent.start).getTime()) / 60000));
+    } else if (effectiveGoal || effectiveEvent) {
       triggerFocusTimer({
-        title: currentEvent.title,
-        duration: dur,
-        eventId: currentEvent.id,
-        goalId: currentEvent.goalId,
-        category: matchedGoal?.category || currentEvent.type,
-        color: matchedGoal?.color || "#6366f1",
+        title: primaryTitle,
+        duration: totalSessionMinutes,
+        eventId: effectiveEvent?.id,
+        goalId: effectiveGoal?.id,
+        category: primaryCategory,
+        color: primaryColor,
         openModal: true
       });
     }
@@ -482,8 +659,8 @@ export default function ActiveExecutionHUD({
   const handleFinishSession = () => {
     if (activeTimer) {
       finishFocusTimer();
-    } else if (currentEvent) {
-      onToggleCompleteEvent(currentEvent.id);
+    } else if (effectiveEvent) {
+      onToggleCompleteEvent(effectiveEvent.id);
     }
   };
 
@@ -570,9 +747,15 @@ export default function ActiveExecutionHUD({
 
   const primaryTitle = activeTimer 
     ? activeTimer.title 
-    : (effectiveEvent ? effectiveEvent.title : (effectiveGoal ? effectiveGoal.name : "Daily Focus Goal"));
-  const primaryColor = activeTimer?.color || effectiveGoal?.color || "#6366f1";
-  const primaryCategory = activeTimer?.category || effectiveGoal?.category || effectiveEvent?.type;
+    : (effectiveEvent 
+        ? effectiveEvent.title 
+        : (effectiveGoal 
+            ? effectiveGoal.name 
+            : (userSelectedGoal 
+                ? (userSelectedGoalEvent ? userSelectedGoalEvent.title : userSelectedGoal.name) 
+                : "Daily Focus Goal")));
+  const primaryColor = activeTimer?.color || effectiveGoal?.color || userSelectedGoal?.color || "#6366f1";
+  const primaryCategory = activeTimer?.category || effectiveGoal?.category || userSelectedGoal?.category || effectiveEvent?.type;
 
   return (
     <div 
@@ -649,6 +832,23 @@ export default function ActiveExecutionHUD({
                       </>
                     )}
                   </div>
+                ) : hasTarget ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
+                    <Clock className="w-2.5 h-2.5" />
+                    TARGET SESSION • READY TO START
+                  </span>
+                ) : userSelectedGoal ? (
+                  userSelectedGoalEvent ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
+                      <Clock className="w-2.5 h-2.5" />
+                      SCHEDULED TODAY • READY TO START
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+                      <Target className="w-2.5 h-2.5" />
+                      SELECTED GOAL • {userSelectedGoal.durationMinutes || 45}M TARGET
+                    </span>
+                  )
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
                     <Clock className="w-2.5 h-2.5" />
@@ -662,10 +862,16 @@ export default function ActiveExecutionHUD({
                     <Play className="w-3 h-3 text-emerald-400 fill-emerald-400" />
                     Started at {startedTimeString}
                   </span>
-                ) : currentEvent && !isStudyAheadMode ? (
+                ) : effectiveEvent && !isStudyAheadMode ? (
                   <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                    Scheduled: {formatClockTime(new Date(currentEvent.start))} – {formatClockTime(new Date(currentEvent.end))}
+                    Scheduled: {formatClockTime(new Date(effectiveEvent.start))} – {formatClockTime(new Date(effectiveEvent.end))}
                   </span>
+                ) : userSelectedGoal ? (
+                  userSelectedGoalEvent ? (
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      Scheduled: {formatClockTime(new Date(userSelectedGoalEvent.start))} – {formatClockTime(new Date(userSelectedGoalEvent.end))}
+                    </span>
+                  ) : null
                 ) : null}
 
                 {/* PAUSED TIMESTAMP IF APPLICABLE */}
@@ -909,11 +1115,18 @@ export default function ActiveExecutionHUD({
                   type="button"
                   id="hud_switch_goal_btn"
                   onClick={() => setShowGoalPicker(!showGoalPicker)}
-                  className="px-2.5 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:text-white text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                  className={`px-2.5 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                    userSelectedGoal
+                      ? "border-indigo-400 dark:border-indigo-500/50 bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300"
+                      : "border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:text-white"
+                  }`}
                   title="Switch to studying another goal"
                 >
                   <Target className="w-3.5 h-3.5" />
-                  <span>Other Goal</span>
+                  <span>Other Goals</span>
+                  {userSelectedGoal && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                  )}
                 </button>
 
                 {showGoalPicker && (
@@ -922,22 +1135,59 @@ export default function ActiveExecutionHUD({
                       className="fixed inset-0 z-40" 
                       onClick={() => setShowGoalPicker(false)} 
                     />
-                    <div className="absolute right-0 top-full mt-2 w-64 p-2 bg-white dark:bg-[#121624] border border-slate-200 dark:border-slate-700/80 rounded-xl shadow-2xl z-50 space-y-1 backdrop-blur-md">
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-2 py-1 block border-b border-slate-100 dark:border-slate-800/80 pb-1.5 mb-1">
-                        Choose Goal to Study:
-                      </span>
-                      <div className="max-h-60 overflow-y-auto space-y-1 pr-0.5">
-                        {goals.map(g => (
+                    <div className="absolute right-0 top-full mt-2 w-72 p-2 bg-white dark:bg-[#121624] border border-slate-200 dark:border-slate-700/80 rounded-xl shadow-2xl z-50 space-y-1 backdrop-blur-md">
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-100 dark:border-slate-800/80 pb-1.5 mb-1">
+                        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                          Choose Goal to Study:
+                        </span>
+                        {selectedGoalId && (
                           <button
-                            key={g.id}
                             type="button"
-                            onClick={() => handleStartStudying(g)}
-                            className="w-full flex items-center justify-between p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 text-left text-xs text-slate-800 dark:text-white transition cursor-pointer"
+                            onClick={() => {
+                              setSelectedGoalId(null);
+                              try {
+                                localStorage.removeItem("hud_selected_goal_id");
+                              } catch {}
+                              setShowGoalPicker(false);
+                            }}
+                            className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
                           >
-                            <span className="truncate">{g.name}</span>
-                            <Play className="w-3 h-3 text-emerald-400 shrink-0" />
+                            Reset to Scheduled
                           </button>
-                        ))}
+                        )}
+                      </div>
+                      <div className="max-h-60 overflow-y-auto space-y-1 pr-0.5">
+                        {goals.map(g => {
+                          const isSelected = (activeTimer?.goalId === g.id) || (userSelectedGoal?.id === g.id);
+                          return (
+                            <button
+                              key={g.id}
+                              type="button"
+                              onClick={() => {
+                                setShowGoalPicker(false);
+                                handleStartStudying(g);
+                              }}
+                              className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition cursor-pointer ${
+                                isSelected 
+                                  ? "bg-indigo-50 dark:bg-indigo-500/20 text-indigo-900 dark:text-indigo-200 font-bold border border-indigo-200 dark:border-indigo-500/30"
+                                  : "hover:bg-slate-100 dark:hover:bg-white/10 text-slate-800 dark:text-white"
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1 pr-2">
+                                <div className="truncate font-medium">{g.name}</div>
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                                  <span>{g.category || "Study"}</span>
+                                  <span>•</span>
+                                  <span>{g.durationMinutes || 45}m</span>
+                                  {isSelected && (
+                                    <span className="text-emerald-500 font-semibold">• Active</span>
+                                  )}
+                                </div>
+                              </div>
+                              <Play className="w-3 h-3 text-emerald-400 shrink-0" />
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   </>
@@ -1277,13 +1527,17 @@ export default function ActiveExecutionHUD({
       {briefingTarget && (
         <GoalStartBriefingModal
           isOpen={Boolean(briefingTarget)}
-          onClose={() => setBriefingTarget(null)}
+          onClose={() => {
+            setBriefingTarget(null);
+            setSelectedGoalId(null);
+          }}
           goal={briefingTarget.goal}
           event={briefingTarget.event}
           isStudyAhead={briefingTarget.isStudyAhead}
           onConfirmStart={(editedNote) => {
             executeStartStudying(briefingTarget.goal, briefingTarget.event, editedNote);
             setBriefingTarget(null);
+            setSelectedGoalId(null);
           }}
           onUpdateGoalNote={(goalId, updatedNote) => {
             if (onEditGoal) {

@@ -210,23 +210,23 @@ html.light-theme .text-red-400 {
   color: #991b1b !important; /* Red-800 */
 }
 
-/* Retain white text ONLY on solid colored buttons in light mode */
-html.light-theme button[class*="bg-indigo-600"],
-html.light-theme button[class*="bg-indigo-700"],
-html.light-theme button[class*="bg-purple-600"],
-html.light-theme button[class*="bg-rose-600"],
-html.light-theme button[class*="bg-emerald-600"],
-html.light-theme button[class*="bg-red-600"],
-html.light-theme .bg-indigo-600,
-html.light-theme .bg-indigo-600 *,
-html.light-theme .bg-purple-600,
-html.light-theme .bg-purple-600 *,
-html.light-theme .bg-rose-600,
-html.light-theme .bg-rose-600 *,
-html.light-theme .bg-emerald-600,
-html.light-theme .bg-emerald-600 *,
-html.light-theme .bg-red-600,
-html.light-theme .bg-red-600 * {
+/* Retain white text ONLY on solid colored buttons in light mode, excluding active indicator badges */
+html.light-theme button[class*="bg-indigo-600"]:not(.tab-active-badge),
+html.light-theme button[class*="bg-indigo-700"]:not(.tab-active-badge),
+html.light-theme button[class*="bg-purple-600"]:not(.tab-active-badge),
+html.light-theme button[class*="bg-rose-600"]:not(.tab-active-badge),
+html.light-theme button[class*="bg-emerald-600"]:not(.tab-active-badge),
+html.light-theme button[class*="bg-red-600"]:not(.tab-active-badge),
+html.light-theme .bg-indigo-600:not(.tab-active-badge),
+html.light-theme .bg-indigo-600 *:not(.tab-active-badge):not(.tab-active-badge *),
+html.light-theme .bg-purple-600:not(.tab-active-badge),
+html.light-theme .bg-purple-600 *:not(.tab-active-badge):not(.tab-active-badge *),
+html.light-theme .bg-rose-600:not(.tab-active-badge),
+html.light-theme .bg-rose-600 *:not(.tab-active-badge):not(.tab-active-badge *),
+html.light-theme .bg-emerald-600:not(.tab-active-badge),
+html.light-theme .bg-emerald-600 *:not(.tab-active-badge):not(.tab-active-badge *),
+html.light-theme .bg-red-600:not(.tab-active-badge),
+html.light-theme .bg-red-600 *:not(.tab-active-badge):not(.tab-active-badge *) {
   color: #ffffff !important;
 }
 
@@ -906,6 +906,34 @@ html:not(.light-theme) .nav-mode-segmented-container {
 .nav-mode-segmented-container.in-autopilot-mode {
   border-color: rgba(168, 85, 247, 0.6) !important;
   box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3), 0 0 12px rgba(168, 85, 247, 0.2) !important;
+}
+
+/* ==========================================================================
+   ACTIVE TAB PILL INDICATOR
+   Guarantees the text "Active" is 100% visible, bold, and high-contrast
+   ========================================================================== */
+.tab-active-badge {
+  background-color: #ffffff !important;
+  color: #1e1b4b !important;
+  -webkit-text-fill-color: #1e1b4b !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.tab-active-badge,
+.tab-active-badge *,
+.tab-active-badge span,
+.tab-active-text {
+  color: #1e1b4b !important;
+  -webkit-text-fill-color: #1e1b4b !important;
+  font-weight: 900 !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.tab-active-badge .tab-active-dot {
+  background-color: #10b981 !important;
+  -webkit-text-fill-color: initial !important;
 }
 
 

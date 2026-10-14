@@ -43,7 +43,7 @@ import {
   Wind,
   ExternalLink
 } from "lucide-react";
-import { SessionSubStep, CustomSessionTemplate, Goal } from "../types";
+import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent } from "../types";
 import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
 
 export interface ActiveTimerData {
@@ -438,7 +438,7 @@ interface FocusTimerModalProps {
   subSteps?: SessionSubStep[];
   goals?: Goal[];
   onUpdateGoalChapters?: (goalId: string, chapters: { id: string; title: string; completed: boolean }[]) => void;
-  onCompleteSession: (eventId?: string, goalId?: string, note?: string) => void;
+  onCompleteSession: (eventId?: string, goalId?: string, note?: string, title?: string) => void;
   onExtendEventDuration?: (eventId: string, deltaMins: number) => void;
 }
 
@@ -738,6 +738,40 @@ export default function FocusTimerModal({
         const targetEndTime = isRunning ? now + initialSec * 1000 : null;
         const startedAt = isRunning ? now : null;
 
+        // Auto-resolve eventId if not explicitly provided, but matching today's scheduled session
+        let resolvedEventId = detail.eventId || saved?.eventId;
+        if (!resolvedEventId) {
+          try {
+            const rawEvents = localStorage.getItem("cached_events");
+            if (rawEvents) {
+              const parsedEvts: CalendarEvent[] = JSON.parse(rawEvents);
+              const todayStr = new Date().toDateString();
+              const term = (detail.title || "").toLowerCase().trim();
+              const found = parsedEvts.find(e => 
+                !e.completed && 
+                new Date(e.start).toDateString() === todayStr &&
+                (
+                  (detail.goalId && e.goalId === detail.goalId) ||
+                  (term && (e.title.toLowerCase().includes(term) || term.includes(e.title.toLowerCase())))
+                )
+              );
+              if (found) {
+                resolvedEventId = found.id;
+              }
+            }
+          } catch {}
+        }
+
+        // Suppress pre-session alert for this resolved event immediately
+        if (resolvedEventId) {
+          try {
+            const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+            if (!existing.includes(resolvedEventId)) {
+              localStorage.setItem("notified_event_alert_ids", JSON.stringify([...existing, resolvedEventId]));
+            }
+          } catch {}
+        }
+
         const newTimer: ActiveTimerData = {
           title: detail.title || "Focus Session",
           totalSec: initialSec,
@@ -747,7 +781,7 @@ export default function FocusTimerModal({
           lastPausedAt: null,
           isRunning,
           isCompleted: false,
-          eventId: detail.eventId,
+          eventId: resolvedEventId,
           goalId: detail.goalId,
           category: detail.category,
           color: detail.color || "#6366f1",
@@ -822,7 +856,7 @@ export default function FocusTimerModal({
         triggerCompletionBell(data.title);
         queueMicrotask(() => {
           if (onCompleteRef.current) {
-            onCompleteRef.current(data.eventId, data.goalId, data.note);
+            onCompleteRef.current(data.eventId, data.goalId, data.note, data.title);
           }
           try {
             window.dispatchEvent(new CustomEvent("focus_session_completed", {
@@ -1120,7 +1154,7 @@ export default function FocusTimerModal({
         triggerCompletionBell(finishedTitle);
         queueMicrotask(() => {
           if (onCompleteRef.current) {
-            onCompleteRef.current(completedEventId, completedGoalId, completedNote);
+            onCompleteRef.current(completedEventId, completedGoalId, completedNote, finishedTitle);
           }
           try {
             window.dispatchEvent(new CustomEvent("focus_session_completed", {

@@ -53,8 +53,20 @@ export default function GoalStartBriefingModal({
       })
     : null;
 
-  const durationMins = event 
-    ? Math.max(15, Math.round((new Date(event.end).getTime() - new Date(event.start).getTime()) / 60000))
+  // Ensure the event genuinely belongs to this goal, never an unrelated scheduled session (e.g. Python when studying Cybersecurity)
+  const isMatchingEvent = Boolean(
+    event && (
+      event.goalId === goal.id || 
+      (event.title && (
+        event.title.toLowerCase().includes(goal.name.toLowerCase()) ||
+        goal.name.toLowerCase().includes(event.title.toLowerCase())
+      ))
+    )
+  );
+  const matchedEvent = isMatchingEvent ? event : null;
+
+  const durationMins = matchedEvent 
+    ? Math.max(15, Math.round((new Date(matchedEvent.end).getTime() - new Date(matchedEvent.start).getTime()) / 60000))
     : (goal.durationMinutes || 45);
 
   const nextChapter = goal.chapters?.find(c => !c.completed);
@@ -136,7 +148,7 @@ export default function GoalStartBriefingModal({
                 style={{ backgroundColor: goal.color || "#6366f1" }} 
               />
               <span className="font-semibold text-slate-800 dark:text-white truncate">
-                {event?.title || goal.name}
+                {matchedEvent?.title || goal.name}
               </span>
             </div>
             <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 text-[11px] font-medium shrink-0">

@@ -28,7 +28,7 @@ import GoalTracker from "./components/GoalTracker";
 import ProgressDashboard from "./components/ProgressDashboard";
 import AICoach from "./components/AICoach";
 import NotificationsPanel from "./components/NotificationsPanel";
-import FocusTimerModal from "./components/FocusTimerModal";
+import FocusTimerModal, { getActiveTimerSnapshot, ActiveTimerData } from "./components/FocusTimerModal";
 import EnergyProfileModal from "./components/EnergyProfileModal";
 import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
@@ -1173,7 +1173,30 @@ export default function App() {
 
     let eventsSummary = "";
     if (todayEvents.length > 0) {
+      const activeTimer = getActiveTimerSnapshot();
+      const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+      const timerTitleClean = clean(activeTimer?.title);
+
       eventsSummary = todayEvents.map(evt => {
+        if (evt.completed) {
+          return `• ${evt.title} (Completed ✓)`;
+        }
+        const isTimerStudying = Boolean(
+          activeTimer &&
+          !activeTimer.isCompleted &&
+          (activeTimer.isRunning || (activeTimer.timeRemaining && activeTimer.timeRemaining > 0)) &&
+          (
+            (activeTimer.eventId && activeTimer.eventId === evt.id) ||
+            (activeTimer.goalId && evt.goalId && activeTimer.goalId === evt.goalId) ||
+            (timerTitleClean && (clean(evt.title).includes(timerTitleClean) || timerTitleClean.includes(clean(evt.title))))
+          )
+        );
+        if (isTimerStudying) {
+          const finishStr = activeTimer?.targetEndTime
+            ? new Date(activeTimer.targetEndTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            : "soon";
+          return `• ${evt.title} (Studying Now — finishes ~${finishStr})`;
+        }
         const timeStr = new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         return `• ${evt.title} at ${timeStr}`;
       }).join("\n");
@@ -1231,11 +1254,13 @@ export default function App() {
   }, [events, goals]);
 
   // Automated Pre-Session Background Alert Engine (Alerts 10–15 mins before scheduled session starts)
+  // Smartly suppresses alerts if user is ALREADY actively studying this session or topic!
   useEffect(() => {
     if (events.length === 0) return;
 
     const checkUpcomingSessionAlerts = () => {
       const now = new Date();
+      const nowMs = now.getTime();
       let notifiedIds: string[] = [];
       try {
         const notifiedIdsStr = localStorage.getItem("notified_event_alert_ids");
@@ -1244,12 +1269,110 @@ export default function App() {
         notifiedIds = [];
       }
 
+      // Check active study session from FocusTimerModal
+      const activeTimer = getActiveTimerSnapshot();
+      const isTimerActive = Boolean(
+        activeTimer &&
+        !activeTimer.isCompleted &&
+        (activeTimer.isRunning || (activeTimer.timeRemaining && activeTimer.timeRemaining > 0))
+      );
+
+      // Expected finish time of the user's current study session
+      const currentSessionFinishMs = isTimerActive && activeTimer
+        ? (activeTimer.targetEndTime || (nowMs + (activeTimer.timeRemaining || 0) * 1000))
+        : null;
+
+      // Helper to check if user is already actively studying this event / subject
+      const isCurrentlyStudyingEvent = (evt: CalendarEvent): boolean => {
+        if (!isTimerActive || !activeTimer) return false;
+
+        // 1. Direct event ID match
+        if (activeTimer.eventId && activeTimer.eventId === evt.id) return true;
+
+        // 2. Direct goal ID match
+        if (activeTimer.goalId && evt.goalId && activeTimer.goalId === evt.goalId) return true;
+
+        // 3. Goal lookup match
+        const evtGoal = evt.goalId ? goals.find(g => g.id === evt.goalId) : undefined;
+        const activeGoal = activeTimer.goalId ? goals.find(g => g.id === activeTimer.goalId) : undefined;
+        if (evtGoal && activeGoal && evtGoal.id === activeGoal.id) return true;
+
+        // 4. Flexible text / name matching between event title, timer title, and goal names
+        const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+        const cleanEvtTitle = clean(evt.title);
+        const cleanTimerTitle = clean(activeTimer.title);
+        const cleanEvtGoal = clean(evtGoal?.name);
+        const cleanActiveGoal = clean(activeGoal?.name);
+
+        if (cleanEvtTitle && cleanTimerTitle) {
+          if (cleanEvtTitle === cleanTimerTitle) return true;
+          if (cleanEvtTitle.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanEvtTitle)) return true;
+          const evtWords = cleanEvtTitle.split(/\s+/).filter(w => w.length >= 3);
+          const timerWords = cleanTimerTitle.split(/\s+/).filter(w => w.length >= 3);
+          if (evtWords.some(w => timerWords.includes(w))) return true;
+        }
+
+        if (cleanEvtGoal && cleanTimerTitle) {
+          if (cleanEvtGoal === cleanTimerTitle || cleanEvtGoal.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanEvtGoal)) return true;
+        }
+
+        if (cleanEvtTitle && cleanActiveGoal) {
+          if (cleanEvtTitle === cleanActiveGoal || cleanEvtTitle.includes(cleanActiveGoal) || cleanActiveGoal.includes(cleanEvtTitle)) return true;
+        }
+
+        if (cleanEvtGoal && cleanActiveGoal && cleanEvtGoal === cleanActiveGoal) return true;
+
+        // 5. If user is in an active running focus timer right now and their finish time is before or around this slot:
+        // they are studying ahead/early!
+        const evtStartMs = new Date(evt.start).getTime();
+        if (activeTimer.isRunning && currentSessionFinishMs && currentSessionFinishMs <= evtStartMs + 180000) {
+          if (!cleanTimerTitle || cleanTimerTitle.includes("study") || cleanTimerTitle.includes("focus") || cleanTimerTitle.includes("deep work")) {
+            return true;
+          }
+        }
+
+        return false;
+      };
+
       events.forEach(evt => {
         if (evt.completed || evt.type === "external") return;
         if (notifiedIds.includes(evt.id)) return;
 
         const evtStart = new Date(evt.start);
-        const diffMs = evtStart.getTime() - now.getTime();
+        const evtStartMs = evtStart.getTime();
+
+        // Check if today already has a completed session for this goal/subject!
+        const alreadyCompletedToday = events.some(e => 
+          e.completed && 
+          e.id !== evt.id && 
+          new Date(e.start).toDateString() === evtStart.toDateString() &&
+          ((evt.goalId && e.goalId === evt.goalId) || (evt.title && e.title && e.title.toLowerCase().trim() === evt.title.toLowerCase().trim()))
+        );
+        if (alreadyCompletedToday) {
+          if (!notifiedIds.includes(evt.id)) notifiedIds.push(evt.id);
+          return;
+        }
+
+        // CRITICAL FIX: If user is ALREADY studying this session/subject right now, do NOT alert them to prepare to start!
+        // The user is finishing early BEFORE the scheduled time!
+        if (isCurrentlyStudyingEvent(evt)) {
+          if (!notifiedIds.includes(evt.id)) {
+            notifiedIds.push(evt.id);
+          }
+          return;
+        }
+
+        // If user is currently running ANY focus timer whose finish time is before or during this upcoming slot,
+        // user is focused right now; do not interrupt with a pre-session alarm for a slot they are finishing through!
+        if (isTimerActive && activeTimer?.isRunning && currentSessionFinishMs && currentSessionFinishMs <= evtStartMs + 60000) {
+          const diffMinsToEvt = (evtStartMs - nowMs) / (1000 * 60);
+          if (diffMinsToEvt > 0 && diffMinsToEvt <= alertLeadMinutes) {
+            if (!notifiedIds.includes(evt.id)) notifiedIds.push(evt.id);
+            return;
+          }
+        }
+
+        const diffMs = evtStartMs - nowMs;
         const diffMins = diffMs / (1000 * 60);
 
         if (diffMins > 0 && diffMins <= alertLeadMinutes) {
@@ -1286,7 +1409,100 @@ export default function App() {
       clearTimeout(delayTimer);
       clearInterval(interval);
     };
-  }, [events, alertLeadMinutes, alertPushEnabled]);
+  }, [events, alertLeadMinutes, alertPushEnabled, goals]);
+
+  // Auto-dismiss or resolve upcoming pre-session alerts when user starts studying that session or topic
+  useEffect(() => {
+    const handleTimerStateChange = (e: any) => {
+      const timerState = e.detail as ActiveTimerData | null;
+      if (!timerState || timerState.isCompleted) return;
+      if (!timerState.isRunning && !(timerState.timeRemaining > 0)) return;
+
+      const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+      const timerTitleClean = clean(timerState.title);
+      const timerGoal = timerState.goalId ? goals.find(g => g.id === timerState.goalId) : undefined;
+      const timerGoalClean = clean(timerGoal?.name);
+
+      // Check if an existing upcoming notification matches what is now being studied
+      const matchesNotification = (n: { title?: string; message?: string; type?: string }) => {
+        if (n.type !== "upcoming") return false;
+        const msg = (n.message || "").toLowerCase();
+        const title = (n.title || "").toLowerCase();
+        const fullText = `${title} ${msg}`;
+
+        // Only target pre-session upcoming alerts ("starts at", "prepare", "upcoming session")
+        if (!fullText.includes("starts at") && !fullText.includes("prepare") && !fullText.includes("upcoming session")) {
+          return false;
+        }
+
+        if (timerTitleClean && (msg.includes(timerTitleClean) || title.includes(timerTitleClean))) return true;
+        if (timerGoalClean && (msg.includes(timerGoalClean) || title.includes(timerGoalClean))) return true;
+
+        if (timerTitleClean) {
+          const words = timerTitleClean.split(/\s+/).filter(w => w.length >= 3);
+          if (words.some(w => msg.includes(w) || title.includes(w))) return true;
+        }
+
+        return false;
+      };
+
+      // 1. Clear floating toast if it matches what user is studying
+      setActiveToast(prev => {
+        if (!prev) return null;
+        if (matchesNotification(prev)) {
+          return null;
+        }
+        return prev;
+      });
+
+      // 2. Remove / resolve matching upcoming notifications so banner & alerts list won't show "Time to prepare!"
+      setNotifications(prev => {
+        const hasMatching = prev.some(matchesNotification);
+        if (!hasMatching) return prev;
+        const updated = prev.filter(n => !matchesNotification(n));
+        syncToCloud(goals, events, availability, updated, coachMessages);
+        return updated;
+      });
+
+      // 3. Mark matching event(s) in notifiedIds so background checker won't re-trigger it
+      try {
+        const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+        let updated = false;
+        events.forEach(evt => {
+          if (evt.completed) return;
+          const evtClean = clean(evt.title);
+          const evtGoal = evt.goalId ? goals.find(g => g.id === evt.goalId) : undefined;
+          const evtGoalClean = clean(evtGoal?.name);
+
+          const isMatch = (timerState.eventId && timerState.eventId === evt.id) ||
+            (timerState.goalId && evt.goalId && timerState.goalId === evt.goalId) ||
+            (timerTitleClean && evtClean && (evtClean.includes(timerTitleClean) || timerTitleClean.includes(evtClean))) ||
+            (timerGoalClean && evtClean && evtClean.includes(timerGoalClean)) ||
+            (timerTitleClean && evtGoalClean && evtGoalClean.includes(timerTitleClean));
+
+          if (isMatch && !existing.includes(evt.id)) {
+            existing.push(evt.id);
+            updated = true;
+          }
+        });
+        if (updated) {
+          localStorage.setItem("notified_event_alert_ids", JSON.stringify(existing));
+        }
+      } catch {}
+    };
+
+    window.addEventListener("focus_timer_state_change" as any, handleTimerStateChange);
+
+    // Initial check on mount in case user is currently studying
+    const snap = getActiveTimerSnapshot();
+    if (snap && (snap.isRunning || snap.timeRemaining > 0)) {
+      handleTimerStateChange({ detail: snap });
+    }
+
+    return () => {
+      window.removeEventListener("focus_timer_state_change" as any, handleTimerStateChange);
+    };
+  }, [goals, events, availability, coachMessages]);
 
   // Dynamic system notification pusher
   const triggerSystemNotification = (
@@ -1521,7 +1737,7 @@ export default function App() {
   };
 
   // Timer Session Completion & Extension Handlers
-  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string) => {
+  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string, sessionTitle?: string) => {
     queueMicrotask(() => {
       let targetGoal = goalId ? goals.find(item => item.id === goalId) : undefined;
       let targetEvt: CalendarEvent | undefined;
@@ -1531,6 +1747,8 @@ export default function App() {
       }
 
       const todayStr = new Date().toDateString();
+      const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+      const cleanTitle = clean(sessionTitle);
 
       if (!targetEvt && targetGoal) {
         targetEvt = events.find(e => 
@@ -1540,11 +1758,35 @@ export default function App() {
         );
       }
 
+      // If targetEvt not found yet, search today's uncompleted events by sessionTitle
+      if (!targetEvt && cleanTitle) {
+        targetEvt = events.find(e => {
+          if (e.completed) return false;
+          if (new Date(e.start).toDateString() !== todayStr) return false;
+          const eClean = clean(e.title);
+          return eClean === cleanTitle || eClean.includes(cleanTitle) || cleanTitle.includes(eClean);
+        });
+      }
+
       if (!targetGoal && targetEvt) {
         targetGoal = goals.find(g => 
           (targetEvt!.goalId && g.id === targetEvt!.goalId) ||
           (targetEvt!.title && g.name && targetEvt!.title.toLowerCase().includes(g.name.toLowerCase()))
         );
+      }
+
+      if (!targetGoal && cleanTitle) {
+        targetGoal = goals.find(g => clean(g.name) === cleanTitle || clean(g.name).includes(cleanTitle) || cleanTitle.includes(clean(g.name)));
+      }
+
+      // Record target event in notifiedIds so pre-session alert won't fire for it
+      if (targetEvt) {
+        try {
+          const existing: string[] = JSON.parse(localStorage.getItem("notified_event_alert_ids") || "[]");
+          if (!existing.includes(targetEvt.id)) {
+            localStorage.setItem("notified_event_alert_ids", JSON.stringify([...existing, targetEvt.id]));
+          }
+        } catch {}
       }
 
       let nextEvents = [...events];
@@ -2547,32 +2789,15 @@ export default function App() {
               >
                 <CalendarIcon className="w-4 h-4 shrink-0" />
                 <span>Schedule Grid</span>
-                {(() => {
-                  const todayCount = events.filter(e => new Date(e.start).toDateString() === new Date().toDateString()).length;
-                  if (todayCount > 0) {
-                    return (
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
-                        activeTab === "calendar"
-                          ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
-                          : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
-                      }`} title={`${todayCount} sessions scheduled today`}>
-                        {todayCount}
-                      </span>
-                    );
-                  }
-                  if (events.length > 0) {
-                    return (
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
-                        activeTab === "calendar"
-                          ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
-                          : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
-                      }`} title={`${events.length} total scheduled events`}>
-                        {events.length}
-                      </span>
-                    );
-                  }
-                  return null;
-                })()}
+                {activeTab === "calendar" && (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
+                  </span>
+                )}
               </button>
 
               {/* TAB 2: GOALS TRACKER */}
@@ -2588,13 +2813,19 @@ export default function App() {
               >
                 <Layers className={`w-4 h-4 shrink-0 ${activeTab === "goals" ? "text-white" : "text-indigo-400"}`} />
                 <span>Goals</span>
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
-                  activeTab === "goals"
-                    ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
-                    : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
-                }`}>
-                  {goals.length}
-                </span>
+                {activeTab === "goals" ? (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded-full leading-none">
+                    {goals.length}
+                  </span>
+                )}
               </button>
 
               {/* TAB 3: AI SCHEDULE AUTOPILOT */}
@@ -2610,15 +2841,18 @@ export default function App() {
               >
                 <Bot className={`w-4 h-4 shrink-0 ${activeTab === "ai-schedule" ? "text-yellow-300" : "text-yellow-400"}`} />
                 <span>AI Schedule</span>
-                <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider leading-none transition-all ${
-                  activeTab === "ai-schedule"
-                    ? "bg-amber-400 text-slate-950 shadow-xs"
-                    : "bg-amber-400/20 text-amber-600 dark:text-yellow-300 border border-amber-400/30"
-                }`}>
-                  Autopilot
-                </span>
-                {activeTab === "ai-schedule" && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" title="Autopilot Sentinel Active" />
+                {activeTab === "ai-schedule" ? (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
+                  </span>
+                ) : (
+                  <span className="text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider leading-none transition-all bg-amber-400/20 text-amber-600 dark:text-yellow-300 border border-amber-400/30">
+                    Autopilot
+                  </span>
                 )}
               </button>
 
@@ -2634,6 +2868,15 @@ export default function App() {
               >
                 <Sparkles className="w-4 h-4 shrink-0" />
                 <span>Progress Metrics</span>
+                {activeTab === "dashboard" && (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
+                  </span>
+                )}
               </button>
 
               {/* TAB 5: AI ROUTINE COACH */}
@@ -2648,6 +2891,15 @@ export default function App() {
               >
                 <Bot className="w-4 h-4 shrink-0" />
                 <span>AI Routine Coach</span>
+                {activeTab === "coach" && (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
+                  </span>
+                )}
               </button>
 
               {/* TAB 6: ALERTS */}
@@ -2662,19 +2914,21 @@ export default function App() {
               >
                 <Bell className="w-4 h-4 shrink-0" />
                 <span>Alert Logs</span>
-                {notifications.filter(n => !n.read).length > 0 ? (
-                  <span className="bg-pink-500 text-white rounded-full text-[9px] font-black px-1.5 py-0.5 leading-none shadow-xs animate-pulse">
-                    {notifications.filter(n => !n.read).length}
+                {activeTab === "notifications" ? (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
                   </span>
-                ) : notifications.length > 0 ? (
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none transition-all ${
-                    activeTab === "notifications"
-                      ? "bg-indigo-900/60 text-indigo-100 border border-indigo-400/30"
-                      : "bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300"
-                  }`}>
-                    {notifications.length}
-                  </span>
-                ) : null}
+                ) : (
+                  notifications.filter(n => !n.read).length > 0 && (
+                    <span className="bg-pink-500 text-white rounded-full text-[9px] font-black px-1.5 py-0.5 leading-none shadow-xs animate-pulse">
+                      {notifications.filter(n => !n.read).length}
+                    </span>
+                  )
+                )}
               </button>
 
             </div>
