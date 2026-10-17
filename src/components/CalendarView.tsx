@@ -4186,190 +4186,6 @@ export default function CalendarView({
         </div>
       )}
 
-      {/* Focus Incomplete Goal Spotlight Banner */}
-      {spotlightBannerInfo && (
-        <div 
-          id="spotlight_incomplete_banner"
-          className={`border-b px-3 sm:px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2.5 animate-fade-in text-xs shadow-sm z-20 ${
-            spotlightBannerInfo.isTodayFocus
-              ? "bg-emerald-500/15 dark:bg-emerald-500/10 border-emerald-500/30"
-              : "bg-amber-500/15 dark:bg-amber-500/10 border-amber-500/30"
-          }`}
-        >
-          <div className="flex items-start sm:items-center gap-2.5 min-w-0">
-            <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 border ${
-              spotlightBannerInfo.isTodayFocus
-                ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"
-                : "bg-amber-500/20 text-amber-700 dark:text-amber-400 border-amber-500/30"
-            }`}>
-              {spotlightBannerInfo.isTodayFocus ? <Target className="w-4 h-4" /> : <Compass className="w-4 h-4" />}
-            </div>
-            
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className={`font-extrabold flex items-center gap-1 ${
-                  spotlightBannerInfo.isTodayFocus
-                    ? "text-emerald-950 dark:text-emerald-200"
-                    : "text-amber-950 dark:text-amber-200"
-                }`}>
-                  <span>{spotlightBannerInfo.isTodayFocus ? "Today's Goal:" : "Past Incomplete:"}</span>
-                  <span className={`underline ${spotlightBannerInfo.isTodayFocus ? "decoration-emerald-500/50" : "decoration-amber-500/50"}`}>{spotlightBannerInfo.goal.name}</span>
-                </span>
-                
-                <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
-                  spotlightBannerInfo.isTodayFocus
-                    ? "bg-emerald-500/20 text-emerald-900 dark:text-emerald-300 border-emerald-500/30"
-                    : "bg-amber-500/20 text-amber-900 dark:text-amber-300 border-amber-500/30"
-                }`}>
-                  {spotlightBannerInfo.goal.completedCount}/{spotlightBannerInfo.goal.weeklyTarget} done
-                </span>
-
-                {spotlightBannerInfo.isTodayFocus ? (
-                  <span className="text-[9.5px] bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 font-extrabold px-2 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1">
-                    <Sparkles className="w-2.5 h-2.5" /> Scheduled for Today
-                  </span>
-                ) : (
-                  <>
-                    <span className="text-[9.5px] bg-rose-500/20 text-rose-800 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">
-                      <Clock className="w-2.5 h-2.5" /> Date Passed (Missed Session)
-                    </span>
-                    {spotlightBannerInfo.goal.priority && (
-                      <span className={`text-[9.5px] font-black uppercase px-2 py-0.5 rounded border flex items-center gap-1 ${
-                        spotlightBannerInfo.goal.priority === "critical"
-                          ? "bg-rose-500/20 text-rose-800 dark:text-rose-300 border-rose-500/40 animate-pulse"
-                          : spotlightBannerInfo.goal.priority === "important"
-                          ? "bg-orange-500/20 text-orange-800 dark:text-orange-300 border-orange-500/40"
-                          : "bg-blue-500/20 text-blue-800 dark:text-blue-300 border-blue-500/40"
-                      }`}>
-                        {spotlightBannerInfo.goal.priority === "critical" && <Flame className="w-2.5 h-2.5" />}
-                        {spotlightBannerInfo.goal.priority === "important" && <AlertTriangle className="w-2.5 h-2.5" />}
-                        {spotlightBannerInfo.goal.priority} Priority
-                      </span>
-                    )}
-                    {spotlightBannerInfo.priorityFilter && spotlightBannerInfo.priorityFilter !== "all" && (
-                      <span className="text-[9.5px] bg-slate-500/20 text-slate-700 dark:text-slate-300 font-bold px-1.5 py-0.5 rounded border border-slate-500/30">
-                        Filter: {spotlightBannerInfo.priorityFilter}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-
-              <p className="text-[11px] text-slate-700 dark:text-slate-300 font-medium truncate mt-0.5">
-                {spotlightBannerInfo.event ? (
-                  <>
-                    <span className={`font-bold text-slate-900 dark:text-white ${spotlightBannerInfo.event.completed ? "line-through opacity-60 decoration-slate-900 dark:decoration-white decoration-[1.5px]" : ""}`}>"{spotlightBannerInfo.event.title}"</span>
-                    {" • "}
-                    <span>
-                      {new Date(spotlightBannerInfo.event.start).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} at {new Date(spotlightBannerInfo.event.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                    {spotlightBannerInfo.isTodayFocus
-                      ? " — Scheduled goal session for today, ready to focus or start!"
-                      : " — Missed session from a past date, ready to complete now without re-balancing!"}
-                  </>
-                ) : null}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
-            {/* 5-Minute Micro-Start for Task Paralysis / Lazy Start */}
-            <button
-              type="button"
-              id="spotlight_5min_start_btn"
-              onClick={() => handleStartSpotlightTimer(5)}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-amber-500/20 transition cursor-pointer active:scale-95"
-              title="5-Minute Rule: Just commit to 5 minutes to break task paralysis. You can stop after 5 mins with zero guilt!"
-            >
-              <Zap className="w-3 h-3 fill-current" />
-              <span>5-Min Start</span>
-            </button>
-
-            {/* Start Timer Now */}
-            <button
-              type="button"
-              id="spotlight_start_timer_btn"
-              onClick={() => handleStartSpotlightTimer()}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition cursor-pointer active:scale-95"
-              title="Start Focus Timer for this session immediately"
-            >
-              <Play className="w-3 h-3 fill-current" />
-              <span>Start Timer</span>
-            </button>
-
-            {/* Finish Target */}
-            {spotlightBannerInfo.event && !spotlightBannerInfo.event.completed && (
-              <button
-                type="button"
-                id="spotlight_finish_target_btn"
-                data-testid="spotlight_mark_done_btn"
-                onClick={handleCompleteSpotlightEvent}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-md shadow-emerald-600/20 transition cursor-pointer active:scale-95"
-                title="Finish this target"
-              >
-                <Check className="w-3.5 h-3.5" />
-                <span>Finish</span>
-              </button>
-            )}
-
-            {/* Auto-Reschedule with Autopilot */}
-            {spotlightBannerInfo.isOverdue && onAutoHealSchedule && (
-              <button
-                type="button"
-                id="spotlight_auto_reschedule_btn"
-                onClick={() => {
-                  setSpotlightBannerInfo(null);
-                  updateSpotlight(null, null);
-                  onAutoHealSchedule();
-                }}
-                className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
-                title="Autopilot: Reschedule this and all overdue sessions to upcoming free slots"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
-                <span>Auto-Reschedule Overdue</span>
-              </button>
-            )}
-
-            {/* Cycle to Next Goal */}
-            {spotlightBannerInfo.totalIncompleteCount > 1 && (
-              <button
-                type="button"
-                id="spotlight_next_incomplete_btn"
-                onClick={() => {
-                  const nextIdx = (spotlightBannerInfo.currentIndex + 1) % spotlightBannerInfo.totalIncompleteCount;
-                  if (spotlightBannerInfo.isTodayFocus) {
-                    handleFocusTodayFirstGoal(nextIdx);
-                  } else {
-                    handleFocusMostIncompleteGoal(
-                      nextIdx,
-                      spotlightBannerInfo.priorityFilter,
-                      spotlightBannerInfo.orderMode
-                    );
-                  }
-                }}
-                className="bg-slate-200 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-800 dark:text-slate-200 font-bold text-[10.5px] px-2.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 border border-slate-300 dark:border-white/10"
-                title={spotlightBannerInfo.isTodayFocus ? "Focus on next goal scheduled for today" : "Focus on next incomplete goal"}
-              >
-                <span>Next ({spotlightBannerInfo.currentIndex + 1}/{spotlightBannerInfo.totalIncompleteCount})</span>
-              </button>
-            )}
-
-            {/* Dismiss Banner */}
-            <button
-              type="button"
-              onClick={() => {
-                setSpotlightBannerInfo(null);
-                updateSpotlight(null, null);
-              }}
-              className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg transition cursor-pointer"
-              title="Dismiss banner"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Main Calendar Render Stage */}
       <div className="flex-1 overflow-y-auto" id="calendar_grid_wrapper" ref={gridScrollRef}>
         
@@ -4409,7 +4225,20 @@ export default function CalendarView({
                       if (dayEvents.length === 0) return null;
                       const load = getDailyCognitiveLoad(day, events, goals, energyProfile);
                       return (
-                        <div className="mt-1 flex items-center justify-center">
+                        <div className="mt-1 flex flex-col items-center justify-center gap-0.5">
+                          {(() => {
+                            const completedCount = dayEvents.filter(e => e.completed).length;
+                            if (completedCount === 0) return null;
+                            return (
+                              <span 
+                                className="text-[8px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-100/90 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-500/40 rounded-full px-1.5 py-0.2 flex items-center gap-0.5 shadow-2xs"
+                                title={`${completedCount} session${completedCount > 1 ? "s" : ""} completed on this day`}
+                              >
+                                <Check className="w-2 h-2 stroke-[3]" />
+                                <span>{completedCount} done</span>
+                              </span>
+                            );
+                          })()}
                           <span 
                             className={`text-[8.5px] font-mono px-1.5 py-0.2 rounded-full border font-bold flex items-center gap-0.5 ${
                               load.status === "overloaded"
@@ -4550,9 +4379,11 @@ export default function CalendarView({
                       top: `${topPixel}px`,
                       height: isHovered ? "auto" : `${heightPixel}px`,
                       minHeight: isHovered ? `${Math.max(heightPixel, 185)}px` : undefined,
-                      borderLeftColor: colors.borderLeftColor,
-                      borderColor: colors.cardBorder,
-                      backgroundColor: isHovered ? colors.hoverBg : colors.backgroundColor,
+                      borderLeftColor: evt.completed ? "#10b981" : colors.borderLeftColor,
+                      borderColor: evt.completed ? (isLightMode ? "#86efac" : "rgba(16, 185, 129, 0.45)") : colors.cardBorder,
+                      backgroundColor: evt.completed 
+                        ? (isLightMode ? "#f0fdf4" : "rgba(6, 78, 59, 0.35)") 
+                        : (isHovered ? colors.hoverBg : colors.backgroundColor),
                       color: colors.color,
                       overflow: isHovered ? "visible" : "hidden"
                     }}
@@ -4564,8 +4395,13 @@ export default function CalendarView({
                           <div className="flex items-center gap-1 min-w-0">
                             <h4 className="cal-event-title text-[11px] font-extrabold leading-tight flex items-center gap-1 min-w-0">
                               {getEventIcon(evt)}
-                              <span className={`truncate ${evt.completed ? "line-through opacity-60 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""}`}>{evt.title}</span>
+                              <span className={`truncate ${evt.completed ? "font-bold text-emerald-950 dark:text-emerald-100" : ""}`}>{evt.title}</span>
                             </h4>
+                            {evt.completed && (
+                              <span className="cal-completed-badge text-[7.5px] bg-emerald-600 text-white font-black px-1.5 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5" title="Study Session Completed">
+                                <Check className="w-2 h-2 stroke-[3]" /> DONE
+                              </span>
+                            )}
                             {spotlightEventId === evt.id && (
                               <span className="text-[7.5px] bg-amber-500 text-slate-950 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5">
                                 <Compass className="w-2 h-2" /> TARGET
@@ -4579,22 +4415,37 @@ export default function CalendarView({
                           </div>
 
                           <div className="flex items-center gap-1 shrink-0">
-                            {/* Instant 1-Click Play Timer Button right in card header */}
-                            <button
-                              type="button"
-                              id={`quick_timer_btn_week_${evt.id}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenTimerForEvent(evt, e);
-                              }}
-                              className="cal-quick-play-btn w-5 h-5 rounded-full transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
-                              title="Start Focus Timer immediately"
-                            >
-                              <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
-                            </button>
+                            {/* Quick Action Button: Checkmark for Completed, Play for Uncompleted */}
+                            {evt.completed ? (
+                              <button
+                                type="button"
+                                id={`quick_complete_btn_week_${evt.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onToggleCompleteEvent(evt.id);
+                                }}
+                                className="w-5 h-5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 shadow-xs"
+                                title="Completed! Click to mark uncompleted"
+                              >
+                                <Check className="w-3 h-3 stroke-[3]" />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                id={`quick_timer_btn_week_${evt.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenTimerForEvent(evt, e);
+                                }}
+                                className="cal-quick-play-btn w-5 h-5 rounded-full transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
+                                title="Start Focus Timer immediately"
+                              >
+                                <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                              </button>
+                            )}
 
                             {totalCols > 2 && !isHovered && (
-                              <span className="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: colors.borderLeftColor }} />
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: evt.completed ? "#10b981" : colors.borderLeftColor }} />
                             )}
                           </div>
                         </div>
@@ -4962,9 +4813,11 @@ export default function CalendarView({
                                   : isHovered ? "shadow-xl ring-2 ring-indigo-500/80 scale-[1.01]" : ""
                               }`}
                               style={{
-                                borderLeftColor: colors.borderLeftColor,
-                                borderColor: colors.cardBorder,
-                                backgroundColor: isHovered ? colors.hoverBg : colors.backgroundColor,
+                                borderLeftColor: evt.completed ? "#10b981" : colors.borderLeftColor,
+                                borderColor: evt.completed ? (isLightMode ? "#86efac" : "rgba(16, 185, 129, 0.45)") : colors.cardBorder,
+                                backgroundColor: evt.completed 
+                                  ? (isLightMode ? "#f0fdf4" : "rgba(6, 78, 59, 0.35)") 
+                                  : (isHovered ? colors.hoverBg : colors.backgroundColor),
                                 color: colors.color
                               }}
                             >
@@ -4973,8 +4826,13 @@ export default function CalendarView({
                                   <div className="flex items-center gap-1.5 flex-wrap">
                                     <h4 className="cal-event-title text-xs sm:text-sm font-extrabold flex items-center gap-1.5">
                                       {getEventIcon(evt)}
-                                      <span className={evt.completed ? "line-through opacity-60 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""}>{evt.title}</span>
+                                      <span className={evt.completed ? "font-bold text-emerald-950 dark:text-emerald-100" : ""}>{evt.title}</span>
                                     </h4>
+                                    {evt.completed && (
+                                      <span className="cal-completed-badge text-[8.5px] bg-emerald-600 text-white font-black px-2 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0" title="Study Session Completed">
+                                        <Check className="w-2.5 h-2.5 stroke-[3]" /> DONE
+                                      </span>
+                                    )}
                                     {spotlightEventId === evt.id && (
                                       <span className="text-[8px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-0.5 shrink-0">
                                         <Compass className="w-2.5 h-2.5" /> TARGET GOAL
@@ -5002,19 +4860,37 @@ export default function CalendarView({
                                   })()}
                                 </div>
                                 <div className="flex items-center gap-1.5 shrink-0">
-                                  <button
-                                    type="button"
-                                    id={`quick_timer_btn_day_${evt.id}`}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenTimerForEvent(evt, e);
-                                    }}
-                                    className="cal-quick-play-btn w-5 h-5 rounded-full transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
-                                    title="Start Focus Timer immediately"
-                                  >
-                                    <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
-                                  </button>
-                                  <span className="cal-event-time text-[10px] font-mono font-black px-2 py-0.5 rounded-md border shadow-xs">
+                                  {/* Quick Action Button: Checkmark for Completed, Play for Uncompleted */}
+                                  {evt.completed ? (
+                                    <button
+                                      type="button"
+                                      id={`quick_complete_btn_day_${evt.id}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onToggleCompleteEvent(evt.id);
+                                      }}
+                                      className="w-5 h-5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 shadow-xs"
+                                      title="Completed! Click to mark uncompleted"
+                                    >
+                                      <Check className="w-3 h-3 stroke-[3]" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      id={`quick_timer_btn_day_${evt.id}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenTimerForEvent(evt, e);
+                                      }}
+                                      className="cal-quick-play-btn w-5 h-5 rounded-full transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
+                                      title="Start Focus Timer immediately"
+                                    >
+                                      <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                                    </button>
+                                  )}
+                                  <span className={`cal-event-time text-[10px] font-mono font-black px-2 py-0.5 rounded-md border shadow-xs ${
+                                    evt.completed ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700/50" : ""
+                                  }`}>
                                     {new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                   </span>
                                 </div>
@@ -5127,13 +5003,15 @@ export default function CalendarView({
                                   }}
                                   className={`text-[10px] px-2.5 py-1.5 rounded-lg font-bold transition active:scale-95 flex items-center gap-1 cursor-pointer ${
                                     evt.completed 
-                                      ? "bg-emerald-700 text-white" 
+                                      ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs" 
                                       : isLightMode
                                       ? "bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 shadow-2xs"
                                       : "bg-white/10 hover:bg-white/20 text-white border border-white/15"
                                   }`}
+                                  title={evt.completed ? "Completed! Click to mark uncompleted" : "Mark as Done"}
                                 >
-                                  {evt.completed ? "Done" : "Mark Done"}
+                                  <Check className="w-3 h-3 stroke-[3]" />
+                                  <span>{evt.completed ? "Done" : "Mark Done"}</span>
                                 </button>
 
                                 {evt.type !== "external" && (
@@ -5329,21 +5207,26 @@ export default function CalendarView({
                               : isCurrent
                               ? "bg-indigo-50 dark:bg-indigo-500/15 border-red-400 dark:border-red-500/50 shadow-lg shadow-red-500/10 ring-1 ring-red-400 dark:ring-red-500/30"
                               : evt.completed
-                              ? "bg-slate-50 dark:bg-white/[0.02] border-slate-200 dark:border-white/5 opacity-70"
+                              ? "bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-300 dark:border-emerald-600/40 border-l-4 border-l-emerald-500 shadow-xs"
                               : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/10"
                           }`}
                         >
                           <div className="flex items-start gap-3 min-w-0 flex-1">
                             <span 
                               className="w-3.5 h-3.5 rounded-full shrink-0 mt-0.5"
-                              style={{ backgroundColor: getEventColorStyles(evt).dotColor }}
+                              style={{ backgroundColor: evt.completed ? "#10b981" : getEventColorStyles(evt).dotColor }}
                             />
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
                                 <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5 truncate">
                                   {getEventIcon(evt)}
-                                  <span className={`truncate ${evt.completed ? "line-through opacity-60 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""}`}>{evt.title}</span>
+                                  <span className={`truncate ${evt.completed ? "font-bold text-emerald-950 dark:text-emerald-100" : ""}`}>{evt.title}</span>
                                 </h4>
+                                {evt.completed && (
+                                  <span className="cal-completed-badge text-[9px] bg-emerald-600 text-white font-black px-2 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0" title="Study Session Completed">
+                                    <Check className="w-2.5 h-2.5 stroke-[3]" /> DONE
+                                  </span>
+                                )}
                                 {spotlightEventId === evt.id && (
                                   <span className="text-[9px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0">
                                     <Compass className="w-3 h-3" /> TARGET GOAL
@@ -5610,13 +5493,20 @@ export default function CalendarView({
                                 e.stopPropagation();
                                 onToggleCompleteEvent(evt.id);
                               }}
-                              className={`text-[11px] px-3 py-2 rounded-xl font-bold cursor-pointer transition min-h-[38px] flex-1 sm:flex-none justify-center ${
+                              className={`text-[11px] px-3.5 py-2 rounded-xl font-bold cursor-pointer transition min-h-[38px] flex items-center gap-1.5 justify-center flex-1 sm:flex-none ${
                                 evt.completed 
-                                  ? "bg-emerald-100 dark:bg-emerald-500/15 text-emerald-900 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30" 
+                                  ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs" 
                                   : "bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-600 shadow-xs"
                               }`}
                             >
-                              {evt.completed ? "Done ✅" : "Complete"}
+                              {evt.completed ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                  <span>Completed</span>
+                                </>
+                              ) : (
+                                <span>Complete</span>
+                              )}
                             </button>
 
                             {evt.type !== "external" && (

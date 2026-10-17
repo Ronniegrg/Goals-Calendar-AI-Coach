@@ -557,6 +557,30 @@ export default function GoalTracker({
     };
   };
 
+  // Helper to format the most recent completed session info for a goal card
+  const getLastCompletedSessionForGoal = (goal: Goal) => {
+    const goalNameLower = goal.name.toLowerCase();
+    const completed = events.filter(e => 
+      e.completed && (e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower)))
+    );
+    if (completed.length === 0) return null;
+
+    completed.sort((a, b) => new Date(b.end).getTime() - new Date(a.end).getTime());
+    const lastEvt = completed[0];
+    const startDate = new Date(lastEvt.start);
+    const now = new Date();
+    const isToday = startDate.toDateString() === now.toDateString();
+    const timeStr = startDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const dayStr = isToday ? "Today" : startDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+
+    return {
+      formatted: `${dayStr} at ${timeStr}`,
+      date: startDate,
+      event: lastEvt,
+      totalCompleted: completed.length
+    };
+  };
+
   // Delay Goal Agenda: Shifts all uncompleted sessions associated with this goal forward by delayDays
   const handleDelayGoalAgenda = (goal: Goal, delayDays: number) => {
     const goalNameLower = goal.name.toLowerCase();
@@ -2725,11 +2749,28 @@ export default function GoalTracker({
                           {/* Dynamic Next Scheduled Session Indicator & Shift Confirmation */}
                           {(() => {
                             const nextSession = getNextSessionForGoal(g);
+                            const lastSession = getLastCompletedSessionForGoal(g);
                             const feedback = shiftFeedback[g.id];
                             const isFeedbackFresh = feedback && (Date.now() - feedback.timestamp < 3500);
 
                             return (
                               <div className="space-y-1 mt-1">
+                                {lastSession && (
+                                  <div 
+                                    onClick={() => onNavigateToCalendar?.(lastSession.date, lastSession.event?.id)}
+                                    className="flex items-center justify-between text-xs bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 border border-emerald-300 dark:border-emerald-600/30 px-2.5 py-1.5 rounded-lg text-emerald-950 dark:text-emerald-200 transition cursor-pointer shadow-2xs"
+                                    title="Click to view this completed session in the Calendar"
+                                  >
+                                    <span className="flex items-center gap-1.5 font-medium truncate">
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                      <span>Done: <strong className="text-slate-900 dark:text-white font-black">{lastSession.formatted}</strong></span>
+                                    </span>
+                                    <span className="text-[10px] text-emerald-700 dark:text-emerald-300 font-mono font-bold shrink-0 ml-1 flex items-center gap-0.5">
+                                      <span>{lastSession.totalCompleted} finished</span>
+                                      <ArrowRight className="w-3 h-3" />
+                                    </span>
+                                  </div>
+                                )}
                                 {isFeedbackFresh ? (
                                   <div className="flex items-center justify-between text-[10px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 px-2 py-1 rounded-lg font-bold animate-pulse">
                                     <span className="flex items-center gap-1 truncate">

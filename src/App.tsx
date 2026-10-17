@@ -4,9 +4,6 @@ import {
   Layers, 
   Sparkles, 
   Bot, 
-  Bell, 
-  Smartphone, 
-  Laptop, 
   RotateCcw, 
   Wifi, 
   WifiOff, 
@@ -27,10 +24,8 @@ import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
 import ProgressDashboard from "./components/ProgressDashboard";
 import AICoach from "./components/AICoach";
-import NotificationsPanel from "./components/NotificationsPanel";
 import FocusTimerModal, { getActiveTimerSnapshot, ActiveTimerData } from "./components/FocusTimerModal";
 import EnergyProfileModal from "./components/EnergyProfileModal";
-import MotivationalPulseBanner from "./components/MotivationalPulseBanner";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
 import { StreakShieldModal } from "./components/StreakShieldModal";
@@ -48,10 +43,10 @@ import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProf
 
 export default function App() {
   // Navigation State with persistent last-selected tab memory
-  const [activeTab, setActiveTabState] = useState<"calendar" | "goals" | "dashboard" | "coach" | "notifications" | "ai-schedule">(() => {
+  const [activeTab, setActiveTabState] = useState<"calendar" | "goals" | "dashboard" | "coach" | "ai-schedule">(() => {
     try {
       const saved = localStorage.getItem("app_active_tab");
-      if (saved && ["calendar", "goals", "dashboard", "coach", "notifications", "ai-schedule"].includes(saved)) {
+      if (saved && ["calendar", "goals", "dashboard", "coach", "ai-schedule"].includes(saved)) {
         return saved as any;
       }
     } catch (e) {
@@ -60,7 +55,7 @@ export default function App() {
     return "calendar";
   });
 
-  const setActiveTab = (tab: "calendar" | "goals" | "dashboard" | "coach" | "notifications" | "ai-schedule") => {
+  const setActiveTab = (tab: "calendar" | "goals" | "dashboard" | "coach" | "ai-schedule") => {
     setActiveTabState(tab);
     try {
       localStorage.setItem("app_active_tab", tab);
@@ -1611,11 +1606,27 @@ export default function App() {
 
       if (toggleVal) {
         const typeLabel = targetEvt.type === "workout" ? "Physical session completed!" : "Intellectual focus block aced!";
+        const sDate = new Date(targetEvt.start);
+        const dateText = sDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+        const timeText = sDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
         triggerSystemNotification(
           "Session Achieved!",
           `Success: "${targetEvt.title}" marked as done. ${typeLabel}`,
           "success"
         );
+
+        try {
+          const completedData = {
+            id: targetEvt.id,
+            title: targetEvt.title,
+            dateStr: dateText,
+            timeStr: timeText,
+            timestamp: Date.now()
+          };
+          localStorage.setItem("last_completed_session", JSON.stringify(completedData));
+          window.dispatchEvent(new CustomEvent("session_completed_event", { detail: completedData }));
+        } catch {}
       }
 
       setGoals(nextGoals);
@@ -1751,14 +1762,26 @@ export default function App() {
       const cleanTitle = clean(sessionTitle);
 
       if (!targetEvt && targetGoal) {
+        // 1. Check today's uncompleted events for this goal
         targetEvt = events.find(e => 
           !e.completed && 
           (e.goalId === targetGoal!.id || (e.title && targetGoal!.name && e.title.toLowerCase().includes(targetGoal!.name.toLowerCase()))) &&
           new Date(e.start).toDateString() === todayStr
         );
+        // 2. If not scheduled today, check the chronologically earliest upcoming uncompleted session
+        if (!targetEvt) {
+          const sortedAll = [...events].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+          targetEvt = sortedAll.find(e =>
+            !e.completed &&
+            (e.goalId === targetGoal!.id || (e.title && targetGoal!.name && (
+              e.title.toLowerCase().includes(targetGoal!.name.toLowerCase()) ||
+              targetGoal!.name.toLowerCase().includes(e.title.toLowerCase())
+            )))
+          );
+        }
       }
 
-      // If targetEvt not found yet, search today's uncompleted events by sessionTitle
+      // If targetEvt not found yet, search today's uncompleted events by sessionTitle, then earliest upcoming
       if (!targetEvt && cleanTitle) {
         targetEvt = events.find(e => {
           if (e.completed) return false;
@@ -1766,6 +1789,14 @@ export default function App() {
           const eClean = clean(e.title);
           return eClean === cleanTitle || eClean.includes(cleanTitle) || cleanTitle.includes(eClean);
         });
+        if (!targetEvt) {
+          const sortedAll = [...events].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+          targetEvt = sortedAll.find(e => {
+            if (e.completed) return false;
+            const eClean = clean(e.title);
+            return eClean === cleanTitle || eClean.includes(cleanTitle) || cleanTitle.includes(eClean);
+          });
+        }
       }
 
       if (!targetGoal && targetEvt) {
@@ -1847,11 +1878,27 @@ export default function App() {
       setEvents(nextEvents);
 
       const displayTitle = targetGoal ? targetGoal.name : (targetEvt ? targetEvt.title : "Focus Session");
+      const sessionDate = targetEvt ? new Date(targetEvt.start) : new Date();
+      const dateText = sessionDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+      const timeText = sessionDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
       triggerSystemNotification(
-        "Goal Session Logged!",
-        `Success: Goal "${displayTitle}" session marked as completed!`,
+        "Study Session Completed!",
+        `✓ Marked as Done: "${displayTitle}" (${dateText} at ${timeText})`,
         "success"
       );
+
+      try {
+        const completedData = {
+          id: targetEvt ? targetEvt.id : `e_${Date.now()}`,
+          title: displayTitle,
+          dateStr: dateText,
+          timeStr: timeText,
+          timestamp: Date.now()
+        };
+        localStorage.setItem("last_completed_session", JSON.stringify(completedData));
+        window.dispatchEvent(new CustomEvent("session_completed_event", { detail: completedData }));
+      } catch {}
 
       setTimeout(() => {
         syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
@@ -2630,15 +2677,30 @@ export default function App() {
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-radial from-indigo-500/20 to-transparent opacity-80 z-0" />
         <div className="absolute left-1/4 -top-12 w-64 h-64 rounded-full bg-indigo-500/5 blur-3xl z-0" />
 
-        <div className="max-w-7xl mx-auto px-4 py-3 sm:px-6 lg:px-8 relative z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/5">
+        <div className="max-w-7xl mx-auto px-4 py-2.5 sm:px-6 lg:px-8 relative z-10 flex flex-wrap items-center justify-between gap-3">
           
-          <div className="flex items-center gap-2">
-            <CalendarCheck className="w-5 h-5 text-indigo-400" />
-            <span className="text-xs font-mono font-bold uppercase tracking-widest text-indigo-300">System Core Node</span>
+          {/* Brand & Identity */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-sm shadow-indigo-500/30 shrink-0">
+              <CalendarCheck className="w-4 h-4 stroke-[2.5]" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-extrabold text-white tracking-tight leading-none">
+                  Goals Calendar & AI Coach
+                </span>
+                <span className="text-[9px] font-mono font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  Adaptive
+                </span>
+              </div>
+              <p className="text-[10.5px] text-slate-400 font-medium leading-none mt-1 hidden sm:block">
+                Conflict-free learning & workout routines aligned with your circadian energy
+              </p>
+            </div>
           </div>
 
-          {/* Sync indicator & Auto Theme toggle widget */}
-          <div className="flex items-center gap-2 sm:gap-4 text-xs font-medium" id="sync_status_anchor_indicators">
+          {/* Controls: Energy Profile, Theme Switcher & Cloud Sync */}
+          <div className="flex items-center gap-2 sm:gap-3 text-xs font-medium" id="sync_status_anchor_indicators">
             {/* Bio-Energy Chronotype Quick Button */}
             <button
               type="button"
@@ -2695,8 +2757,8 @@ export default function App() {
               )}
             </button>
 
-            <div className="flex items-center gap-1.5 bg-white/5 px-3 py-1 rounded-full border border-white/10">
-              <span className="hidden md:inline text-slate-400">Target Profile:</span>
+            <div className="hidden lg:flex items-center gap-1.5 bg-white/5 px-3 py-1 rounded-full border border-white/10 text-xs">
+              <span className="text-slate-400">Profile:</span>
               <span className="font-mono text-indigo-300 font-bold">{userEmail}</span>
             </div>
 
@@ -2709,7 +2771,7 @@ export default function App() {
                   className="flex items-center gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 shadow-xs cursor-pointer transition-colors"
                 >
                   <Wifi className="w-3.5 h-3.5" />
-                  <span className="font-bold text-[10px] uppercase">Synced with cloud</span>
+                  <span className="font-bold text-[10px] uppercase">Synced</span>
                 </button>
               )}
               {syncStatus === "syncing" && (
@@ -2729,39 +2791,9 @@ export default function App() {
                   className="flex items-center gap-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 dark:text-rose-400 px-3 py-1 rounded-full border border-rose-500/30 cursor-pointer transition-colors"
                 >
                   <WifiOff className="w-3.5 h-3.5" />
-                  <span className="font-bold text-[10px] uppercase">Offline (Click to retry)</span>
+                  <span className="font-bold text-[10px] uppercase">Offline</span>
                 </button>
               )}
-            </div>
-          </div>
-        </div>
-
-        {/* Outer Visual layout Hero headings */}
-        <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8 relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6 pb-10">
-          <div className="space-y-1">
-            <h1 className="font-display font-extrabold text-3xl tracking-tight sm:text-4xl text-slate-950 dark:text-white">
-              Goals Calendar & AI Coach
-            </h1>
-            <p className="text-slate-700 dark:text-slate-300 text-sm max-w-xl font-medium">
-              Synchronize physical workouts and intensive learning routines inside the optimal conflict-free periods. Keep your schedule 100% on track.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 bg-slate-200/80 dark:bg-white/5 p-1.5 rounded-xl border border-slate-300 dark:border-white/10 shadow-xs">
-            <button 
-              onClick={() => setActiveTab("calendar")}
-              className={`text-xs px-3 py-2 rounded-lg font-bold transition whitespace-nowrap cursor-pointer ${
-                activeTab === "calendar"
-                  ? "bg-white dark:bg-white/10 text-indigo-700 dark:text-white shadow-xs"
-                  : "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/50 dark:hover:bg-white/10"
-              }`}
-            >
-              Laptop View
-            </button>
-            <span className="text-slate-400 dark:text-white/20 select-none">|</span>
-            <div className="hidden sm:flex items-center gap-1 text-xs text-slate-700 dark:text-slate-300 font-medium px-2.5">
-              <Smartphone className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <span>Mobile Ready Sync</span>
             </div>
           </div>
         </div>
@@ -2902,35 +2934,6 @@ export default function App() {
                 )}
               </button>
 
-              {/* TAB 6: ALERTS */}
-              <button
-                id="tab_trigger_notifications"
-                onClick={() => setActiveTab("notifications")}
-                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
-                  activeTab === "notifications"
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
-                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
-                }`}
-              >
-                <Bell className="w-4 h-4 shrink-0" />
-                <span>Alert Logs</span>
-                {activeTab === "notifications" ? (
-                  <span
-                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
-                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
-                  >
-                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
-                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Active</span>
-                  </span>
-                ) : (
-                  notifications.filter(n => !n.read).length > 0 && (
-                    <span className="bg-pink-500 text-white rounded-full text-[9px] font-black px-1.5 py-0.5 leading-none shadow-xs animate-pulse">
-                      {notifications.filter(n => !n.read).length}
-                    </span>
-                  )
-                )}
-              </button>
-
             </div>
           </nav>
         </div>
@@ -2943,30 +2946,6 @@ export default function App() {
         {activeTab === "calendar" && (
           <div className="space-y-6">
             
-            {/* Motivational Pulse & Strategic Daily Focus Briefing */}
-            {notifications.length > 0 && (
-              <MotivationalPulseBanner
-                notifications={notifications}
-                events={events}
-                goals={goals}
-                onNavigateToTab={setActiveTab}
-                onNavigateToDate={setCalendarTargetDate}
-                onNavigateToCalendar={handleNavigateToCalendar}
-                onMarkNotificationRead={handleMarkNotificationRead}
-                onDismissNotification={handleDismissNotification}
-                onTriggerDailyDigest={() => generateAndTriggerDailyDigest(new Date().toDateString())}
-                onOpenCoachWithMessage={(text) => {
-                  setActiveTab("coach");
-                  handleAddCoachMessage({
-                    id: `m_${Date.now()}`,
-                    sender: "user",
-                    text,
-                    timestamp: new Date().toISOString()
-                  });
-                }}
-              />
-            )}
-
             {/* Real-time Now / Up-Next Execution Cockpit */}
             <ActiveExecutionHUD
               events={events}
@@ -2974,7 +2953,7 @@ export default function App() {
               onToggleCompleteEvent={handleToggleEventComplete}
               onEditEvent={handleEditEvent}
               onEditGoal={handleEditGoal}
-              onNavigateToCalendar={() => handleNavigateToCalendar(new Date())}
+              onNavigateToCalendar={handleNavigateToCalendar}
             />
 
             <CalendarView 
@@ -3122,26 +3101,6 @@ export default function App() {
           />
         )}
 
-        {activeTab === "notifications" && (
-          <NotificationsPanel 
-            notifications={notifications}
-            onMarkRead={handleMarkNotificationRead}
-            onClearAll={handleClearAllNotifications}
-            onAddNotification={triggerSystemNotification}
-            onTriggerDailyDigest={() => generateAndTriggerDailyDigest()}
-            alertLeadMinutes={alertLeadMinutes}
-            onUpdateAlertLeadMinutes={(mins) => {
-              setAlertLeadMinutes(mins);
-              localStorage.setItem("alert_lead_minutes", mins.toString());
-            }}
-            alertPushEnabled={alertPushEnabled}
-            onToggleAlertPush={(enabled) => {
-              setAlertPushEnabled(enabled);
-              localStorage.setItem("alert_push_enabled", enabled.toString());
-            }}
-          />
-        )}
-
       </main>
 
       {/* FOOTER ACTIONS AND REBOOTS */}
@@ -3240,24 +3199,6 @@ export default function App() {
         >
           <Bot className="w-5 h-5" />
           <span className="text-[10px] tracking-wide font-medium">AI Coach</span>
-        </button>
-
-        <button
-          id="tab_trigger_notifications_mobile"
-          onClick={() => setActiveTab("notifications")}
-          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer relative ${
-            activeTab === "notifications"
-              ? "text-indigo-400 font-bold scale-105"
-              : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Bell className="w-5 h-5" />
-          <span className="text-[10px] tracking-wide font-medium">Alerts</span>
-          {notifications.filter(n => !n.read).length > 0 && (
-            <span className="absolute top-1 right-2.5 w-4.5 h-4.5 bg-pink-500 text-white rounded-full text-[9px] font-bold leading-4.5 text-center shadow-sm animate-pulse">
-              {notifications.filter(n => !n.read).length}
-            </span>
-          )}
         </button>
 
       </div>

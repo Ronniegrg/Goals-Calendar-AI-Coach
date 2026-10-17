@@ -45,7 +45,7 @@ interface ActiveExecutionHUDProps {
   onToggleCompleteEvent: (eventId: string) => void;
   onEditEvent?: (eventId: string, updates: Partial<CalendarEvent>) => void;
   onEditGoal?: (goalId: string, updates: Partial<Goal>) => void;
-  onNavigateToCalendar?: () => void;
+  onNavigateToCalendar?: (date?: Date, eventId?: string) => void;
 }
 
 function formatClockTime(dateOrMs: Date | number): string {
@@ -182,13 +182,14 @@ export default function ActiveExecutionHUD({
     if (targetedGoalId) {
       const g = goals.find(item => item.id === targetedGoalId);
       if (g) {
+        const sortedAllEvents = [...events].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
         const matchingEvt = todayEvents.find(e => !e.completed && (
           e.goalId === g.id ||
           (e.title && g.name && (
             e.title.toLowerCase().includes(g.name.toLowerCase()) ||
             g.name.toLowerCase().includes(e.title.toLowerCase())
           ))
-        )) || events.find(e => !e.completed && (
+        )) || sortedAllEvents.find(e => !e.completed && (
           e.goalId === g.id ||
           (e.title && g.name && (
             e.title.toLowerCase().includes(g.name.toLowerCase()) ||
@@ -745,6 +746,13 @@ export default function ActiveExecutionHUD({
     return null;
   }
 
+  // Find the most recently completed session
+  const latestCompletedSession = useMemo(() => {
+    const completedList = events.filter(e => e.completed);
+    if (completedList.length === 0) return null;
+    return [...completedList].sort((a, b) => new Date(b.end).getTime() - new Date(a.end).getTime())[0];
+  }, [events]);
+
   const primaryTitle = activeTimer 
     ? activeTimer.title 
     : (effectiveEvent 
@@ -786,6 +794,33 @@ export default function ActiveExecutionHUD({
       />
 
       <div className="p-4 sm:p-5">
+        {/* Recently Finished Session Indicator */}
+        {latestCompletedSession && !hasActiveSession && (
+          <div className="mb-3.5 p-2.5 px-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-600/40 flex items-center justify-between gap-3 text-xs shadow-2xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Check className="w-3 h-3 stroke-[3]" />
+              </span>
+              <span className="text-slate-700 dark:text-slate-200 truncate">
+                <span className="text-emerald-700 dark:text-emerald-400 font-extrabold uppercase text-[10px] tracking-wide mr-1.5">Recently Finished:</span>
+                <strong className="font-bold text-slate-900 dark:text-white">{latestCompletedSession.title}</strong>
+                <span className="text-slate-500 dark:text-slate-400 text-[11px] ml-1.5">
+                  ({new Date(latestCompletedSession.start).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} at {new Date(latestCompletedSession.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})
+                </span>
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigateToCalendar?.(new Date(latestCompletedSession.start), latestCompletedSession.id)}
+              className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 hover:text-emerald-800 dark:hover:text-emerald-300 flex items-center gap-1 shrink-0 cursor-pointer hover:underline"
+              title="Highlight this completed session in the Calendar"
+            >
+              <span>View in Calendar</span>
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
           
           {/* LEFT: Live Status Indicator, Goal Title & Real Timing Breakdown */}
