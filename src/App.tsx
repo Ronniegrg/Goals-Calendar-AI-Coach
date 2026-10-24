@@ -18,13 +18,14 @@ import {
   X,
   ArrowRight,
   Brain,
-  Zap
+  Zap,
+  Keyboard
 } from "lucide-react";
 import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
 import ProgressDashboard from "./components/ProgressDashboard";
 import AICoach from "./components/AICoach";
-import FocusTimerModal, { getActiveTimerSnapshot, ActiveTimerData } from "./components/FocusTimerModal";
+import FocusTimerModal, { getActiveTimerSnapshot, ActiveTimerData, pauseFocusTimer, resumeFocusTimer } from "./components/FocusTimerModal";
 import EnergyProfileModal from "./components/EnergyProfileModal";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
@@ -246,6 +247,7 @@ export default function App() {
     actionLabel?: string;
     onAction?: () => void;
   } | null>(null);
+  const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
 
   // Auto-dismiss active floating toast
   useEffect(() => {
@@ -255,6 +257,100 @@ export default function App() {
     }, 4500);
     return () => clearTimeout(timer);
   }, [activeToast]);
+
+  // Global Pro Keyboard Shortcuts (Linear / Superhuman standard)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Do not capture keys when user is typing in forms/inputs
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      // '?' -> Toggle Shortcuts Cheatsheet Modal
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        setShowShortcutsModal(prev => !prev);
+        return;
+      }
+
+      // 'Escape' -> Close modal if open
+      if (e.key === "Escape") {
+        if (showShortcutsModal) {
+          setShowShortcutsModal(false);
+          return;
+        }
+      }
+
+      // 'Space' -> Toggle Study Timer Pause / Resume / Start
+      if (e.code === "Space" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const snap = getActiveTimerSnapshot();
+        if (snap) {
+          e.preventDefault();
+          if (snap.isRunning) {
+            pauseFocusTimer();
+            triggerSystemNotification("⏸️ Study Session Paused", `Paused ${snap.title}`, "warning");
+          } else {
+            resumeFocusTimer();
+            triggerSystemNotification("▶️ Study Session Resumed", `Resumed ${snap.title}`, "success");
+          }
+        } else {
+          // If no active timer, trigger start on the active target button
+          const startBtn = document.getElementById("hud_start_studying_btn") || document.getElementById("hud_compact_start_btn");
+          if (startBtn) {
+            e.preventDefault();
+            startBtn.click();
+          }
+        }
+        return;
+      }
+
+      // 't' or 'T' -> Jump Calendar to Today
+      if (e.code === "KeyT" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        setActiveTab("calendar");
+        setCalendarTargetDate(new Date());
+        triggerSystemNotification("📅 Schedule Jump", "Jumped to today", "sync");
+        return;
+      }
+
+      // 'c' or 'C' -> Toggle HUD Compact Mode
+      if (e.code === "KeyC" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("toggle_hud_compact"));
+        return;
+      }
+
+      // '1' - '5' -> Direct Tab Switching
+      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === "1") {
+          e.preventDefault();
+          setActiveTab("calendar");
+        } else if (e.key === "2") {
+          e.preventDefault();
+          setActiveTab("goals");
+        } else if (e.key === "3") {
+          e.preventDefault();
+          setActiveTab("ai-schedule");
+        } else if (e.key === "4") {
+          e.preventDefault();
+          setActiveTab("dashboard");
+        } else if (e.key === "5") {
+          e.preventDefault();
+          setActiveTab("coach");
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showShortcutsModal]);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -1616,9 +1712,37 @@ export default function App() {
           "success"
         );
 
+        // Auto-advance spotlight to next remaining uncompleted session for today
+        const todayStr = sDate.toDateString();
+        const remainingToday = nextEvents
+          .filter(e => e.type !== "external" && !e.completed && new Date(e.start).toDateString() === todayStr)
+          .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+        const nextTarget = remainingToday[0] || null;
+
         try {
+          if (nextTarget) {
+            localStorage.setItem("calendar_spotlight_event_id", nextTarget.id);
+            if (nextTarget.goalId) {
+              localStorage.setItem("calendar_spotlight_goal_id", nextTarget.goalId);
+            } else {
+              localStorage.removeItem("calendar_spotlight_goal_id");
+            }
+            window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+              detail: { eventId: nextTarget.id, goalId: nextTarget.goalId || null }
+            }));
+          } else {
+            localStorage.removeItem("calendar_spotlight_event_id");
+            localStorage.removeItem("calendar_spotlight_goal_id");
+            window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+              detail: { eventId: null, goalId: null }
+            }));
+          }
+
           const completedData = {
             id: targetEvt.id,
+            eventId: targetEvt.id,
+            goalId: targetEvt.goalId || targetGoal?.id,
             title: targetEvt.title,
             dateStr: dateText,
             timeStr: timeText,
@@ -1888,9 +2012,37 @@ export default function App() {
         "success"
       );
 
+      // Auto-advance spotlight to next remaining uncompleted session for today
+      const targetDayStr = sessionDate.toDateString();
+      const remainingToday = nextEvents
+        .filter(e => e.type !== "external" && !e.completed && new Date(e.start).toDateString() === targetDayStr)
+        .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+      const nextTarget = remainingToday[0] || null;
+
       try {
+        if (nextTarget) {
+          localStorage.setItem("calendar_spotlight_event_id", nextTarget.id);
+          if (nextTarget.goalId) {
+            localStorage.setItem("calendar_spotlight_goal_id", nextTarget.goalId);
+          } else {
+            localStorage.removeItem("calendar_spotlight_goal_id");
+          }
+          window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+            detail: { eventId: nextTarget.id, goalId: nextTarget.goalId || null }
+          }));
+        } else {
+          localStorage.removeItem("calendar_spotlight_event_id");
+          localStorage.removeItem("calendar_spotlight_goal_id");
+          window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+            detail: { eventId: null, goalId: null }
+          }));
+        }
+
         const completedData = {
           id: targetEvt ? targetEvt.id : `e_${Date.now()}`,
+          eventId: targetEvt?.id,
+          goalId: targetGoal?.id || targetEvt?.goalId,
           title: displayTitle,
           dateStr: dateText,
           timeStr: timeText,
@@ -1898,6 +2050,7 @@ export default function App() {
         };
         localStorage.setItem("last_completed_session", JSON.stringify(completedData));
         window.dispatchEvent(new CustomEvent("session_completed_event", { detail: completedData }));
+        window.dispatchEvent(new CustomEvent("focus_session_completed", { detail: completedData }));
       } catch {}
 
       setTimeout(() => {
@@ -2717,6 +2870,19 @@ export default function App() {
               )}
             </button>
 
+            {/* Keyboard Shortcuts Quick Button */}
+            <button
+              type="button"
+              id="app_keyboard_shortcuts_btn"
+              onClick={() => setShowShortcutsModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer transition shadow-xs"
+              title="Keyboard Shortcuts (Press ?)"
+            >
+              <Keyboard className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span className="hidden sm:inline">Shortcuts</span>
+              <kbd className="hidden md:inline px-1 py-0.2 bg-black/40 rounded text-[9px] font-mono border border-white/10 text-slate-400">?</kbd>
+            </button>
+
             {/* Auto-Toggle Theme Button */}
             <button
               type="button"
@@ -3260,6 +3426,84 @@ export default function App() {
             triggerSystemNotification(title, message, type);
           }}
         />
+      )}
+
+      {/* Keyboard Shortcuts Cheatsheet Modal */}
+      {showShortcutsModal && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setShowShortcutsModal(false)}
+        >
+          <div 
+            className="w-full max-w-md bg-white dark:bg-[#111422] border border-slate-200 dark:border-white/10 rounded-2xl p-5 sm:p-6 shadow-2xl relative space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+                  <Keyboard className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-slate-900 dark:text-white">Keyboard Shortcuts</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Control your study schedule like a pro</p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowShortcutsModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Start / Pause Study Timer</span>
+                <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">Space</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Jump Schedule to Today</span>
+                <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">T</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Toggle HUD Compact Mode</span>
+                <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">C</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Switch Views / Tabs</span>
+                <div className="flex items-center gap-1">
+                  <kbd className="px-2 py-0.5 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">1</kbd>
+                  <span className="text-slate-400">–</span>
+                  <kbd className="px-2 py-0.5 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">5</kbd>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Open Shortcuts Cheatsheet</span>
+                <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">?</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Close Open Modal</span>
+                <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">Esc</kbd>
+              </div>
+            </div>
+
+            <div className="pt-2 text-center">
+              <button
+                type="button"
+                onClick={() => setShowShortcutsModal(false)}
+                className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold transition cursor-pointer text-xs shadow-md shadow-indigo-950/30"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Global Interactive Floating Toast Notification */}

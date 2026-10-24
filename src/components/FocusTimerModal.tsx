@@ -1859,14 +1859,14 @@ export default function FocusTimerModal({
     return (
       <div 
         id="floating_focus_timer_bar"
-        className={`fixed bottom-16 sm:bottom-6 right-4 sm:right-6 z-50 bg-[#0f111a]/95 border rounded-2xl p-3 shadow-2xl backdrop-blur-xl flex items-center gap-3 animate-fade-in ${
+        className={`fixed bottom-16 sm:bottom-6 right-4 sm:right-6 z-50 bg-white/95 dark:bg-[#0f111a]/95 border rounded-2xl p-3 shadow-xl dark:shadow-2xl backdrop-blur-xl flex items-center gap-3 animate-fade-in ${
           timerState.isCompleted 
-            ? "border-amber-400/80 ring-2 ring-amber-400/50 shadow-amber-500/20 animate-pulse" 
-            : "border-indigo-500/40 ring-1 ring-indigo-500/20"
+            ? "border-amber-400 ring-2 ring-amber-400/50 shadow-amber-500/20 animate-pulse text-slate-900 dark:text-white" 
+            : "border-slate-300 dark:border-indigo-500/40 ring-1 ring-slate-200 dark:ring-indigo-500/20 text-slate-900 dark:text-white"
         }`}
       >
         <div className="flex items-center gap-2 cursor-pointer" onClick={handleExpand}>
-          <span className="relative flex h-3 w-3">
+          <span className="relative flex h-3 w-3 shrink-0">
             {timerState.isRunning ? (
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             ) : timerState.isCompleted ? (
@@ -1877,7 +1877,7 @@ export default function FocusTimerModal({
             <span className="relative inline-flex rounded-full h-3 w-3" style={{ backgroundColor: timerState.color }}></span>
           </span>
           <div className="min-w-0 max-w-[130px] sm:max-w-[170px]">
-            <p className="text-[9px] font-bold uppercase tracking-wider text-indigo-300 truncate font-mono">
+            <p className="text-[9px] font-black uppercase tracking-wider text-indigo-700 dark:text-indigo-300 truncate font-mono">
               {timerState.isCompleted 
                 ? "🔔 Time is Up!" 
                 : activeStepInfo 
@@ -1886,7 +1886,7 @@ export default function FocusTimerModal({
                 ? `Paused (${timeSpentMins}m done)` 
                 : timerState.category || "Focus Session"}
             </p>
-            <h4 className="text-xs font-bold text-white truncate drop-shadow-xs">
+            <h4 className="text-xs font-extrabold text-slate-950 dark:text-white truncate">
               {timerState.title}
             </h4>
           </div>
@@ -1895,13 +1895,13 @@ export default function FocusTimerModal({
         {/* Live Clock Display */}
         <div 
           onClick={handleExpand}
-          className={`px-2.5 py-1 rounded-xl font-mono text-xs sm:text-sm font-black flex items-center gap-1.5 cursor-pointer shadow-inner border ${
+          className={`px-2.5 py-1 rounded-xl font-mono text-xs sm:text-sm font-black flex items-center gap-1.5 cursor-pointer shadow-xs border ${
             timerState.isCompleted 
-              ? "bg-amber-500/20 border-amber-400/50 text-amber-300" 
-              : "bg-black/60 border-white/10 text-white"
+              ? "bg-amber-100 dark:bg-amber-500/20 border-amber-300 dark:border-amber-400/50 text-amber-950 dark:text-amber-300" 
+              : "bg-slate-100 dark:bg-black/60 border-slate-300 dark:border-white/10 text-slate-950 dark:text-white"
           }`}
         >
-          <Clock className={`w-3.5 h-3.5 shrink-0 ${timerState.isRunning ? "text-emerald-400" : timerState.isCompleted ? "text-amber-300" : isPartialSession ? "text-amber-400" : "text-indigo-400"}`} />
+          <Clock className={`w-3.5 h-3.5 shrink-0 ${timerState.isRunning ? "text-emerald-600 dark:text-emerald-400" : timerState.isCompleted ? "text-amber-600 dark:text-amber-300" : isPartialSession ? "text-amber-600 dark:text-amber-400" : "text-indigo-600 dark:text-indigo-400"}`} />
           <span>{formatTime(timerState.timeRemaining)}</span>
         </div>
 
@@ -1914,35 +1914,35 @@ export default function FocusTimerModal({
                 unlockAudioEngine();
                 playBellSound(soundChoice, soundVolume);
               }}
-              className="p-1.5 bg-amber-500/30 hover:bg-amber-500/40 text-amber-200 rounded-lg border border-amber-400/40 cursor-pointer transition"
+              className="p-1.5 bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/30 dark:hover:bg-amber-500/40 text-amber-900 dark:text-amber-200 rounded-lg border border-amber-300 dark:border-amber-400/40 cursor-pointer transition shadow-xs"
               title="Play completion bell chime"
             >
-              <Bell className="w-3.5 h-3.5 animate-bounce" />
+              <Bell className="w-3.5 h-3.5 animate-bounce text-amber-600 dark:text-amber-300" />
             </button>
           ) : timerState.isRunning ? (
             <button
               type="button"
               onClick={handlePause}
-              className="p-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-lg border border-amber-500/30 cursor-pointer transition"
+              className="p-1.5 bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:hover:bg-amber-500/30 text-amber-900 dark:text-amber-300 rounded-lg border border-amber-300 dark:border-amber-500/30 cursor-pointer transition shadow-xs"
               title="Pause Timer"
             >
-              <Pause className="w-3.5 h-3.5 fill-current" />
+              <Pause className="w-3.5 h-3.5 fill-current text-amber-700 dark:text-amber-300" />
             </button>
           ) : (
             <button
               type="button"
               onClick={handleStart}
-              className="p-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg border border-emerald-500/30 cursor-pointer transition"
+              className="p-1.5 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:hover:bg-emerald-500/30 text-emerald-900 dark:text-emerald-400 rounded-lg border border-emerald-300 dark:border-emerald-500/30 cursor-pointer transition shadow-xs"
               title={isPartialSession ? `Resume (${remainingMins}m left)` : "Start Timer"}
             >
-              <Play className="w-3.5 h-3.5 fill-current" />
+              <Play className="w-3.5 h-3.5 fill-current text-emerald-700 dark:text-emerald-400" />
             </button>
           )}
 
           <button
             type="button"
             onClick={() => handleAdjustMinutes(15)}
-            className="px-1.5 py-1 bg-indigo-500/20 hover:bg-indigo-500/35 text-indigo-300 text-[10px] font-bold rounded-lg border border-indigo-400/30 cursor-pointer transition font-mono"
+            className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-500/20 dark:hover:bg-indigo-500/35 text-indigo-700 dark:text-indigo-300 text-[10px] font-black rounded-lg border border-indigo-200 dark:border-indigo-400/30 cursor-pointer transition font-mono shadow-xs"
             title="Extend by 15 mins"
           >
             +15m
@@ -1951,7 +1951,7 @@ export default function FocusTimerModal({
           <button
             type="button"
             onClick={handleExpand}
-            className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg border border-white/10 cursor-pointer transition"
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/20 text-slate-700 dark:text-white rounded-lg border border-slate-200 dark:border-white/10 cursor-pointer transition shadow-xs"
             title="Expand Full Timer"
           >
             <Maximize2 className="w-3.5 h-3.5" />
@@ -1960,7 +1960,7 @@ export default function FocusTimerModal({
           <button
             type="button"
             onClick={handleFinishAndComplete}
-            className="p-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer transition"
+            className="p-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer transition shadow-xs"
             title="Finish & Log Progress"
           >
             <CheckCircle2 className="w-3.5 h-3.5" />
@@ -1979,8 +1979,8 @@ export default function FocusTimerModal({
   const strokeDashoffset = circumference - (progressPercent / 100) * circumference;
 
   return (
-    <div id="focus_timer_modal_backdrop" className="fixed inset-0 bg-[#020205]/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
-      <div id="focus_timer_modal_card" className="bg-[#0f111a] border border-white/12 rounded-3xl shadow-2xl w-full max-w-md p-5 sm:p-6 relative overflow-hidden max-h-[95vh] overflow-y-auto">
+    <div id="focus_timer_modal_backdrop" className="fixed inset-0 bg-slate-900/60 dark:bg-[#020205]/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+      <div id="focus_timer_modal_card" className="bg-white dark:bg-[#0f111a] border border-slate-200 dark:border-white/12 text-slate-900 dark:text-white rounded-3xl shadow-2xl w-full max-w-md p-5 sm:p-6 relative overflow-hidden max-h-[95vh] overflow-y-auto">
         {/* Glow accent matching color */}
         <div 
           className="absolute -top-24 -left-24 w-64 h-64 rounded-full blur-3xl opacity-20 pointer-events-none"
@@ -1991,38 +1991,38 @@ export default function FocusTimerModal({
         <div className="flex items-start justify-between relative z-10 mb-3">
           <div>
             <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-white/10 text-slate-300 font-mono">
+              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-300 font-mono border border-slate-200 dark:border-white/10">
                 {timerState.category || "Focus Session"}
               </span>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 ${
+              <span className={`text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1 ${
                 timerState.isCompleted
-                  ? "bg-amber-500/25 text-amber-300 border border-amber-400/50 animate-pulse"
+                  ? "bg-amber-100 dark:bg-amber-500/25 text-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-400/50 animate-pulse"
                   : timerState.isRunning 
-                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse" 
+                  ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-950 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30 animate-pulse" 
                   : isPartialSession
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                  ? "bg-amber-100 dark:bg-amber-500/20 text-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30"
                   : timerState.timeRemaining === timerState.totalSec
-                  ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
-                  : "bg-slate-800 text-slate-400"
+                  ? "bg-indigo-50 dark:bg-indigo-500/20 text-indigo-950 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30"
+                  : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-400"
               }`}>
                 {timerState.isCompleted ? (
                   <>
-                    <BellRing className="w-3 h-3 text-amber-300 animate-bounce" />
+                    <BellRing className="w-3 h-3 text-amber-600 dark:text-amber-300 animate-bounce" />
                     TIME IS UP!
                   </>
                 ) : timerState.isRunning ? (
                   <>
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                     IN PROGRESS
                   </>
                 ) : isPartialSession ? (
                   <>
-                    <Pause className="w-3 h-3 text-amber-300 fill-current" />
+                    <Pause className="w-3 h-3 text-amber-600 dark:text-amber-300 fill-current" />
                     PAUSED ({timeSpentMins}m studied)
                   </>
                 ) : timerState.timeRemaining === timerState.totalSec ? (
                   <>
-                    <Clock className="w-3 h-3 text-indigo-400" />
+                    <Clock className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
                     READY TO START
                   </>
                 ) : (
@@ -2030,7 +2030,7 @@ export default function FocusTimerModal({
                 )}
               </span>
             </div>
-            <h3 className="text-base sm:text-lg font-bold text-white leading-tight flex items-center gap-2">
+            <h3 className="text-base sm:text-lg font-black text-slate-950 dark:text-white leading-tight flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: timerState.color }} />
               <span className="truncate max-w-[200px] sm:max-w-[240px]">{timerState.title}</span>
             </h3>
@@ -3261,18 +3261,18 @@ export default function FocusTimerModal({
 
           {/* Center Digital Clock Display */}
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-            <span className={`text-3xl sm:text-4xl font-extrabold font-mono tracking-tight drop-shadow-md ${timerState.isCompleted ? "text-amber-300 animate-pulse" : "text-white"}`}>
+            <span className={`text-3xl sm:text-4xl font-black font-mono tracking-tight drop-shadow-xs ${timerState.isCompleted ? "text-amber-500 dark:text-amber-300 animate-pulse" : "text-slate-950 dark:text-white"}`}>
               {formatTime(timerState.timeRemaining)}
             </span>
-            <div className="text-xs text-slate-400 font-mono mt-1 flex items-center gap-1.5 flex-wrap justify-center">
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-mono mt-1 flex items-center gap-1.5 flex-wrap justify-center">
               <span className="flex items-center gap-1">
-                <Clock className="w-3 h-3 text-slate-400" />
-                Target: {Math.round(timerState.totalSec / 60)}m
+                <Clock className="w-3 h-3 text-slate-500 dark:text-slate-400" />
+                <span>Target: {Math.round(timerState.totalSec / 60)}m</span>
               </span>
               {timeSpentSec > 0 && (
                 <>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-emerald-400 font-bold">{timeSpentMins}m studied</span>
+                  <span className="text-slate-400 dark:text-slate-600">•</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">{timeSpentMins}m studied</span>
                 </>
               )}
             </div>
@@ -3280,7 +3280,7 @@ export default function FocusTimerModal({
         </div>
 
         {/* Quick Time Adjustment Buttons */}
-        <div className="bg-[#0c0d16] border border-white/10 rounded-2xl p-2.5 mb-3 sm:mb-4">
+        <div className="bg-slate-50 dark:bg-[#0c0d16] border border-slate-200 dark:border-white/10 rounded-2xl p-2.5 mb-3 sm:mb-4">
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-1.5">
             <span className="flex items-center gap-1">
               <Flame className="w-3.5 h-3.5 text-amber-400" />

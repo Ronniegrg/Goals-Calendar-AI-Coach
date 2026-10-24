@@ -81,6 +81,31 @@ export default function ActiveExecutionHUD({
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [newSubtaskMinutes, setNewSubtaskMinutes] = useState<number>(15);
 
+  // Compact HUD mode for minimal vertical footprint on laptop screens
+  const [isCompact, setIsCompact] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("hud_compact_mode") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleCompact = () => {
+    setIsCompact(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem("hud_compact_mode", String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const handleToggleCompact = () => toggleCompact();
+    window.addEventListener("toggle_hud_compact", handleToggleCompact);
+    return () => window.removeEventListener("toggle_hud_compact", handleToggleCompact);
+  }, []);
+
   // Active target session & target goal synchronized from the calendar (e.g. React)
   const [targetedEventId, setTargetedEventId] = useState<string | null>(() => {
     try {
@@ -96,6 +121,9 @@ export default function ActiveExecutionHUD({
       return null;
     }
   });
+
+  // User-selected goal from "Other Goals" picker (in-memory override for this study session, not persisted across sessions)
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
 
   // Target goal and session for "Where to start" briefing note popup
   const [briefingTarget, setBriefingTarget] = useState<{
@@ -139,6 +167,74 @@ export default function ActiveExecutionHUD({
     };
   }, []);
 
+  // Listen for session completion events (from FocusTimerModal finish button or calendar check toggle)
+  useEffect(() => {
+    const handleSessionCompleted = (e: any) => {
+      const detail = e.detail || {};
+      const completedEvtId = detail.eventId || detail.id;
+      const completedGoalId = detail.goalId;
+
+      // Clear targeted event if it's the one that finished
+      if (completedEvtId && targetedEventId === completedEvtId) {
+        setTargetedEventId(null);
+        try {
+          localStorage.removeItem("calendar_spotlight_event_id");
+        } catch {}
+      }
+
+      // Clear targeted goal if it's the one that finished
+      if (completedGoalId && targetedGoalId === completedGoalId) {
+        setTargetedGoalId(null);
+        try {
+          localStorage.removeItem("calendar_spotlight_goal_id");
+        } catch {}
+      }
+
+      // Also reset manual goal picker if the finished goal was selected
+      if (selectedGoalId && (selectedGoalId === completedGoalId || selectedGoalId === targetedGoalId)) {
+        setSelectedGoalId(null);
+      }
+
+      // Immediately refresh the ticking time to force HUD re-evaluation
+      setTickerNow(Date.now());
+    };
+
+    window.addEventListener("session_completed_event" as any, handleSessionCompleted);
+    window.addEventListener("focus_session_completed" as any, handleSessionCompleted);
+    return () => {
+      window.removeEventListener("session_completed_event" as any, handleSessionCompleted);
+      window.removeEventListener("focus_session_completed" as any, handleSessionCompleted);
+    };
+  }, [targetedEventId, targetedGoalId, selectedGoalId]);
+
+  // Purge any completed target IDs from localStorage and state
+  useEffect(() => {
+    if (targetedEventId) {
+      const ev = events.find(e => e.id === targetedEventId);
+      if (!ev || ev.completed) {
+        setTargetedEventId(null);
+        try {
+          localStorage.removeItem("calendar_spotlight_event_id");
+        } catch {}
+      }
+    }
+
+    if (targetedGoalId) {
+      const todayStr = new Date(tickerNow).toDateString();
+      const uncompletedGoalEvt = events.find(e => 
+        !e.completed && 
+        (e.goalId === targetedGoalId || goals.find(g => g.id === targetedGoalId && e.title?.toLowerCase().includes(g.name.toLowerCase()))) &&
+        new Date(e.start).toDateString() === todayStr
+      );
+      if (!uncompletedGoalEvt) {
+        setTargetedGoalId(null);
+        try {
+          localStorage.removeItem("calendar_spotlight_goal_id");
+        } catch {}
+      }
+    }
+  }, [events, targetedEventId, targetedGoalId, goals, tickerNow]);
+
   // Update ticker every second when timer is running or active
   useEffect(() => {
     const interval = setInterval(() => {
@@ -168,7 +264,7 @@ export default function ActiveExecutionHUD({
       .filter(e => new Date(e.start).toDateString() === todayStr)
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    // 1. Explicit calendar target session (e.g. React when spotlighted/targeted on calendar)
+    // 1. Explicit calendar target session (e.g. when spotlighted on calendar) - ONLY if uncompleted!
     if (targetedEventId) {
       const targeted = todayEvents.find(e => e.id === targetedEventId && !e.completed) ||
                        events.find(e => e.id === targetedEventId && !e.completed);
@@ -178,7 +274,7 @@ export default function ActiveExecutionHUD({
       }
     }
 
-    // 2. Explicit calendar target goal (e.g. React goal spotlighted on calendar)
+    // 2. Explicit calendar target goal - ONLY if that goal still has an uncompleted session!
     if (targetedGoalId) {
       const g = goals.find(item => item.id === targetedGoalId);
       if (g) {
@@ -196,11 +292,15 @@ export default function ActiveExecutionHUD({
             g.name.toLowerCase().includes(e.title.toLowerCase())
           ))
         ));
-        return { currentEvent: matchingEvt || null, matchedGoal: g, nextEvent: null };
+
+        // CRITICAL FIX: Only lock onto targetedGoalId if it actually has an uncompleted session!
+        if (matchingEvt) {
+          return { currentEvent: matchingEvt, matchedGoal: g, nextEvent: null };
+        }
       }
     }
 
-    // 3. Check if an event is currently slotted on the calendar right now (e.g. at current clock time)
+    // 3. Check if an event is currently slotted on the calendar right now (current clock time)
     const slotted = todayEvents.find(e => {
       if (e.completed) return false;
       const startMs = new Date(e.start).getTime();
@@ -213,7 +313,7 @@ export default function ActiveExecutionHUD({
       return { currentEvent: slotted, matchedGoal: g, nextEvent: null };
     }
 
-    // 4. Check upcoming today
+    // 4. Check upcoming today (starts in the future today)
     const upcoming = todayEvents.find(e => {
       if (e.completed) return false;
       return new Date(e.start).getTime() > nowMs;
@@ -224,7 +324,7 @@ export default function ActiveExecutionHUD({
       return { currentEvent: upcoming, matchedGoal: g, nextEvent: upcoming };
     }
 
-    // 5. Fallback: uncompleted today that has passed its scheduled end
+    // 5. Fallback: uncompleted today that has passed its scheduled end (overdue / pending today)
     const pendingToday = todayEvents.find(e => !e.completed);
     if (pendingToday) {
       const g = pendingToday.goalId ? goals.find(item => item.id === pendingToday.goalId) : undefined;
@@ -263,9 +363,6 @@ export default function ActiveExecutionHUD({
 
   const [selectedTomorrowEventId, setSelectedTomorrowEventId] = useState<string | null>(null);
   const [showTomorrowPicker, setShowTomorrowPicker] = useState(false);
-
-  // User-selected goal from "Other Goals" picker (in-memory override for this study session, not persisted across sessions)
-  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
 
   // Proactively clean up any stale hud_selected_goal_id from localStorage
   useEffect(() => {
@@ -308,8 +405,18 @@ export default function ActiveExecutionHUD({
   // Study Ahead mode triggers when user has no active timer and no remaining uncompleted events today, but has tomorrow events!
   const isStudyAheadMode = Boolean(!activeTimer && !currentEvent && activeTomorrowEvent);
 
-  // If a scheduled target session exists on the calendar (e.g. React), it ALWAYS takes priority in the HUD!
-  // userSelectedGoal is only used as an override when studying ahead or when no target session exists today.
+  const currentEventGoal = useMemo(() => {
+    if (!currentEvent) return undefined;
+    return goals.find(g => 
+      (currentEvent.goalId && g.id === currentEvent.goalId) ||
+      (currentEvent.title && g.name && (
+        currentEvent.title.toLowerCase().includes(g.name.toLowerCase()) ||
+        g.name.toLowerCase().includes(currentEvent.title.toLowerCase())
+      ))
+    );
+  }, [currentEvent, goals]);
+
+  // If a scheduled target session exists on the calendar, it ALWAYS takes priority in the HUD!
   const hasTarget = Boolean(currentEvent || matchedGoal);
 
   const effectiveEvent = (hasTarget ? currentEvent : null) 
@@ -317,9 +424,10 @@ export default function ActiveExecutionHUD({
     || (isStudyAheadMode ? activeTomorrowEvent : null)
     || currentEvent;
 
-  const effectiveGoal = (hasTarget ? matchedGoal : null) 
-    || userSelectedGoal 
+  const effectiveGoal = (hasTarget ? (matchedGoal || currentEventGoal) : null) 
+    || (userSelectedGoal ? (userSelectedGoalEvent ? userSelectedGoal : undefined) : null) 
     || matchedGoal 
+    || currentEventGoal
     || (isStudyAheadMode ? activeTomorrowGoal : undefined);
 
   // Compute total planned duration of this study session in minutes
@@ -765,6 +873,195 @@ export default function ActiveExecutionHUD({
   const primaryColor = activeTimer?.color || effectiveGoal?.color || userSelectedGoal?.color || "#6366f1";
   const primaryCategory = activeTimer?.category || effectiveGoal?.category || userSelectedGoal?.category || effectiveEvent?.type;
 
+  if (isCompact) {
+    return (
+      <>
+        {briefingTarget && (
+          <GoalStartBriefingModal
+            isOpen={Boolean(briefingTarget)}
+            onClose={() => {
+              setBriefingTarget(null);
+              setSelectedGoalId(null);
+            }}
+            goal={briefingTarget.goal}
+            event={briefingTarget.event}
+            isStudyAhead={briefingTarget.isStudyAhead}
+            onConfirmStart={(editedNote) => {
+              executeStartStudying(briefingTarget.goal, briefingTarget.event, editedNote);
+              setBriefingTarget(null);
+              setSelectedGoalId(null);
+            }}
+            onUpdateGoalNote={(goalId, updatedNote) => {
+              if (onEditGoal) {
+                onEditGoal(goalId, {
+                  lastSessionNote: updatedNote,
+                  lastSessionNoteDate: new Date().toISOString()
+                });
+              }
+            }}
+          />
+        )}
+        <div 
+          id="active_execution_hud_compact"
+          className={`relative rounded-xl border transition-all duration-200 shadow-sm px-3.5 py-2 flex items-center justify-between gap-3 ${
+            isTimerRunning 
+              ? "bg-[#0b0f19] border-emerald-500/40 text-white shadow-emerald-950/30" 
+              : isTimerPaused
+                ? "bg-[#13110e] border-amber-500/40 text-white shadow-amber-950/20"
+                : isStudyAheadMode
+                  ? "bg-slate-900/95 dark:bg-[#0c101a] border-emerald-500/30 text-white"
+                  : "bg-white/95 dark:bg-[#0c0e17] border-slate-200 dark:border-white/10 text-slate-900 dark:text-white"
+          }`}
+          style={{ zIndex: 30 }}
+        >
+          {/* Left: Icon, Title & Status */}
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div 
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-white shrink-0 shadow-2xs"
+              style={{ backgroundColor: primaryColor }}
+            >
+              {renderGoalIcon(activeGoal?.icon || effectiveGoal?.icon, activeGoal?.type || effectiveGoal?.type, "w-4 h-4")}
+            </div>
+
+            <div className="flex items-center gap-2 min-w-0 flex-1 truncate">
+              <span className="font-extrabold text-xs sm:text-sm truncate">
+                {primaryTitle}
+              </span>
+
+              {/* Status indicator */}
+              {isTimerRunning ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+                  </span>
+                  LIVE • {formatCountdown(realTimeRemainingSec)}
+                </span>
+              ) : isTimerPaused ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                  <Pause className="w-2.5 h-2.5" />
+                  PAUSED • {formatCountdown(realTimeRemainingSec)}
+                </span>
+              ) : isStudyAheadMode ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                  <Sparkles className="w-2.5 h-2.5 text-amber-300" />
+                  STUDY AHEAD
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 shrink-0">
+                  <Clock className="w-2.5 h-2.5" />
+                  READY • {totalSessionMinutes}M
+                </span>
+              )}
+
+              {finishingTimeString && isTimerRunning && (
+                <span className="hidden md:inline-flex text-[10px] text-slate-400 font-medium">
+                  Ends {finishingTimeString}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Right: Actions & Expand Button */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isTimerRunning ? (
+              <>
+                <button
+                  type="button"
+                  id="hud_compact_pause_btn"
+                  onClick={handlePause}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition cursor-pointer"
+                  title="Pause active timer (Space)"
+                >
+                  <Pause className="w-3 h-3" />
+                  <span className="hidden sm:inline">Pause</span>
+                </button>
+                <button
+                  type="button"
+                  id="hud_compact_done_btn"
+                  onClick={handleFinishSession}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition cursor-pointer shadow-xs"
+                  title="Mark Finished Now"
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span className="hidden sm:inline">Done</span>
+                </button>
+              </>
+            ) : isTimerPaused ? (
+              <>
+                <button
+                  type="button"
+                  id="hud_compact_resume_btn"
+                  onClick={handleResume}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition cursor-pointer shadow-xs"
+                  title="Resume study timer (Space)"
+                >
+                  <Play className="w-3 h-3 fill-white" />
+                  <span className="hidden sm:inline">Resume</span>
+                </button>
+                <button
+                  type="button"
+                  id="hud_compact_done_btn"
+                  onClick={handleFinishSession}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-700/80 hover:bg-emerald-700 text-white transition cursor-pointer"
+                  title="Mark Finished"
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span className="hidden sm:inline">Done</span>
+                </button>
+              </>
+            ) : isStudyAheadMode ? (
+              <button
+                type="button"
+                id="hud_compact_study_ahead_btn"
+                onClick={() => handleStartStudying(activeTomorrowGoal, activeTomorrowEvent)}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition cursor-pointer shadow-xs"
+                title="Study Ahead Now"
+              >
+                <Zap className="w-3 h-3 fill-amber-300 text-amber-300" />
+                <span>Study Ahead</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                id="hud_compact_start_btn"
+                onClick={() => handleStartStudying()}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition cursor-pointer shadow-xs"
+                title="Start Studying Now (Space)"
+              >
+                <Play className="w-3 h-3 fill-white" />
+                <span>Start</span>
+              </button>
+            )}
+
+            {/* Fullscreen focus button */}
+            <button
+              type="button"
+              id="hud_compact_fullscreen_btn"
+              onClick={handleOpenFullscreen}
+              className="p-1.5 rounded-lg border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-300 transition cursor-pointer"
+              title="Expand Fullscreen Focus Room"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Expand to full cockpit */}
+            <button
+              type="button"
+              id="hud_compact_expand_btn"
+              onClick={toggleCompact}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg border border-indigo-400/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-xs font-bold transition cursor-pointer"
+              title="Expand to Full Cockpit (Press C)"
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Cockpit</span>
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <div 
       id="active_execution_hud"
@@ -1127,6 +1424,18 @@ export default function ActiveExecutionHUD({
               title="Expand full-screen ambient focus room"
             >
               <Maximize2 className="w-4 h-4" />
+            </button>
+
+            {/* Collapse to Slim Bar */}
+            <button
+              type="button"
+              id="hud_collapse_compact_btn"
+              onClick={toggleCompact}
+              className="p-2 px-2.5 rounded-xl border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-300 transition cursor-pointer flex items-center gap-1 text-xs font-semibold"
+              title="Collapse to Slim Bar (Press C)"
+            >
+              <ChevronUp className="w-4 h-4" />
+              <span className="hidden sm:inline">Compact</span>
             </button>
 
             {/* Quick Done / Finish Button: ONLY shown when an active session is in progress or today's scheduled event */}

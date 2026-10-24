@@ -366,6 +366,8 @@ export default function CalendarView({
   const focusIncompleteMenuRef = useRef<HTMLDivElement | null>(null);
   const autopilotHUDMenuRef = useRef<HTMLDivElement | null>(null);
   const restDayMenuRef = useRef<HTMLDivElement | null>(null);
+  const viewOptionsRef = useRef<HTMLDivElement | null>(null);
+  const [showViewOptions, setShowViewOptions] = useState(false);
   const [showFocusIncompleteMenu, setShowFocusIncompleteMenu] = useState(false);
   const [showAutopilotHUDMenu, setShowAutopilotHUDMenu] = useState(false);
   const [showRestDayMenu, setShowRestDayMenu] = useState(false);
@@ -385,6 +387,11 @@ export default function CalendarView({
     const handleGlobalClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
+
+      // Close View Options menu if clicked outside
+      if (viewOptionsRef.current && !viewOptionsRef.current.contains(target)) {
+        setShowViewOptions(false);
+      }
 
       // Close Delay Today menu only if clicked outside
       if (delayTodayRef.current && !delayTodayRef.current.contains(target)) {
@@ -414,12 +421,11 @@ export default function CalendarView({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        setShowViewOptions(false);
         setShowDelayTodayMenu(false);
         setShowFocusIncompleteMenu(false);
         setShowAutopilotHUDMenu(false);
         setShowRestDayMenu(false);
-        setShowFocusIncompleteMenu(false);
-        setShowAutopilotHUDMenu(false);
         setActiveShiftMenuId(null);
       }
     };
@@ -527,6 +533,42 @@ export default function CalendarView({
       detail: { eventId, goalId: goalId || null }
     }));
   };
+
+  const getHourEnergyZone = (hour: number) => {
+    if (!energyProfile?.zones) return null;
+    const zone = energyProfile.zones.find(z => hour >= z.startHour && hour < z.endHour);
+    if (!zone) return null;
+    const isPeak = zone.level === "deep_focus";
+    const isSlump = Boolean(energyProfile.slumpProtection && (zone.name.toLowerCase().includes("slump") || (zone.level === "light_recharge" && hour >= 12 && hour <= 15)));
+    return {
+      name: zone.name,
+      level: zone.level,
+      isPeak,
+      isSlump,
+      description: zone.description
+    };
+  };
+
+  // Count uncompleted overlapping event collisions in the schedule
+  const detectedConflictsCount = useMemo(() => {
+    let count = 0;
+    const uncompleted = events.filter(e => !e.completed);
+    for (let i = 0; i < uncompleted.length; i++) {
+      const a = uncompleted[i];
+      const aStart = new Date(a.start).getTime();
+      const aEnd = new Date(a.end).getTime();
+      for (let j = i + 1; j < uncompleted.length; j++) {
+        const b = uncompleted[j];
+        const bStart = new Date(b.start).getTime();
+        const bEnd = new Date(b.end).getTime();
+        if (aStart < bEnd && aEnd > bStart) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }, [events]);
+
   const [spotlightBannerInfo, setSpotlightBannerInfo] = useState<{
     goal: Goal;
     event?: CalendarEvent;
@@ -1795,20 +1837,18 @@ export default function CalendarView({
     }
   };
 
-  // When an event displayed in the spotlight banner is completed externally (e.g. from event card or list)
+  // When an event displayed in the spotlight is completed externally (e.g. from event card or list)
   useEffect(() => {
-    if (!spotlightBannerInfo?.event) return;
-    const currentEvt = events.find(e => e.id === spotlightBannerInfo.event?.id);
+    const targetId = spotlightEventId || spotlightBannerInfo?.event?.id;
+    if (!targetId) return;
+    const currentEvt = events.find(e => e.id === targetId);
     if (currentEvt && currentEvt.completed) {
       if (lastHandledCompletedEventId.current !== currentEvt.id) {
-        if (spotlightBannerInfo.isTodayFocus) {
-          advanceToNextTodayGoal(currentEvt.id);
-        } else {
-          advanceToNextIncompleteTarget(currentEvt.id);
-        }
+        lastHandledCompletedEventId.current = currentEvt.id;
+        advanceToNextTodayGoal(currentEvt.id);
       }
     }
-  }, [events, spotlightBannerInfo, now]);
+  }, [events, spotlightEventId, spotlightBannerInfo, now]);
 
   // Listen for focus session completion events (e.g. from FocusTimerModal finish button)
   useEffect(() => {
@@ -3242,482 +3282,6 @@ export default function CalendarView({
               )}
             </div>
 
-            {/* Take Rest Day / Life Happened Button with Flexible Date Dropdown */}
-            {onLifeHappenedToday && (
-              <div className="relative inline-flex items-center" ref={restDayMenuRef}>
-                <button
-                  type="button"
-                  id="cal_life_happened_btn"
-                  onClick={() => setShowRestDayMenu(!showRestDayMenu)}
-                  className="p-1.5 sm:px-2.5 sm:py-1.5 border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 text-emerald-900 dark:text-emerald-300 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95"
-                  title="Life Happened? Automatically bumps remaining sessions into upcoming open slots this week without breaking streaks!"
-                >
-                  <span>🌴</span>
-                  <span>Take Rest Day</span>
-                  <ChevronDown className="w-3 h-3 opacity-70" />
-                </button>
-
-                {/* Rest Day Options Dropdown */}
-                {showRestDayMenu && (
-                  <div className="absolute right-0 top-full mt-1.5 w-64 bg-white dark:bg-[#151828] border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl p-3 z-50 space-y-2 animate-in fade-in zoom-in-95 duration-150">
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-white/10">
-                      <span className="text-[11px] font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
-                        <span>🌴</span> Rest Day / Emergency Shift
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowRestDayMenu(false)}
-                        className="text-slate-400 hover:text-white p-0.5"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                      Reschedules uncompleted sessions into subsequent open availability slots this week without losing streak count.
-                    </p>
-
-                    <div className="space-y-1">
-                      <button
-                        type="button"
-                        id="cal_take_today_off_action"
-                        onClick={() => {
-                          setShowRestDayMenu(false);
-                          onLifeHappenedToday(new Date());
-                        }}
-                        className="w-full text-left px-2.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-bold flex items-center justify-between transition cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2">
-                          <span>🌴</span>
-                          <span>Take Today Off</span>
-                        </span>
-                        <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">Today</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        id="cal_take_tomorrow_off_action"
-                        onClick={() => {
-                          setShowRestDayMenu(false);
-                          const tomorrow = new Date();
-                          tomorrow.setDate(tomorrow.getDate() + 1);
-                          onLifeHappenedToday(tomorrow);
-                        }}
-                        className="w-full text-left px-2.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2">
-                          <span>🌅</span>
-                          <span>Take Tomorrow Off</span>
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400">Tomorrow</span>
-                      </button>
-                    </div>
-
-                    {/* Custom Date Off */}
-                    <div className="pt-2 border-t border-slate-100 dark:border-white/10 space-y-1.5">
-                      <span className="text-[10px] font-bold text-slate-400 block">Or Choose Specific Date:</span>
-                      <div className="flex gap-1.5">
-                        <input
-                          type="date"
-                          value={customRestDate}
-                          onChange={(e) => setCustomRestDate(e.target.value)}
-                          className="flex-1 text-[11px] p-1.5 bg-slate-100 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-lg text-slate-900 dark:text-white font-mono focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          disabled={!customRestDate}
-                          onClick={() => {
-                            if (customRestDate) {
-                              setShowRestDayMenu(false);
-                              const parts = customRestDate.split("-");
-                              const parsed = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-                              onLifeHappenedToday(parsed);
-                              setCustomRestDate("");
-                            }
-                          }}
-                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition cursor-pointer"
-                        >
-                          Shift
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Calendar Sync Hub (Apple, Google, Outlook) */}
-            <button
-              id="open_sync_sidebar_btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowSyncPanel(true);
-              }}
-              className="p-1.5 sm:px-3 sm:py-1.5 border border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 shadow-2xs active:scale-95"
-              title="Direct Sync with Apple Calendar, Google Calendar, and Microsoft Outlook"
-            >
-              <CalendarIcon className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>Sync Calendars</span>
-              <span className="hidden md:inline-flex text-[9px] bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                Apple • Google • Outlook
-              </span>
-            </button>
-
-            {/* Focus Incomplete Goal (Split Button with Priority & Ordering Menu) */}
-            <div className="relative inline-flex items-center rounded-xl shadow-xs" ref={focusIncompleteMenuRef}>
-              <button
-                id="focus_incomplete_goal_btn"
-                type="button"
-                onClick={() => {
-                  setShowFocusIncompleteMenu(false);
-                  handleFocusMostIncompleteGoal();
-                }}
-                className={`p-1.5 sm:px-2.5 sm:py-1.5 border-y border-l rounded-l-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 ${
-                  incompletePriorityCounts.total > 0
-                    ? focusPriorityFilter === "critical"
-                      ? "bg-rose-100 dark:bg-rose-500/20 hover:bg-rose-200 dark:hover:bg-rose-500/30 text-rose-950 dark:text-rose-200 border-rose-400/80 dark:border-rose-500/50 shadow-xs active:scale-95"
-                      : focusPriorityFilter === "important"
-                      ? "bg-orange-100 dark:bg-orange-500/20 hover:bg-orange-200 dark:hover:bg-orange-500/30 text-orange-950 dark:text-orange-200 border-orange-400/80 dark:border-orange-500/50 shadow-xs active:scale-95"
-                      : focusPriorityFilter === "normal"
-                      ? "bg-blue-100 dark:bg-blue-500/20 hover:bg-blue-200 dark:hover:bg-blue-500/30 text-blue-950 dark:text-blue-200 border-blue-400/80 dark:border-blue-500/50 shadow-xs active:scale-95"
-                      : "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50 shadow-xs active:scale-95"
-                    : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
-                }`}
-                title={
-                  focusPriorityFilter !== "all"
-                    ? `Focus ${focusPriorityFilter.toUpperCase()} past uncompleted sessions (${activeFocusIncompleteSessions.length} sessions)`
-                    : "Focus past uncompleted sessions to catch up now without waiting or re-balancing"
-                }
-              >
-                {focusPriorityFilter === "critical" ? (
-                  <Flame className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 animate-pulse" />
-                ) : focusPriorityFilter === "important" ? (
-                  <AlertTriangle className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-                ) : (
-                  <Compass className={`w-3.5 h-3.5 ${incompletePriorityCounts.total > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-500"}`} />
-                )}
-                <span>
-                  {focusPriorityFilter === "critical"
-                    ? "Focus Critical"
-                    : focusPriorityFilter === "important"
-                    ? "Focus Important"
-                    : focusPriorityFilter === "normal"
-                    ? "Focus Normal"
-                    : "Focus Incomplete"}
-                </span>
-
-                {/* Priority / Total Count Badge */}
-                {incompletePriorityCounts.total > 0 && (
-                  <span
-                    className={`text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-xs ${
-                      focusPriorityFilter === "critical"
-                        ? "bg-rose-500 text-white animate-pulse"
-                        : focusPriorityFilter === "important"
-                        ? "bg-orange-500 text-white animate-pulse"
-                        : focusPriorityFilter === "normal"
-                        ? "bg-blue-500 text-white"
-                        : incompletePriorityCounts.critical > 0
-                        ? "bg-rose-500 text-white animate-pulse"
-                        : "bg-amber-500 text-slate-950 animate-pulse"
-                    }`}
-                    title={
-                      focusPriorityFilter !== "all"
-                        ? `${activeFocusIncompleteSessions.length} ${focusPriorityFilter} incomplete sessions`
-                        : `${incompletePriorityCounts.total} total past incomplete sessions (${incompletePriorityCounts.critical} critical, ${incompletePriorityCounts.important} important, ${incompletePriorityCounts.normal} normal)`
-                    }
-                  >
-                    {focusPriorityFilter === "all"
-                      ? incompletePriorityCounts.total
-                      : activeFocusIncompleteSessions.length}
-                  </span>
-                )}
-              </button>
-
-              {/* Priority Option Selector Dropdown Toggle */}
-              <button
-                id="focus_incomplete_options_btn"
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowFocusIncompleteMenu(prev => !prev);
-                }}
-                className={`p-1.5 border-y border-r rounded-r-xl transition-all cursor-pointer flex items-center justify-center min-h-[32px] px-1.5 ${
-                  incompletePriorityCounts.total > 0
-                    ? focusPriorityFilter === "critical"
-                      ? "bg-rose-100 dark:bg-rose-500/20 hover:bg-rose-200 dark:hover:bg-rose-500/30 text-rose-950 dark:text-rose-200 border-rose-400/80 dark:border-rose-500/50"
-                      : focusPriorityFilter === "important"
-                      ? "bg-orange-100 dark:bg-orange-500/20 hover:bg-orange-200 dark:hover:bg-orange-500/30 text-orange-950 dark:text-orange-200 border-orange-400/80 dark:border-orange-500/50"
-                      : focusPriorityFilter === "normal"
-                      ? "bg-blue-100 dark:bg-blue-500/20 hover:bg-blue-200 dark:hover:bg-blue-500/30 text-blue-950 dark:text-blue-200 border-blue-400/80 dark:border-blue-500/50"
-                      : "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-950 dark:text-amber-200 border-amber-400/80 dark:border-amber-500/50"
-                    : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
-                }`}
-                title="Filter Focus Incomplete by priority status (Critical, Important, Normal, Chronological)"
-              >
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showFocusIncompleteMenu ? "rotate-180" : ""}`} />
-              </button>
-
-              {/* Dropdown Menu */}
-              {showFocusIncompleteMenu && (
-                <div
-                  id="focus_incomplete_menu_dropdown"
-                  className="absolute left-0 top-full mt-1.5 w-72 bg-white dark:bg-slate-900 border border-slate-300 dark:border-white/15 rounded-2xl shadow-xl p-2 z-50 animate-in fade-in zoom-in-95 duration-100"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="flex items-center justify-between px-2.5 py-1 mb-1 border-b border-slate-200 dark:border-white/10">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                      Focus Incomplete Mode
-                    </span>
-                    <span className="text-[10px] font-mono text-slate-400">
-                      {incompletePriorityCounts.total} total
-                    </span>
-                  </div>
-
-                  <div className="space-y-1">
-                    {/* Autopilot Instant Self-Heal Option */}
-                    {onAutoHealSchedule && (
-                      <button
-                        type="button"
-                        id="focus_opt_auto_heal"
-                        onClick={() => {
-                          setShowFocusIncompleteMenu(false);
-                          onAutoHealSchedule();
-                        }}
-                        className="w-full text-left px-2.5 py-2 rounded-xl bg-gradient-to-r from-purple-600/15 via-indigo-600/15 to-emerald-600/15 hover:from-purple-600/25 hover:via-indigo-600/25 hover:to-emerald-600/25 border border-purple-500/30 text-purple-900 dark:text-purple-200 transition flex items-center justify-between group cursor-pointer mb-1 shadow-xs"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-6 h-6 rounded-lg bg-purple-500/20 text-purple-600 dark:text-purple-300 flex items-center justify-center shrink-0">
-                            <Sparkles className="w-3.5 h-3.5 text-yellow-500 dark:text-yellow-300 animate-pulse" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                              <span>Auto-Reschedule Overdue</span>
-                              <span className="text-[9px] bg-purple-500/20 text-purple-700 dark:text-purple-300 px-1 py-0.2 rounded font-extrabold uppercase">
-                                Autopilot
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                              Shifts all {incompletePriorityCounts.total} past sessions to open slots
-                            </div>
-                          </div>
-                        </div>
-                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300">
-                          Clear
-                        </span>
-                      </button>
-                    )}
-
-                    {/* Option 1: Prioritize Most Critical (Status-Based Ordering) */}
-                    <button
-                      type="button"
-                      id="focus_opt_priority_ranked"
-                      onClick={() => {
-                        setShowFocusIncompleteMenu(false);
-                        setFocusPriorityFilter("all");
-                        handleFocusMostIncompleteGoal(0, "all", "priority");
-                      }}
-                      className="w-full text-left px-2.5 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/10 transition flex items-center justify-between group cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-6 h-6 rounded-lg bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
-                          <Flame className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-rose-600 dark:group-hover:text-rose-400">
-                            Critical Goals First
-                          </div>
-                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                            Prioritizes Critical → Important → Normal
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-700 dark:text-rose-300">
-                        {incompletePriorityCounts.critical} crit
-                      </span>
-                    </button>
-
-                    {/* Option: Quick Win First (Lazy / Lowest Effort Mode) */}
-                    <button
-                      type="button"
-                      id="focus_opt_quick_win"
-                      onClick={() => {
-                        setShowFocusIncompleteMenu(false);
-                        setFocusPriorityFilter("all");
-                        handleFocusMostIncompleteGoal(0, "all", "quick_win");
-                      }}
-                      className="w-full text-left px-2.5 py-2 rounded-xl hover:bg-emerald-50 dark:hover:bg-emerald-500/20 transition flex items-center justify-between group cursor-pointer border border-emerald-500/20 bg-emerald-500/5"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                          <Zap className="w-3.5 h-3.5 fill-current" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 flex items-center gap-1.5">
-                            <span>Quick Win First</span>
-                            <span className="text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 px-1 py-0.2 rounded font-extrabold uppercase">
-                              Lazy Mode
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                            Shortest & easiest sessions first to beat inertia
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
-                        Low effort
-                      </span>
-                    </button>
-
-                    {/* Option 2: Strictly Critical Only */}
-                    <button
-                      type="button"
-                      id="focus_opt_critical_only"
-                      onClick={() => {
-                        setShowFocusIncompleteMenu(false);
-                        setFocusPriorityFilter("critical");
-                        handleFocusMostIncompleteGoal(0, "critical", "priority");
-                      }}
-                      className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
-                        focusPriorityFilter === "critical"
-                          ? "bg-rose-50 dark:bg-rose-500/20 border border-rose-300 dark:border-rose-500/40"
-                          : "hover:bg-slate-100 dark:hover:bg-white/10"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-6 h-6 rounded-lg bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
-                          <ShieldAlert className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
-                            <span>Only Critical</span>
-                            {focusPriorityFilter === "critical" && (
-                              <Check className="w-3 h-3 text-rose-600 dark:text-rose-400" />
-                            )}
-                          </div>
-                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                            Filter strictly by highest priority
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-700 dark:text-rose-300">
-                        {incompletePriorityCounts.critical}
-                      </span>
-                    </button>
-
-                    {/* Option 3: Strictly Important Only */}
-                    <button
-                      type="button"
-                      id="focus_opt_important_only"
-                      onClick={() => {
-                        setShowFocusIncompleteMenu(false);
-                        setFocusPriorityFilter("important");
-                        handleFocusMostIncompleteGoal(0, "important", "priority");
-                      }}
-                      className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
-                        focusPriorityFilter === "important"
-                          ? "bg-orange-50 dark:bg-orange-500/20 border border-orange-300 dark:border-orange-500/40"
-                          : "hover:bg-slate-100 dark:hover:bg-white/10"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-6 h-6 rounded-lg bg-orange-500/20 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0">
-                          <AlertTriangle className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
-                            <span>Only Important</span>
-                            {focusPriorityFilter === "important" && (
-                              <Check className="w-3 h-3 text-orange-600 dark:text-orange-400" />
-                            )}
-                          </div>
-                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                            Filter strictly by important sessions
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-700 dark:text-orange-300">
-                        {incompletePriorityCounts.important}
-                      </span>
-                    </button>
-
-                    {/* Option 4: Normal Priority Only */}
-                    <button
-                      type="button"
-                      id="focus_opt_normal_only"
-                      onClick={() => {
-                        setShowFocusIncompleteMenu(false);
-                        setFocusPriorityFilter("normal");
-                        handleFocusMostIncompleteGoal(0, "normal", "priority");
-                      }}
-                      className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
-                        focusPriorityFilter === "normal"
-                          ? "bg-blue-50 dark:bg-blue-500/20 border border-blue-300 dark:border-blue-500/40"
-                          : "hover:bg-slate-100 dark:hover:bg-white/10"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-6 h-6 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                          <CheckCircle className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
-                            <span>Only Normal</span>
-                            {focusPriorityFilter === "normal" && (
-                              <Check className="w-3 h-3 text-blue-600 dark:text-blue-400" />
-                            )}
-                          </div>
-                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                            Filter strictly by standard routine goals
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-700 dark:text-blue-300">
-                        {incompletePriorityCounts.normal}
-                      </span>
-                    </button>
-
-                    <div className="border-t border-slate-200 dark:border-white/10 my-1 pt-1">
-                      {/* Option 5: Strict Chronological Order (All Priorities) */}
-                      <button
-                        type="button"
-                        id="focus_opt_chronological"
-                        onClick={() => {
-                          setShowFocusIncompleteMenu(false);
-                          setFocusPriorityFilter("all");
-                          handleFocusMostIncompleteGoal(0, "all", "chronological");
-                        }}
-                        className={`w-full text-left px-2.5 py-2 rounded-xl transition flex items-center justify-between group cursor-pointer ${
-                          focusPriorityFilter === "all"
-                            ? "bg-amber-50 dark:bg-amber-500/20 border border-amber-300 dark:border-amber-500/40"
-                            : "hover:bg-slate-100 dark:hover:bg-white/10"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-                            <Clock className="w-3.5 h-3.5" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1">
-                              <span>Chronological (All Goals)</span>
-                              {focusPriorityFilter === "all" && (
-                                <Check className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                              )}
-                            </div>
-                            <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                              Earliest scheduled missed session first
-                            </div>
-                          </div>
-                        </div>
-                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-900 dark:text-amber-300">
-                          {incompletePriorityCounts.total}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
             {/* Focus Today's First Goal Button */}
             <button
               id="focus_today_first_goal_btn"
@@ -3743,208 +3307,315 @@ export default function CalendarView({
               )}
             </button>
 
-            {/* Auto Re-balance */}
+            {/* Calendar Sync Hub (Apple, Google, Outlook) */}
             <button
-              id="auto_rebalance_btn"
-              onClick={handleSmartRebalance}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] whitespace-nowrap shrink-0 ${
-                missedSessionsCount > 0
-                  ? "bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-500/30 shadow-md shadow-amber-500/10 animate-pulse font-bold"
-                  : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border-slate-300 dark:border-white/10"
-              }`}
-              title="Shift missed sessions to upcoming free time slots automatically"
+              id="open_sync_sidebar_btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSyncPanel(true);
+              }}
+              className="p-1.5 sm:px-3 sm:py-1.5 border border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 shadow-2xs active:scale-95"
+              title="Direct Sync with Apple Calendar, Google Calendar, and Microsoft Outlook"
             >
-              <RotateCw className={`w-3.5 h-3.5 ${missedSessionsCount > 0 ? "text-amber-600 dark:text-amber-400" : "text-indigo-600 dark:text-indigo-400"}`} />
-              <span>Re-balance</span>
-              {missedSessionsCount > 0 && (
-                <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full">
-                  {missedSessionsCount}
-                </span>
-              )}
+              <CalendarIcon className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+              <span>Sync Calendars</span>
+              <span className="hidden md:inline-flex text-[9px] bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                Apple • Google • Outlook
+              </span>
             </button>
 
-            {/* Align Priorities */}
-            {onAlignPriorities && (
+            {/* Focus Incomplete Goal (Split Button with Priority & Ordering Menu) */}
+            {/* Options & Routines Consolidated Popover */}
+            <div className="relative inline-flex items-center" ref={viewOptionsRef}>
               <button
-                id="align_priorities_btn"
-                onClick={onAlignPriorities}
-                className="p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] bg-slate-100 dark:bg-white/5 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border-slate-300 dark:border-white/10 whitespace-nowrap shrink-0"
-                title="Strictly align daily sessions by priority and circadian energy rhythm"
-              >
-                <ListOrdered className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                <span>Align Priorities</span>
-              </button>
-            )}
-
-            {/* Bio-Energy Modal */}
-            {onOpenEnergyModal && (
-              <button
-                id="cal_energy_profile_btn"
                 type="button"
-                onClick={onOpenEnergyModal}
-                className="p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold min-h-[32px] bg-purple-50 dark:bg-purple-950/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 text-purple-900 dark:text-purple-300 border-purple-300 dark:border-purple-500/30 shadow-xs whitespace-nowrap shrink-0"
-                title={`Configure energy chronotype (${energyProfile.chronotype}), slump protection, and cognitive buffers`}
-              >
-                <Brain className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-                <span>Bio-Energy</span>
-                {energyProfile.slumpProtection && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Slump Shield Active" />
-                )}
-              </button>
-            )}
-
-            {/* Zero-Guilt Rest Day (For Lazy or Unmotivated Days) */}
-            <button
-              id="activate_rest_day_btn"
-              type="button"
-              onClick={handleToggleRestDay}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 active:scale-95 ${
-                restDayActive
-                  ? "bg-teal-100 dark:bg-teal-500/20 hover:bg-teal-200 dark:hover:bg-teal-500/30 text-teal-950 dark:text-teal-200 border-teal-400/80 dark:border-teal-500/50 shadow-xs ring-1 ring-teal-400/40 animate-pulse"
-                  : "bg-slate-100 dark:bg-white/5 hover:bg-teal-50 dark:hover:bg-teal-500/10 text-slate-700 dark:text-slate-300 hover:text-teal-600 dark:hover:text-teal-300 border-slate-300 dark:border-white/10"
-              }`}
-              title="Zero-Guilt Rest Day: Feeling lazy or exhausted? Auto-defer today's remaining tasks across the week with zero streak penalty."
-            >
-              <span className="text-sm">🦥</span>
-              <span>{restDayActive ? "Rest Day Active" : "Rest Day"}</span>
-            </button>
-
-            {/* Streak Shield & Buffer Bank Quick Access */}
-            {onOpenStreakShield && (
-              <button
-                id="open_streak_shield_cal_btn"
-                type="button"
-                onClick={onOpenStreakShield}
-                className="p-1.5 sm:px-2.5 sm:py-1.5 border border-amber-300/80 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/15 hover:bg-amber-100 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95"
-                title="Streak Shield & Emergency Buffer Bank: Spend Flex Tokens or move missed sessions to weekend buffers"
-              >
-                <Shield className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 fill-amber-500/20" />
-                <span>Streak Bank</span>
-              </button>
-            )}
-
-            {/* Delay Today Quick Trigger */}
-            <div ref={delayTodayRef} className="relative z-50 shrink-0">
-              <button
-                id="delay_today_btn"
-                type="button"
+                id="cal_view_options_btn"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setShowDelayTodayMenu(prev => !prev);
+                  setShowViewOptions(prev => !prev);
                 }}
-                className="p-1.5 sm:px-2.5 sm:py-1.5 border border-amber-300 dark:border-amber-500/30 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200 dark:hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95"
-                title="Shift today's remaining uncompleted sessions forward if running late"
+                className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shadow-xs active:scale-95 ${
+                  showViewOptions || missedSessionsCount > 0 || restDayActive
+                    ? "bg-slate-200 dark:bg-white/15 text-slate-900 dark:text-white border-slate-400 dark:border-white/20"
+                    : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
+                }`}
+                title="Schedule Options, Routines, Bio-Energy, Catch-Up & Deferral Controls"
               >
-                <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                <span>Delay Today</span>
-                <ChevronDown className={`w-3 h-3 text-amber-600 dark:text-amber-400 transition-transform duration-200 ${showDelayTodayMenu ? "rotate-180" : ""}`} />
+                <Sliders className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <span>Options & Routines</span>
+                {missedSessionsCount > 0 && (
+                  <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full" title={`${missedSessionsCount} missed sessions to rebalance`}>
+                    {missedSessionsCount}
+                  </span>
+                )}
+                {restDayActive && (
+                  <span className="text-xs" title="Rest day active">🦥</span>
+                )}
+                <ChevronDown className={`w-3 h-3 text-slate-500 dark:text-slate-400 transition-transform duration-200 ${showViewOptions ? "rotate-180" : ""}`} />
               </button>
-              {showDelayTodayMenu && (
-                <div 
-                  className="absolute left-0 sm:left-0 top-full mt-1.5 w-60 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/20 rounded-xl shadow-2xl p-2.5 z-50 text-left animate-fade-in space-y-1.5 ring-1 ring-black/5"
+
+              {showViewOptions && (
+                <div
+                  className="absolute right-0 sm:left-0 top-full mt-1.5 w-80 max-w-[calc(100vw-2rem)] bg-white dark:bg-[#121320] border border-slate-200 dark:border-white/15 rounded-2xl shadow-2xl p-3 z-50 text-left animate-in fade-in zoom-in-95 duration-150 space-y-3 ring-1 ring-black/10"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 py-1">Shift Remaining Sessions:</p>
-                  
-                  {/* Shift to Now Option */}
-                  <button
-                    type="button"
-                    id="delay_today_now_btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday("now");
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-500/20 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-900 dark:text-emerald-300 font-bold flex items-center justify-between cursor-pointer transition-colors mb-1 shadow-xs"
-                    title="Shift today's remaining uncompleted sessions to start immediately at the current time"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                      </span>
-                      <span>Now (Current Time)</span>
-                    </div>
-                    <span className="text-[10px] bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                      {now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-white/10">
+                    <span className="text-xs font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Calendar Options & Routines</span>
                     </span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowViewOptions(false)}
+                      className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
 
-                  <div className="border-t border-slate-200 dark:border-white/10 my-1"></div>
+                  {/* SECTION 1: Catch-Up & Optimization */}
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1">Catch-Up & Optimization</p>
+                    
+                    {/* Auto Re-balance */}
+                    <button
+                      type="button"
+                      id="auto_rebalance_btn"
+                      onClick={() => {
+                        setShowViewOptions(false);
+                        handleSmartRebalance();
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-amber-500/10 hover:border-amber-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2">
+                        <RotateCw className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 group-hover:rotate-180 transition-transform duration-500" />
+                        <div>
+                          <span className="text-slate-900 dark:text-white block">Auto Re-balance Missed</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Shift missed sessions into upcoming free slots</span>
+                        </div>
+                      </div>
+                      {missedSessionsCount > 0 ? (
+                        <span className="bg-amber-500 text-black text-[10px] font-black px-1.5 py-0.5 rounded-full">
+                          {missedSessionsCount}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 font-mono">0 missed</span>
+                      )}
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday(30);
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
-                  >
-                    <span>+30 Minutes</span>
-                    <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday(60);
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
-                  >
-                    <span>+1 Hour</span>
-                    <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday(120);
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded text-xs text-slate-900 dark:text-white font-medium flex items-center justify-between cursor-pointer"
-                  >
-                    <span>+2 Hours</span>
-                    <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">⏩</span>
-                  </button>
-                  <div className="border-t border-slate-200 dark:border-white/10 my-1"></div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday(24 * 60);
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
-                  >
-                    <span>+1 Day</span>
-                    <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">📅</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday(2 * 24 * 60);
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
-                  >
-                    <span>+2 Days</span>
-                    <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">📅</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelayRemainingToday(7 * 24 * 60);
-                      setShowDelayTodayMenu(false);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-500/20 rounded text-xs text-amber-900 dark:text-amber-200 font-bold flex items-center justify-between cursor-pointer"
-                  >
-                    <span>+1 Week</span>
-                    <span className="text-[10px] text-amber-600 dark:text-amber-300 font-bold">🗓️</span>
-                  </button>
+                    {/* Focus Incomplete Quick Catch-up */}
+                    <button
+                      type="button"
+                      id="focus_incomplete_goal_btn"
+                      onClick={() => {
+                        setShowViewOptions(false);
+                        handleFocusMostIncompleteGoal();
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-rose-500/10 hover:border-rose-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Target className="w-3.5 h-3.5 text-rose-500" />
+                        <div>
+                          <span className="text-slate-900 dark:text-white block">Focus Most Incomplete Goal</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Immediate catch-up on high-deficit goals</span>
+                        </div>
+                      </div>
+                      {incompletePriorityCounts.total > 0 && (
+                        <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">
+                          {incompletePriorityCounts.total}
+                        </span>
+                      )}
+                    </button>
+
+                    {/* Align Priorities */}
+                    {onAlignPriorities && (
+                      <button
+                        type="button"
+                        id="align_priorities_btn"
+                        onClick={() => {
+                          setShowViewOptions(false);
+                          onAlignPriorities();
+                        }}
+                        className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-indigo-500/10 hover:border-indigo-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <ListOrdered className="w-3.5 h-3.5 text-indigo-500" />
+                          <div>
+                            <span className="text-slate-900 dark:text-white block">Align Daily Priorities</span>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Strictly sort slots by priority & energy rhythm</span>
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* SECTION 2: Energy & Rhythm */}
+                  <div className="space-y-1.5 pt-1 border-t border-slate-100 dark:border-white/10">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1">Energy & Rhythm</p>
+                    
+                    {/* Bio-Energy Modal */}
+                    {onOpenEnergyModal && (
+                      <button
+                        type="button"
+                        id="cal_energy_profile_btn"
+                        onClick={() => {
+                          setShowViewOptions(false);
+                          onOpenEnergyModal();
+                        }}
+                        className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-purple-500/10 hover:border-purple-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Brain className="w-3.5 h-3.5 text-purple-500" />
+                          <div>
+                            <span className="text-slate-900 dark:text-white block">Bio-Energy Rhythm</span>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">
+                              Chronotype: <strong className="capitalize text-purple-600 dark:text-purple-300">{energyProfile.chronotype}</strong> • Slump Shield: {energyProfile.slumpProtection ? "On" : "Off"}
+                            </span>
+                          </div>
+                        </div>
+                        {energyProfile.slumpProtection && (
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                        )}
+                      </button>
+                    )}
+
+                    {/* Delay Today Remaining Sessions Sub-menu / Trigger */}
+                    <div className="p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
+                        <span className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-amber-500" />
+                          <span>Shift Remaining Today</span>
+                        </span>
+                        <button
+                          type="button"
+                          id="delay_today_now_quick_btn"
+                          onClick={() => {
+                            setShowViewOptions(false);
+                            handleDelayRemainingToday("now");
+                          }}
+                          className="px-2 py-0.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-800 dark:text-emerald-300 rounded text-[10px] font-bold transition cursor-pointer"
+                        >
+                          Shift to Now ({now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowViewOptions(false);
+                            handleDelayRemainingToday(30);
+                          }}
+                          className="px-2 py-1 text-[11px] font-semibold bg-white dark:bg-white/10 hover:bg-amber-500/20 rounded border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 transition text-center cursor-pointer"
+                        >
+                          +30 min
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowViewOptions(false);
+                            handleDelayRemainingToday(60);
+                          }}
+                          className="px-2 py-1 text-[11px] font-semibold bg-white dark:bg-white/10 hover:bg-amber-500/20 rounded border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 transition text-center cursor-pointer"
+                        >
+                          +1 hour
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowViewOptions(false);
+                            handleDelayRemainingToday(120);
+                          }}
+                          className="px-2 py-1 text-[11px] font-semibold bg-white dark:bg-white/10 hover:bg-amber-500/20 rounded border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 transition text-center cursor-pointer"
+                        >
+                          +2 hours
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SECTION 3: Recovery & Rest */}
+                  <div className="space-y-1.5 pt-1 border-t border-slate-100 dark:border-white/10">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1">Rest & Buffers</p>
+                    
+                    {/* Zero-Guilt Rest Day Toggle */}
+                    <button
+                      type="button"
+                      id="activate_rest_day_btn"
+                      onClick={() => {
+                        setShowViewOptions(false);
+                        handleToggleRestDay();
+                      }}
+                      className={`w-full text-left px-2.5 py-2 rounded-xl border text-xs font-bold flex items-center justify-between transition cursor-pointer ${
+                        restDayActive
+                          ? "bg-teal-500/20 border-teal-500/40 text-teal-900 dark:text-teal-200"
+                          : "bg-slate-50 dark:bg-white/5 hover:bg-teal-500/10 hover:border-teal-500/30 border-slate-200 dark:border-white/10 text-slate-900 dark:text-white"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm">🦥</span>
+                        <div>
+                          <span>{restDayActive ? "Rest Day Active (Tap to Resume)" : "Zero-Guilt Rest Day"}</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal block">
+                            {"Defer today's tasks safely with zero streak penalty"}
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-800 dark:text-teal-300">
+                        {restDayActive ? "Active" : "Toggle"}
+                      </span>
+                    </button>
+
+                    {/* Life Happened / Rest Day Specific Date */}
+                    {onLifeHappenedToday && (
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          id="cal_take_today_off_action"
+                          onClick={() => {
+                            setShowViewOptions(false);
+                            onLifeHappenedToday(new Date());
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 rounded-lg text-[11px] font-bold text-slate-700 dark:text-slate-300 transition text-center cursor-pointer border border-slate-200 dark:border-white/10"
+                        >
+                          🌴 Take Today Off
+                        </button>
+                        <button
+                          type="button"
+                          id="cal_take_tomorrow_off_action"
+                          onClick={() => {
+                            setShowViewOptions(false);
+                            const tomorrow = new Date();
+                            tomorrow.setDate(tomorrow.getDate() + 1);
+                            onLifeHappenedToday(tomorrow);
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 rounded-lg text-[11px] font-bold text-slate-700 dark:text-slate-300 transition text-center cursor-pointer border border-slate-200 dark:border-white/10"
+                        >
+                          🌅 Take Tomorrow Off
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Streak Shield & Buffer Bank */}
+                    {onOpenStreakShield && (
+                      <button
+                        type="button"
+                        id="open_streak_shield_cal_btn"
+                        onClick={() => {
+                          setShowViewOptions(false);
+                          onOpenStreakShield();
+                        }}
+                        className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-amber-500/10 hover:border-amber-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Shield className="w-3.5 h-3.5 text-amber-500 fill-amber-500/20" />
+                          <div>
+                            <span className="text-slate-900 dark:text-white block">Streak Shield & Buffer Bank</span>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Spend Flex Tokens or use weekend buffer slots</span>
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -3963,6 +3634,38 @@ export default function CalendarView({
           </div>
         </div>
       </div>
+
+      {/* 1-Click Schedule Conflict Resolver Banner */}
+      {detectedConflictsCount > 0 && onAutoHealSchedule && (
+        <div 
+          id="cal_conflict_alert_banner"
+          className="bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between text-xs text-amber-950 dark:text-amber-200 animate-fade-in font-medium"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="flex h-2 w-2 relative shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+            </span>
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span className="font-bold truncate">
+              ⚡ Detected {detectedConflictsCount} schedule {detectedConflictsCount === 1 ? "conflict" : "conflicts"} (overlapping sessions)
+            </span>
+            <span className="hidden sm:inline text-[11px] text-amber-800/80 dark:text-amber-300/70">
+              — Autopilot can deconflict overlapping times and add recovery buffers
+            </span>
+          </div>
+          <button
+            id="cal_resolve_conflicts_btn"
+            type="button"
+            onClick={onAutoHealSchedule}
+            className="px-3 py-1 bg-amber-600 hover:bg-amber-500 active:scale-95 text-white font-bold text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap shrink-0 ml-2"
+            title="Automatically resolve schedule overlaps and add recovery buffers"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-yellow-200" />
+            <span>Auto-Resolve Conflicts</span>
+          </button>
+        </div>
+      )}
 
       {/* Zero-Guilt Rest Day Active Banner */}
       {restDayActive && (
@@ -4262,44 +3965,67 @@ export default function CalendarView({
 
             {/* Hourly schedule rows */}
             <div className="relative flex-1 bg-transparent">
-              {hours.map((hour) => (
-                <div key={hour} style={{ height: `${hourHeightWeek}px`, minHeight: `${hourHeightWeek}px` }} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200/70 dark:border-white/5">
-                  {/* Hour Label */}
-                  <div className="p-1 px-2.5 text-right text-[10px] font-mono font-medium text-slate-500 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 bg-transparent select-none whitespace-nowrap self-center">
-                    {hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}
-                  </div>
+              {hours.map((hour) => {
+                const hourZone = getHourEnergyZone(hour);
+                return (
+                  <div key={hour} style={{ height: `${hourHeightWeek}px`, minHeight: `${hourHeightWeek}px` }} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-200/70 dark:border-white/5">
+                    {/* Hour Label */}
+                    <div 
+                      className={`p-1 px-2 text-right text-[10px] font-mono font-medium border-r border-slate-200 dark:border-white/10 select-none whitespace-nowrap self-center flex items-center justify-end gap-1 ${
+                        hourZone?.isPeak 
+                          ? "text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/[0.04]" 
+                          : hourZone?.isSlump 
+                            ? "text-amber-600 dark:text-amber-400 font-semibold bg-amber-500/[0.04]" 
+                            : "text-slate-500 dark:text-slate-400 bg-transparent"
+                      }`}
+                      title={hourZone ? `${hourZone.name}: ${hourZone.description}` : undefined}
+                    >
+                      {hourZone?.isPeak && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title="⚡ Biological Peak Focus Window" />
+                      )}
+                      {hourZone?.isSlump && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="🛡️ Slump Shield Window" />
+                      )}
+                      <span>{hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}</span>
+                    </div>
 
-                  {/* Day Cells background */}
-                  {Array.from({ length: 7 }).map((_, dIdx) => {
-                    const isCellOver = dragOverCell?.hour === hour && dragOverCell?.dayIdx === dIdx;
-                    return (
-                      <div 
-                        key={dIdx} 
-                        onDragOver={(e) => handleDragOver(e, hour, dIdx)}
-                        onDragLeave={handleDragLeave}
-                        onDrop={(e) => handleDropEvent(e, hour, dIdx)}
-                        className={`border-r border-slate-200/70 dark:border-white/5 relative group transition-colors ${
-                          isCellOver ? "bg-indigo-500/20 border-2 border-indigo-400 shadow-inner" : "hover:bg-slate-50/80 dark:hover:bg-white/5"
-                        }`}
-                      >
-                        {/* Empty cell hover creation help */}
-                        <button 
-                          onClick={() => {
-                            const dateObj = weekDates[dIdx];
-                            setNewDay(dateObj.toISOString().split("T")[0]);
-                            setNewStartTime(`${String(hour).padStart(2, "0")}:00`);
-                            setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
-                            setShowAddModal(true);
-                          }}
-                          className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer"
+                    {/* Day Cells background */}
+                    {Array.from({ length: 7 }).map((_, dIdx) => {
+                      const isCellOver = dragOverCell?.hour === hour && dragOverCell?.dayIdx === dIdx;
+                      const zoneBg = hourZone?.isPeak 
+                        ? "bg-emerald-500/[0.02] dark:bg-emerald-500/[0.03]" 
+                        : hourZone?.isSlump 
+                          ? "bg-amber-500/[0.02] dark:bg-amber-500/[0.025]" 
+                          : "";
+                      return (
+                        <div 
+                          key={dIdx} 
+                          onDragOver={(e) => handleDragOver(e, hour, dIdx)}
+                          onDragLeave={handleDragLeave}
+                          onDrop={(e) => handleDropEvent(e, hour, dIdx)}
+                          className={`border-r border-slate-200/70 dark:border-white/5 relative group transition-colors ${zoneBg} ${
+                            isCellOver ? "bg-indigo-500/20 border-2 border-indigo-400 shadow-inner" : "hover:bg-slate-50/80 dark:hover:bg-white/5"
+                          }`}
                         >
-                          <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
+                          {/* Empty cell hover creation help */}
+                          <button 
+                            onClick={() => {
+                              const dateObj = weekDates[dIdx];
+                              setNewDay(dateObj.toISOString().split("T")[0]);
+                              setNewStartTime(`${String(hour).padStart(2, "0")}:00`);
+                              setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
+                              setShowAddModal(true);
+                            }}
+                            className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer"
+                          >
+                            <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
 
               {/* Google Calendar Current Time Horizontal Line */}
               {todayIdx !== -1 && currentTopPixelWeek >= 0 && currentTopPixelWeek <= hours.length * hourHeightWeek && (
@@ -4763,6 +4489,13 @@ export default function CalendarView({
                   };
                   return getPriorityScore(b) - getPriorityScore(a);
                 });
+                const hourZone = getHourEnergyZone(hour);
+                const dayZoneBg = hourZone?.isPeak 
+                  ? "bg-emerald-500/[0.02] dark:bg-emerald-500/[0.03]" 
+                  : hourZone?.isSlump 
+                    ? "bg-amber-500/[0.02] dark:bg-amber-500/[0.025]" 
+                    : "";
+
                 const isDayCellOver = dragOverCell?.hour === hour;
 
                 return (
@@ -4771,12 +4504,35 @@ export default function CalendarView({
                     onDragOver={(e) => handleDragOver(e, hour)}
                     onDragLeave={handleDragLeave}
                     onDrop={(e) => handleDropEvent(e, hour)}
-                    className={`grid grid-cols-[100px_1fr] border-b border-slate-200/70 dark:border-white/5 h-24 min-h-24 transition-colors ${
+                    className={`grid grid-cols-[100px_1fr] border-b border-slate-200/70 dark:border-white/5 h-24 min-h-24 transition-colors ${dayZoneBg} ${
                       isDayCellOver ? "bg-indigo-500/20 border-2 border-indigo-400 shadow-inner" : ""
                     }`}
                   >
-                    <div className="p-3 text-right text-xs font-mono font-medium text-slate-500 dark:text-slate-400 border-r border-slate-200 dark:border-white/10 bg-transparent select-none">
-                      {hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}
+                    <div 
+                      className={`p-2.5 px-3 text-right text-xs font-mono font-medium border-r border-slate-200 dark:border-white/10 select-none flex flex-col justify-center items-end ${
+                        hourZone?.isPeak 
+                          ? "text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/[0.04]" 
+                          : hourZone?.isSlump 
+                            ? "text-amber-600 dark:text-amber-400 font-semibold bg-amber-500/[0.04]" 
+                            : "text-slate-500 dark:text-slate-400 bg-transparent"
+                      }`}
+                      title={hourZone ? `${hourZone.name}: ${hourZone.description}` : undefined}
+                    >
+                      <div className="flex items-center gap-1">
+                        {hourZone?.isPeak && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />}
+                        {hourZone?.isSlump && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
+                        <span>{hour === 12 ? "12:00 PM" : hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`}</span>
+                      </div>
+                      {hourZone?.isPeak && (
+                        <span className="text-[8.5px] font-sans font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                          Peak Focus
+                        </span>
+                      )}
+                      {hourZone?.isSlump && (
+                        <span className="text-[8.5px] font-sans font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                          Slump Shield
+                        </span>
+                      )}
                     </div>
                     
                     <div className="p-2 flex flex-wrap gap-2 items-center bg-transparent relative group">
