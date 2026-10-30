@@ -56,8 +56,9 @@ import {
 } from "lucide-react";
 import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, SessionSubStep, AutopilotMode, AutopilotPacing, DailyBurnoutLimits } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
-import FocusTimerModal, { triggerFocusTimer } from "./FocusTimerModal";
+import FocusTimerModal, { triggerFocusTimer, getActiveTimerSnapshot, ActiveTimerData } from "./FocusTimerModal";
 import CalendarSyncModal from "./CalendarSyncModal";
+import WeeklyHabitReportModal from "./WeeklyHabitReportModal";
 import { 
   getGoogleCalendarEventUrl, 
   getOutlookCalendarEventUrl, 
@@ -136,6 +137,7 @@ interface CalendarViewProps {
   onUndoAutopilot?: () => void;
   onLifeHappenedToday?: (chosenDate?: Date) => void;
   burnoutLimits?: DailyBurnoutLimits;
+  onNotify?: (title: string, message: string, type: any) => void;
 }
 
 export default function CalendarView({
@@ -168,7 +170,8 @@ export default function CalendarView({
   canUndoAutopilot = false,
   onUndoAutopilot,
   onLifeHappenedToday,
-  burnoutLimits
+  burnoutLimits,
+  onNotify
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -242,6 +245,22 @@ export default function CalendarView({
     const endMs = new Date(evt.end).getTime();
     const durationMins = overrideDuration || Math.max(5, Math.round((endMs - startMs) / (1000 * 60)));
     
+    const nowMs = Date.now();
+    // If starting an event early before its scheduled start time, update its calendar slot to start NOW
+    if (startMs > nowMs && onEditEvent) {
+      const newStart = new Date(nowMs).toISOString();
+      const newEnd = new Date(nowMs + durationMins * 60 * 1000).toISOString();
+      onEditEvent(evt.id, { start: newStart, end: newEnd });
+    }
+
+    try {
+      localStorage.setItem("calendar_spotlight_event_id", evt.id);
+      if (evt.goalId) localStorage.setItem("calendar_spotlight_goal_id", evt.goalId);
+      window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+        detail: { eventId: evt.id, goalId: evt.goalId || null }
+      }));
+    } catch {}
+
     const associatedGoal = goals.find(g => g.id === evt.goalId);
 
     // Suppress redundant pre-session alerts because user is studying this event right now
@@ -502,6 +521,40 @@ export default function CalendarView({
   const [dragOverCell, setDragOverCell] = useState<{ dayIdx?: number; hour: number } | null>(null);
   const [rebalanceStatus, setRebalanceStatus] = useState<string | null>(null);
 
+  // Interactive Live Drag-to-Resize State
+  const [resizingEvent, setResizingEvent] = useState<{
+    eventId: string;
+    initialY: number;
+    initialDuration: number;
+    currentDuration: number;
+    startIso: string;
+  } | null>(null);
+
+  // Weekly AI Habit Report Card Modal State
+  const [showWeeklyReportModal, setShowWeeklyReportModal] = useState<boolean>(false);
+
+  // Auto-prompt Sunday Weekly AI Habit Report Card
+  useEffect(() => {
+    const today = new Date();
+    if (today.getDay() === 0) { // Sunday
+      const todayDateStr = today.toDateString();
+      const lastRecapSeen = localStorage.getItem("last_sunday_report_seen");
+      if (lastRecapSeen !== todayDateStr) {
+        const timer = setTimeout(() => {
+          setShowWeeklyReportModal(true);
+          localStorage.setItem("last_sunday_report_seen", todayDateStr);
+        }, 1200);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleOpenReport = () => setShowWeeklyReportModal(true);
+    window.addEventListener("open_weekly_habit_report", handleOpenReport);
+    return () => window.removeEventListener("open_weekly_habit_report", handleOpenReport);
+  }, []);
+
   // Spotlight / Start From Incomplete Goals State
   const [spotlightEventId, setSpotlightEventId] = useState<string | null>(() => {
     try {
@@ -532,6 +585,87 @@ export default function CalendarView({
     window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
       detail: { eventId, goalId: goalId || null }
     }));
+  };
+
+  // Real-time Active Focus Timer state
+  const [activeTimer, setActiveTimer] = useState<ActiveTimerData | null>(() => getActiveTimerSnapshot());
+
+  useEffect(() => {
+    const handleTimerChange = (e: any) => {
+      const detail = e.detail || null;
+      setActiveTimer(detail);
+    };
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "active_study_timer") {
+        setActiveTimer(getActiveTimerSnapshot());
+      }
+    };
+    window.addEventListener("focus_timer_state_change" as any, handleTimerChange);
+    window.addEventListener("focus_session_completed" as any, () => setActiveTimer(null));
+    window.addEventListener("session_completed_event" as any, () => setActiveTimer(null));
+    window.addEventListener("storage", handleStorageChange);
+    return () => {
+      window.removeEventListener("focus_timer_state_change" as any, handleTimerChange);
+      window.removeEventListener("focus_session_completed" as any, () => setActiveTimer(null));
+      window.removeEventListener("session_completed_event" as any, () => setActiveTimer(null));
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
+
+  // Helper to determine whether an event is active in focus timer
+  const isEventActiveInTimer = (evt: CalendarEvent): boolean => {
+    if (!activeTimer || activeTimer.isCompleted) return false;
+    if (!activeTimer.isRunning && (!activeTimer.timeRemaining || activeTimer.timeRemaining <= 0)) return false;
+
+    if (activeTimer.eventId && activeTimer.eventId === evt.id) return true;
+    if (activeTimer.goalId && evt.goalId && activeTimer.goalId === evt.goalId) return true;
+
+    const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+    const cleanEvtTitle = clean(evt.title);
+    const cleanTimerTitle = clean(activeTimer.title);
+    if (cleanEvtTitle && cleanTimerTitle) {
+      if (cleanEvtTitle === cleanTimerTitle || cleanEvtTitle.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanEvtTitle)) return true;
+      const evtWords = cleanEvtTitle.split(/\s+/).filter(w => w.length >= 3);
+      const timerWords = cleanTimerTitle.split(/\s+/).filter(w => w.length >= 3);
+      if (evtWords.some(w => timerWords.includes(w))) return true;
+    }
+
+    const tiedGoal = goals.find(g => g.id === evt.goalId);
+    const cleanGoalName = clean(tiedGoal?.name);
+    if (cleanGoalName && cleanTimerTitle) {
+      if (cleanGoalName === cleanTimerTitle || cleanGoalName.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanGoalName)) return true;
+    }
+
+    return false;
+  };
+
+  // Helper to determine if an event is currently happening right now
+  const isEventHappeningNow = (evt: CalendarEvent, s: Date, e: Date, nowTime: number): boolean => {
+    // CRITICAL: A completed event is NEVER happening now!
+    if (evt.completed) return false;
+
+    // 1. If currently being studied in active focus timer:
+    if (isEventActiveInTimer(evt)) return true;
+
+    // 2. If the current wall-clock falls in the event's scheduled window:
+    if (nowTime >= s.getTime() && nowTime <= e.getTime()) return true;
+
+    // 3. Early start / Early completed predecessor:
+    // If the predecessor session scheduled for today finished early, and this event is spotlighted as the target goal:
+    const isToday = isSameDay(s, now);
+    if (isToday && spotlightEventId === evt.id) {
+      const hasOtherUncompletedSlotted = events.some(other =>
+        other.id !== evt.id &&
+        !other.completed &&
+        new Date(other.start).getTime() <= nowTime &&
+        new Date(other.end).getTime() >= nowTime
+      );
+      if (!hasOtherUncompletedSlotted) {
+        return true;
+      }
+    }
+
+    return false;
   };
 
   const getHourEnergyZone = (hour: number) => {
@@ -798,8 +932,72 @@ export default function CalendarView({
       end: newEnd.toISOString()
     });
 
+    const dayLabel = targetDayIdx !== undefined && weekDates[targetDayIdx]
+      ? weekDates[targetDayIdx].toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
+      : "Selected Day";
+    const timeLabel = newStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+    onNotify?.(
+      "📅 Session Rescheduled",
+      `Moved "${targetEvt.title}" to ${dayLabel} at ${timeLabel}.`,
+      "success"
+    );
+
     setDraggedEventId(null);
   };
+
+  const handleStartResize = (e: React.MouseEvent, evt: CalendarEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startObj = new Date(evt.start);
+    const endObj = new Date(evt.end);
+    const initialDuration = Math.max(15, Math.round((endObj.getTime() - startObj.getTime()) / 60000));
+
+    setResizingEvent({
+      eventId: evt.id,
+      initialY: e.clientY,
+      initialDuration,
+      currentDuration: initialDuration,
+      startIso: evt.start
+    });
+  };
+
+  useEffect(() => {
+    if (!resizingEvent) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaY = e.clientY - resizingEvent.initialY;
+      // 60px is hourHeight, so ~1px per minute. Snap to 15-minute intervals.
+      const deltaMinutes = Math.round(deltaY / 15) * 15;
+      const newDuration = Math.max(15, resizingEvent.initialDuration + deltaMinutes);
+      setResizingEvent(prev => prev ? { ...prev, currentDuration: newDuration } : null);
+    };
+
+    const handleMouseUp = () => {
+      if (resizingEvent && onEditEvent) {
+        const startObj = new Date(resizingEvent.startIso);
+        const newEnd = new Date(startObj.getTime() + resizingEvent.currentDuration * 60000);
+        onEditEvent(resizingEvent.eventId, {
+          end: newEnd.toISOString()
+        });
+        const targetEvt = events.find(e => e.id === resizingEvent.eventId);
+        const title = targetEvt ? targetEvt.title : "Session";
+        onNotify?.(
+          "⏱️ Session Duration Updated",
+          `Set "${title}" duration to ${resizingEvent.currentDuration} minutes.`,
+          "success"
+        );
+      }
+      setResizingEvent(null);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [resizingEvent, onEditEvent, events, onNotify]);
 
   const handleAdjustDuration = (e: React.MouseEvent, evt: CalendarEvent, deltaMinutes: number) => {
     e.stopPropagation();
@@ -3324,6 +3522,24 @@ export default function CalendarView({
               </span>
             </button>
 
+            {/* Weekly AI Habit Report Card Trigger */}
+            <button
+              id="open_weekly_report_card_btn"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowWeeklyReportModal(true);
+              }}
+              className="p-1.5 sm:px-3 sm:py-1.5 border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-purple-500/15 to-indigo-500/15 hover:from-amber-500/25 hover:to-indigo-500/25 text-amber-950 dark:text-amber-200 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 shadow-2xs active:scale-95"
+              title="Open Weekly AI Habit Report Card & Sunday Recap"
+            >
+              <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span>Report Card</span>
+              <span className="hidden sm:inline-flex text-[9px] bg-amber-500/25 text-amber-900 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                Weekly
+              </span>
+            </button>
+
             {/* Focus Incomplete Goal (Split Button with Priority & Ordering Menu) */}
             {/* Options & Routines Consolidated Popover */}
             <div className="relative inline-flex items-center" ref={viewOptionsRef}>
@@ -3747,6 +3963,24 @@ export default function CalendarView({
         }}
       />
 
+      {/* Weekly AI Habit Report Card & Sunday Recap Modal */}
+      <WeeklyHabitReportModal
+        isOpen={showWeeklyReportModal}
+        onClose={() => setShowWeeklyReportModal(false)}
+        goals={goals}
+        events={events}
+        availability={availability || []}
+        energyProfile={energyProfile || DEFAULT_USER_ENERGY_PROFILE}
+        onApplyScheduleAdjustment={(updatedEvents, message) => {
+          if (onBulkEditEvents) {
+            const updates = updatedEvents.map(e => ({ id: e.id, fields: { start: e.start, end: e.end } }));
+            onBulkEditEvents(updates);
+          }
+          onNotify?.("AI Schedule Applied ✨", message, "success");
+        }}
+        onNotify={onNotify}
+      />
+
       {/* Quick Single-Event Sync & Push Popover Modal */}
       {eventSyncMenuEvt && (
         <div 
@@ -4016,10 +4250,19 @@ export default function CalendarView({
                               setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
                               setShowAddModal(true);
                             }}
-                            className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer"
+                            className={`absolute inset-0 opacity-0 group-hover:opacity-100 bg-indigo-500/10 flex items-center justify-center transition-opacity cursor-pointer ${
+                              draggedEventId ? "pointer-events-none" : ""
+                            }`}
                           >
                             <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
                           </button>
+
+                          {/* Live Drop Preview Overlay */}
+                          {isCellOver && (
+                            <div className="absolute inset-1 rounded-lg border-2 border-dashed border-indigo-500 dark:border-indigo-400 bg-indigo-500/20 dark:bg-indigo-500/30 flex items-center justify-center text-[10px] font-black text-indigo-700 dark:text-indigo-200 pointer-events-none z-20 animate-pulse uppercase tracking-wider">
+                              Drop Here
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -4066,7 +4309,12 @@ export default function CalendarView({
                 const hourHeight = hourHeightWeek; // pixels per hour
                 const minOffsetHour = gridStartHour; // dynamic start hour
                 const topPixel = (startHour - minOffsetHour) * hourHeight;
-                const durationHours = Math.max(endHour - startHour, 0.25);
+                
+                const isThisResizing = resizingEvent?.eventId === evt.id;
+                const activeDurationMinutes = isThisResizing 
+                  ? resizingEvent.currentDuration 
+                  : Math.max(15, Math.round((evtEnd.getTime() - evtStart.getTime()) / 60000));
+                const durationHours = Math.max(activeDurationMinutes / 60, 0.25);
                 const rawHeightPixel = durationHours * hourHeight;
                 const heightPixel = Math.max(rawHeightPixel, 26); // clean min height
 
@@ -4082,13 +4330,15 @@ export default function CalendarView({
                   <div
                     key={evt.id}
                     id={`event_card_week_${evt.id}`}
-                    draggable={true}
+                    draggable={!isThisResizing}
                     onDragStart={(e) => handleDragStart(e, evt.id)}
                     onClick={() => handleTriggerEditEvent(evt)}
                     onMouseEnter={() => handleCardMouseEnter(evt.id)}
                     onMouseLeave={() => handleCardMouseLeave(evt.id)}
                     className={`cal-event-card absolute p-2 border border-l-4 rounded-xl text-left cursor-pointer select-none transition-all duration-150 ${
-                      draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
+                      isThisResizing
+                        ? "shadow-2xl ring-2 ring-indigo-400 z-[150] scale-[1.01]"
+                        : draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
                     } ${
                       spotlightEventId === evt.id
                         ? "shadow-2xl ring-4 ring-amber-400 dark:ring-amber-300 z-[130] scale-[1.03] animate-pulse"
@@ -4103,8 +4353,8 @@ export default function CalendarView({
                       width: isHovered && totalCols > 1 ? `calc(((100% - 80px) / 7) - 2px)` : subWidth,
                       minWidth: isHovered ? "165px" : undefined,
                       top: `${topPixel}px`,
-                      height: isHovered ? "auto" : `${heightPixel}px`,
-                      minHeight: isHovered ? `${Math.max(heightPixel, 185)}px` : undefined,
+                      height: isHovered && !isThisResizing ? "auto" : `${heightPixel}px`,
+                      minHeight: isHovered && !isThisResizing ? `${Math.max(heightPixel, 185)}px` : undefined,
                       borderLeftColor: evt.completed ? "#10b981" : colors.borderLeftColor,
                       borderColor: evt.completed ? (isLightMode ? "#86efac" : "rgba(16, 185, 129, 0.45)") : colors.cardBorder,
                       backgroundColor: evt.completed 
@@ -4136,6 +4386,11 @@ export default function CalendarView({
                             {(evt.isBufferCatchUp || evt.title?.includes("[Buffer Catch-Up]")) && (
                               <span className="text-[7.5px] bg-indigo-500/20 text-indigo-300 border border-indigo-400/40 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5" title="Rescheduled Catch-Up Session">
                                 <Shield className="w-2 h-2 text-indigo-400" /> CATCH-UP
+                              </span>
+                            )}
+                            {isThisResizing && (
+                              <span className="cal-resizing-badge text-[7.5px] bg-indigo-600 text-white font-mono font-black px-1.5 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5 animate-pulse" title="Resizing session duration">
+                                <Clock className="w-2 h-2" /> {resizingEvent?.currentDuration}m
                               </span>
                             )}
                           </div>
@@ -4437,6 +4692,16 @@ export default function CalendarView({
                         </div>
                       )}
                     </div>
+
+                    {/* Bottom Drag-to-Resize Grip Handle (Snap 15m) */}
+                    <div
+                      id={`resize_handle_week_${evt.id}`}
+                      onMouseDown={(e) => handleStartResize(e, evt)}
+                      className="absolute bottom-0 left-0 right-0 h-2.5 cursor-ns-resize group/resize flex items-center justify-center hover:bg-indigo-500/25 rounded-b-xl transition-colors z-30"
+                      title="Drag bottom handle to adjust session duration (15m increments)"
+                    >
+                      <div className="w-8 h-1 rounded-full bg-slate-400/40 group-hover/resize:bg-indigo-500 dark:bg-slate-400/40 dark:group-hover/resize:bg-indigo-400 transition-colors shadow-2xs" />
+                    </div>
                   </div>
                 );
               })}
@@ -4536,6 +4801,12 @@ export default function CalendarView({
                     </div>
                     
                     <div className="p-2 flex flex-wrap gap-2 items-center bg-transparent relative group">
+                      {/* Day View Drop Target Indicator */}
+                      {isDayCellOver && (
+                        <div className="absolute inset-1 rounded-xl border-2 border-dashed border-indigo-500 dark:border-indigo-400 bg-indigo-500/20 dark:bg-indigo-500/30 flex items-center justify-center text-xs font-black text-indigo-700 dark:text-indigo-200 pointer-events-none z-20 animate-pulse uppercase tracking-wider">
+                          Drop to Reschedule Here
+                        </div>
+                      )}
                       {hourEvents.length === 0 ? (
                         <button
                           onClick={() => {
@@ -4544,7 +4815,9 @@ export default function CalendarView({
                             setNewEndTime(`${String(hour + 1).padStart(2, "0")}:00`);
                             setShowAddModal(true);
                           }}
-                          className="text-[10px] text-slate-400 group-hover:text-indigo-500 font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all absolute inset-0 pl-4 justify-start cursor-pointer"
+                          className={`text-[10px] text-slate-400 group-hover:text-indigo-500 font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all absolute inset-0 pl-4 justify-start cursor-pointer ${
+                            draggedEventId ? "pointer-events-none" : ""
+                          }`}
                         >
                           <Plus className="w-3.5 h-3.5" /> Block hour
                         </button>
@@ -4552,17 +4825,20 @@ export default function CalendarView({
                         hourEvents.map(evt => {
                           const colors = getEventColorStyles(evt);
                           const isHovered = hoveredEventId === evt.id;
+                          const isThisResizing = resizingEvent?.eventId === evt.id;
                           return (
                             <div 
                               key={evt.id} 
                               id={`event_card_day_${evt.id}`}
-                              draggable={true}
+                              draggable={!isThisResizing}
                               onDragStart={(e) => handleDragStart(e, evt.id)}
                               onClick={() => handleTriggerEditEvent(evt)}
                               onMouseEnter={() => handleCardMouseEnter(evt.id)}
                               onMouseLeave={() => handleCardMouseLeave(evt.id)}
                               className={`cal-event-card p-3 rounded-xl shadow-md max-w-sm flex-1 cursor-grab active:cursor-grabbing transition-all border border-l-4 relative ${
-                                draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
+                                isThisResizing
+                                  ? "shadow-2xl ring-2 ring-indigo-400 z-50 scale-[1.01]"
+                                  : draggedEventId === evt.id ? "opacity-40 ring-2 ring-indigo-400 scale-95" : ""
                               } ${
                                 spotlightEventId === evt.id
                                   ? "shadow-2xl ring-4 ring-amber-400 dark:ring-amber-300 scale-[1.02] z-50 animate-pulse"
@@ -4587,6 +4863,11 @@ export default function CalendarView({
                                     {evt.completed && (
                                       <span className="cal-completed-badge text-[8.5px] bg-emerald-600 text-white font-black px-2 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0" title="Study Session Completed">
                                         <Check className="w-2.5 h-2.5 stroke-[3]" /> DONE
+                                      </span>
+                                    )}
+                                    {isThisResizing && (
+                                      <span className="cal-resizing-badge text-[8.5px] bg-indigo-600 text-white font-mono font-black px-2 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0 animate-pulse" title="Resizing session duration">
+                                        <Clock className="w-2.5 h-2.5" /> {resizingEvent?.currentDuration}m
                                       </span>
                                     )}
                                     {spotlightEventId === evt.id && (
@@ -4800,25 +5081,35 @@ export default function CalendarView({
                                   </button>
                                 )}
 
-                                <button 
-                                  type="button"
-                                  id={`delete_event_btn_day_${evt.id}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteEvent(evt.id);
-                                  }}
-                                  className={`p-1.5 rounded-lg transition cursor-pointer ${
-                                    isLightMode
-                                      ? "text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                                      : "text-slate-400 hover:text-rose-400 hover:bg-rose-500/20"
-                                  }`}
-                                  title="Delete Event"
+                                  <button 
+                                    type="button"
+                                    id={`delete_event_btn_day_${evt.id}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onDeleteEvent(evt.id);
+                                    }}
+                                    className={`p-1.5 rounded-lg transition cursor-pointer ${
+                                      isLightMode
+                                        ? "text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                        : "text-slate-400 hover:text-rose-400 hover:bg-rose-500/20"
+                                    }`}
+                                    title="Delete Event"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                {/* Bottom Drag-to-Resize Grip Handle (Snap 15m) */}
+                                <div
+                                  id={`resize_handle_day_${evt.id}`}
+                                  onMouseDown={(e) => handleStartResize(e, evt)}
+                                  className="absolute bottom-0 left-0 right-0 h-3 cursor-ns-resize group/resize flex items-center justify-center hover:bg-indigo-500/20 rounded-b-xl transition-colors z-30"
+                                  title="Drag bottom handle to adjust session duration (15m increments)"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                  <div className="w-10 h-1 rounded-full bg-slate-400/40 group-hover/resize:bg-indigo-500 dark:bg-slate-400/40 dark:group-hover/resize:bg-indigo-400 transition-colors shadow-2xs" />
+                                </div>
                               </div>
-                            </div>
-                          );
+                            );
                         })
                       )}
                     </div>
@@ -4924,7 +5215,21 @@ export default function CalendarView({
                 return getPriorityScore(b) - getPriorityScore(a);
               });
               const nowTime = now.getTime();
-              const firstFutureIdx = sorted.findIndex(evt => new Date(evt.start).getTime() > nowTime);
+
+              // Identify if any event in this list is currently active or happening now
+              const currentActiveEvent = sorted.find(evt => {
+                const s = new Date(evt.start);
+                const e = new Date(evt.end);
+                return isEventHappeningNow(evt, s, e, nowTime);
+              });
+
+              // Identify the first true future event that is not currently active
+              const firstFutureIdx = sorted.findIndex(evt => {
+                const s = new Date(evt.start);
+                const e = new Date(evt.end);
+                if (isEventHappeningNow(evt, s, e, nowTime)) return false;
+                return s.getTime() > nowTime;
+              });
 
               const timeMarker = (
                 <div 
@@ -4948,8 +5253,14 @@ export default function CalendarView({
                   {sorted.map((evt, idx) => {
                     const s = new Date(evt.start);
                     const e = new Date(evt.end);
-                    const isCurrent = nowTime >= s.getTime() && nowTime <= e.getTime();
-                    const showMarkerBefore = firstFutureIdx !== -1 ? idx === firstFutureIdx : false;
+                    const isCurrent = isEventHappeningNow(evt, s, e, nowTime);
+                    const isTimerActiveOnThis = isEventActiveInTimer(evt);
+
+                    // Position the time marker right before the currently happening session (if present),
+                    // or right before the first upcoming future session:
+                    const showMarkerBefore = currentActiveEvent
+                      ? evt.id === currentActiveEvent.id
+                      : (firstFutureIdx !== -1 ? idx === firstFutureIdx : false);
 
                     return (
                       <React.Fragment key={evt.id}>
@@ -4958,12 +5269,12 @@ export default function CalendarView({
                           id={`event_card_list_${evt.id}`}
                           onClick={() => handleTriggerEditEvent(evt)}
                           className={`p-3.5 sm:p-4 border rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition cursor-pointer ${
-                            spotlightEventId === evt.id
-                              ? "bg-amber-50 dark:bg-amber-500/15 border-amber-400 dark:border-amber-400/60 shadow-xl ring-2 ring-amber-400 scale-[1.01]"
-                              : isCurrent
-                              ? "bg-indigo-50 dark:bg-indigo-500/15 border-red-400 dark:border-red-500/50 shadow-lg shadow-red-500/10 ring-1 ring-red-400 dark:ring-red-500/30"
-                              : evt.completed
+                            evt.completed
                               ? "bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-300 dark:border-emerald-600/40 border-l-4 border-l-emerald-500 shadow-xs"
+                              : isCurrent
+                              ? "bg-indigo-50/90 dark:bg-indigo-500/15 border-red-500 dark:border-red-500/60 shadow-lg shadow-red-500/10 ring-2 ring-red-400 dark:ring-red-500/40"
+                              : spotlightEventId === evt.id
+                              ? "bg-amber-50 dark:bg-amber-500/15 border-amber-400 dark:border-amber-400/60 shadow-xl ring-2 ring-amber-400 scale-[1.01]"
                               : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/10"
                           }`}
                         >
@@ -5028,9 +5339,9 @@ export default function CalendarView({
                                   return null;
                                 })()}
                                 {isCurrent && (
-                                  <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-red-500 text-white animate-pulse flex items-center gap-1 shrink-0">
-                                    <span className="w-1 h-1 rounded-full bg-white"></span>
-                                    HAPPENING NOW
+                                  <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-red-500 text-white animate-pulse flex items-center gap-1 shrink-0 shadow-xs">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                                    {isTimerActiveOnThis ? "HAPPENING NOW • STUDYING" : "HAPPENING NOW"}
                                   </span>
                                 )}
                               </div>
@@ -5090,11 +5401,17 @@ export default function CalendarView({
                               type="button"
                               id={`timer_event_btn_list_${evt.id}`}
                               onClick={(e) => handleOpenTimerForEvent(evt, e)}
-                              className="text-[11px] px-3 py-2 rounded-xl font-bold bg-indigo-100 dark:bg-indigo-500/20 hover:bg-indigo-200 dark:hover:bg-indigo-500/30 text-indigo-900 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-500/30 flex items-center gap-1.5 cursor-pointer transition min-h-[38px] flex-1 sm:flex-none justify-center"
-                              title="Start Focus Timer"
+                              className={`text-[11px] px-3 py-2 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer transition min-h-[38px] flex-1 sm:flex-none justify-center ${
+                                isTimerActiveOnThis
+                                  ? "bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-500 shadow-md animate-pulse"
+                                  : isCurrent
+                                  ? "bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-500 shadow-md"
+                                  : "bg-indigo-100 dark:bg-indigo-500/20 hover:bg-indigo-200 dark:hover:bg-indigo-500/30 text-indigo-900 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-500/30"
+                              }`}
+                              title={isTimerActiveOnThis ? "Focus Timer Running - Click to View" : isCurrent ? "Currently Happening - Click to Open Timer" : "Start Focus Timer"}
                             >
-                              <Play className="w-3.5 h-3.5 fill-current text-indigo-600 dark:text-indigo-400" />
-                              <span>Timer</span>
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>{isTimerActiveOnThis ? "Studying Now" : isCurrent ? "Start Timer" : "Timer"}</span>
                             </button>
 
                             {/* Quick +1d and +1w buttons */}
@@ -5997,6 +6314,23 @@ export default function CalendarView({
           </div>
         </div>
       )}
+
+      {/* Weekly AI Habit Report Card Modal */}
+      <WeeklyHabitReportModal
+        isOpen={showWeeklyReportModal}
+        onClose={() => setShowWeeklyReportModal(false)}
+        goals={goals}
+        events={events}
+        availability={availability || DEFAULT_AVAILABILITY}
+        energyProfile={energyProfile}
+        onApplyScheduleAdjustment={(updatedEvents, message) => {
+          if (onBulkEditEvents) {
+            onBulkEditEvents(updatedEvents.map(e => ({ id: e.id, fields: e })));
+          }
+          onNotify?.("✨ Schedule Optimized", message, "success");
+        }}
+        onNotify={onNotify}
+      />
 
     </div>
   );

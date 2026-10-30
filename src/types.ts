@@ -279,3 +279,74 @@ export interface StreakShieldBank {
   history: StreakBankRecord[];
 }
 
+export type SentinelSignalType = 
+  | "goal_deficit" 
+  | "slump_conflict" 
+  | "burnout_risk" 
+  | "streak_risk" 
+  | "momentum_praise" 
+  | "deep_work_window";
+
+export type SentinelSeverity = "urgent" | "warning" | "insight" | "celebration";
+
+export interface SentinelActionDirective {
+  type: 
+    | "auto_schedule" 
+    | "shift_to_peak" 
+    | "insert_buffer" 
+    | "launch_timer" 
+    | "streak_shield" 
+    | "trigger_rest_day" 
+    | "open_coach"
+    | "view_schedule";
+  label: string;
+  tooltip?: string;
+  goalId?: string;
+  goalName?: string;
+  eventId?: string;
+  durationMinutes?: number;
+  coachQuery?: string;
+}
+
+export interface SentinelSignal {
+  id: string;
+  type: SentinelSignalType;
+  severity: SentinelSeverity;
+  headline: string;
+  message: string;
+  subtext?: string;
+  primaryAction: SentinelActionDirective;
+  secondaryAction?: SentinelActionDirective;
+  tag: string;
+  icon?: string;
+  timestamp: string;
+  metric?: {
+    label: string;
+    value: string;
+  };
+}
+
+export interface SentinelTelemetry {
+  signals: SentinelSignal[];
+  activeGoalHealth: {
+    totalGoals: number;
+    onPaceGoals: number;
+    laggingGoals: number;
+    weeklyProgressPercent: number;
+  };
+  cognitiveLoadToday: {
+    scheduledHours: number;
+    maxHours: number;
+    densityPercent: number;
+    burnoutLevel: "optimal" | "elevated" | "burnout_risk";
+  };
+  circadianStatus: {
+    currentZoneName: string;
+    level: "deep_focus" | "moderate" | "light_recharge";
+    isSlumpNow: boolean;
+    recommendation: string;
+  };
+  lastEvaluatedAt: string;
+}
+
+

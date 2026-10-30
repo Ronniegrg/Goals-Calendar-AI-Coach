@@ -19,12 +19,15 @@ import {
   ArrowRight,
   Brain,
   Zap,
-  Keyboard
+  Keyboard,
+  Settings as SettingsIcon
 } from "lucide-react";
 import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
 import ProgressDashboard from "./components/ProgressDashboard";
 import AICoach from "./components/AICoach";
+import SettingsView from "./components/SettingsView";
+import FloatingAIChatWidget from "./components/FloatingAIChatWidget";
 import FocusTimerModal, { getActiveTimerSnapshot, ActiveTimerData, pauseFocusTimer, resumeFocusTimer } from "./components/FocusTimerModal";
 import EnergyProfileModal from "./components/EnergyProfileModal";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
@@ -44,10 +47,10 @@ import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProf
 
 export default function App() {
   // Navigation State with persistent last-selected tab memory
-  const [activeTab, setActiveTabState] = useState<"calendar" | "goals" | "dashboard" | "coach" | "ai-schedule">(() => {
+  const [activeTab, setActiveTabState] = useState<"calendar" | "goals" | "dashboard" | "coach" | "ai-schedule" | "settings">(() => {
     try {
       const saved = localStorage.getItem("app_active_tab");
-      if (saved && ["calendar", "goals", "dashboard", "coach", "ai-schedule"].includes(saved)) {
+      if (saved && ["calendar", "goals", "dashboard", "coach", "ai-schedule", "settings"].includes(saved)) {
         return saved as any;
       }
     } catch (e) {
@@ -56,7 +59,7 @@ export default function App() {
     return "calendar";
   });
 
-  const setActiveTab = (tab: "calendar" | "goals" | "dashboard" | "coach" | "ai-schedule") => {
+  const setActiveTab = (tab: "calendar" | "goals" | "dashboard" | "coach" | "ai-schedule" | "settings") => {
     setActiveTabState(tab);
     try {
       localStorage.setItem("app_active_tab", tab);
@@ -248,6 +251,8 @@ export default function App() {
     onAction?: () => void;
   } | null>(null);
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
+  const [coachSeedQuery, setCoachSeedQuery] = useState<string | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
 
   // Auto-dismiss active floating toast
   useEffect(() => {
@@ -280,10 +285,21 @@ export default function App() {
         return;
       }
 
-      // 'Escape' -> Close modal if open
+      // 'c' or 'C' -> Toggle AI Coach Chat
+      if ((e.key === "c" || e.key === "C") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setIsChatOpen(prev => !prev);
+        return;
+      }
+
+      // 'Escape' -> Close modal or chat if open
       if (e.key === "Escape") {
         if (showShortcutsModal) {
           setShowShortcutsModal(false);
+          return;
+        }
+        if (isChatOpen) {
+          setIsChatOpen(false);
           return;
         }
       }
@@ -320,8 +336,8 @@ export default function App() {
         return;
       }
 
-      // 'c' or 'C' -> Toggle HUD Compact Mode
-      if (e.code === "KeyC" && !e.metaKey && !e.ctrlKey) {
+      // 'h' or 'H' -> Toggle HUD Compact Mode
+      if ((e.code === "KeyH" || e.key === "h" || e.key === "H") && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("toggle_hud_compact"));
         return;
@@ -344,6 +360,9 @@ export default function App() {
         } else if (e.key === "5") {
           e.preventDefault();
           setActiveTab("coach");
+        } else if (e.key === "6") {
+          e.preventDefault();
+          setActiveTab("settings");
         }
       }
     };
@@ -2729,6 +2748,23 @@ export default function App() {
     syncToCloud(goals, events, availability, [], coachMessages);
   };
 
+  const handleImportDataBackup = (data: { goals: Goal[]; events: CalendarEvent[]; energyProfile?: UserEnergyProfile; availability?: AvailabilityWindow[] }) => {
+    if (data.goals) setGoals(data.goals);
+    if (data.events) setEvents(data.events);
+    if (data.energyProfile) {
+      setEnergyProfile(data.energyProfile);
+      localStorage.setItem("user_energy_profile", JSON.stringify(data.energyProfile));
+    }
+    if (data.availability) setAvailability(data.availability);
+    syncToCloud(
+      data.goals || goals, 
+      data.events || events, 
+      data.availability || availability, 
+      notifications, 
+      coachMessages
+    );
+  };
+
   // Preset reset state to start fresh
   const handleResetApplicationState = () => {
     if (confirm("Are you sure you want to reset all goals, availability, and scheduled blocks?")) {
@@ -2820,6 +2856,135 @@ export default function App() {
     setTimeout(performScroll, 450);
   }, []);
 
+  // Proactive Goal Sentinel Action Handlers
+  const handleSentinelAutoSchedule = (goalId: string) => {
+    const targetGoal = goals.find(g => g.id === goalId);
+    if (!targetGoal) {
+      triggerSystemNotification("Goal Not Found", "Could not locate target goal for scheduling.", "warning");
+      return;
+    }
+
+    const autoEvents = generateGoalSessions(targetGoal, events, 1, availability);
+    if (autoEvents.length > 0) {
+      const nextEvents = [...autoEvents, ...events];
+      setEvents(nextEvents);
+      syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
+      const scheduledDate = new Date(autoEvents[0].start);
+      triggerSystemNotification(
+        "⚡ Session Auto-Scheduled by Sentinel",
+        `Booked session for "${targetGoal.name}" on ${scheduledDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} at ${scheduledDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}!`,
+        "success"
+      );
+      handleNavigateToCalendar(scheduledDate, autoEvents[0].id);
+    } else {
+      triggerSystemNotification(
+        "No Open Slot Found",
+        `Could not find an unreserved slot for "${targetGoal.name}". Adjust your availability or ask AI Coach.`,
+        "warning"
+      );
+    }
+  };
+
+  const handleSentinelInsertBuffer = (eventId: string) => {
+    const targetEvt = events.find(e => e.id === eventId);
+    if (!targetEvt) return;
+
+    // Shift target event start and end by 15 minutes forward
+    const nextEvents = events.map(evt => {
+      if (evt.id === eventId) {
+        const s = new Date(evt.start);
+        const e = new Date(evt.end);
+        s.setMinutes(s.getMinutes() + 15);
+        e.setMinutes(e.getMinutes() + 15);
+        return {
+          ...evt,
+          start: s.toISOString(),
+          end: e.toISOString(),
+          notes: (evt.notes ? evt.notes + " • " : "") + "15m recovery buffer added by Sentinel"
+        };
+      }
+      return evt;
+    });
+
+    setEvents(nextEvents);
+    syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
+    triggerSystemNotification(
+      "🛡️ Recovery Buffer Inserted",
+      `Inserted a 15-minute cognitive breathing reset before "${targetEvt.title}".`,
+      "success"
+    );
+  };
+
+  const handleSentinelShiftToPeak = (eventId: string) => {
+    const targetEvt = events.find(e => e.id === eventId);
+    if (!targetEvt) return;
+
+    const evtDate = new Date(targetEvt.start);
+    const peakZone = energyProfile.zones.find(z => z.level === "deep_focus") || { startHour: 9.5, endHour: 12.0 };
+    const durMins = Math.max(30, (new Date(targetEvt.end).getTime() - new Date(targetEvt.start).getTime()) / (1000 * 60));
+
+    const newStart = new Date(evtDate);
+    newStart.setHours(Math.floor(peakZone.startHour), Math.round((peakZone.startHour % 1) * 60), 0, 0);
+    const newEnd = new Date(newStart);
+    newEnd.setMinutes(newStart.getMinutes() + durMins);
+
+    const nextEvents = events.map(evt => {
+      if (evt.id === eventId) {
+        return {
+          ...evt,
+          start: newStart.toISOString(),
+          end: newEnd.toISOString(),
+          notes: (evt.notes ? evt.notes + " • " : "") + "Shifted to peak energy window by Sentinel"
+        };
+      }
+      return evt;
+    });
+
+    setEvents(nextEvents);
+    syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
+    triggerSystemNotification(
+      "☀️ Realigned to Peak Energy Window",
+      `Shifted "${targetEvt.title}" to ${newStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} (Peak Focus Window).`,
+      "success"
+    );
+    handleNavigateToCalendar(newStart, eventId);
+  };
+
+  const handleSentinelLaunchTimer = (goalId?: string, durationMinutes?: number, title?: string) => {
+    const targetGoal = goals.find(g => g.id === goalId);
+    const sessionTitle = title || targetGoal?.name || "Deep Focus Session";
+    const dur = durationMinutes || targetGoal?.durationMinutes || 25;
+
+    try {
+      window.dispatchEvent(new CustomEvent("open_focus_timer", {
+        detail: {
+          goalId: targetGoal?.id,
+          title: sessionTitle,
+          duration: dur,
+          autoStart: true,
+          openModal: true
+        }
+      }));
+      triggerSystemNotification(
+        "🚀 Focus Timer Launched",
+        `Starting ${dur}-minute focus sprint for "${sessionTitle}"!`,
+        "motivation"
+      );
+    } catch (err) {
+      console.warn("Timer event launch notice:", err);
+    }
+  };
+
+  const handleSentinelOpenCoachWithQuery = (query: string) => {
+    setCoachSeedQuery(query);
+    setIsChatOpen(true);
+    triggerSystemNotification(
+      "💬 AI Coach Connected",
+      "Sentinel transferred schedule context to your AI Routine Coach.",
+      "motivation"
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0c14] text-white flex flex-col font-sans antialiased pb-24 md:pb-12 selection:bg-indigo-500/30 selection:text-indigo-200" style={{ backgroundImage: "radial-gradient(circle at 0% 0%, #1e1b4b 0%, transparent 60%), radial-gradient(circle at 100% 100%, #311042 0%, transparent 60%)" }}>
       
@@ -2852,78 +3017,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* Controls: Energy Profile, Theme Switcher & Cloud Sync */}
+          {/* Controls: Profile & Cloud Sync (Energy, Theme, and Shortcuts are centralized in Settings) */}
           <div className="flex items-center gap-2 sm:gap-3 text-xs font-medium" id="sync_status_anchor_indicators">
-            {/* Bio-Energy Chronotype Quick Button */}
-            <button
-              type="button"
-              id="app_energy_profile_btn"
-              onClick={() => setShowEnergyModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border border-purple-500/40 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 cursor-pointer transition shadow-xs"
-              title="Configure energy chronotype, slump shield, and cognitive load"
-            >
-              <Brain className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-              <span className="hidden sm:inline">Energy:</span>
-              <span className="capitalize">{energyProfile.chronotype}</span>
-              {energyProfile.slumpProtection && (
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Slump Shield Active" />
-              )}
-            </button>
-
-            {/* Keyboard Shortcuts Quick Button */}
-            <button
-              type="button"
-              id="app_keyboard_shortcuts_btn"
-              onClick={() => setShowShortcutsModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer transition shadow-xs"
-              title="Keyboard Shortcuts (Press ?)"
-            >
-              <Keyboard className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-              <span className="hidden sm:inline">Shortcuts</span>
-              <kbd className="hidden md:inline px-1 py-0.2 bg-black/40 rounded text-[9px] font-mono border border-white/10 text-slate-400">?</kbd>
-            </button>
-
-            {/* Auto-Toggle Theme Button */}
-            <button
-              type="button"
-              id="app_theme_mode_toggle_btn"
-              onClick={() => {
-                const nextMode = themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
-                setThemeMode(nextMode);
-                triggerSystemNotification(
-                  "🎨 Theme Mode Updated",
-                  `Switched to ${nextMode === "auto" ? "Auto Mode (System Sync)" : nextMode === "dark" ? "Dark Theme" : "Light Theme"}`,
-                  "sync"
-                );
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border cursor-pointer transition shadow-xs ${
-                themeMode === "auto"
-                  ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40 hover:bg-indigo-500/30"
-                  : themeMode === "dark"
-                  ? "bg-slate-800/80 text-slate-200 border-slate-700 hover:bg-slate-700"
-                  : "bg-amber-100/90 text-amber-950 border-amber-300 hover:bg-amber-200"
-              }`}
-              title="Click to toggle: Auto (System Sync) -> Dark -> Light"
-            >
-              {themeMode === "auto" ? (
-                <>
-                  <Monitor className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                  <span>Auto ({resolvedTheme === "dark" ? "🌙 Dark" : "☀️ Light"})</span>
-                </>
-              ) : themeMode === "dark" ? (
-                <>
-                  <Moon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                  <span>Dark Mode</span>
-                </>
-              ) : (
-                <>
-                  <Sun className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>Light Mode</span>
-                </>
-              )}
-            </button>
-
-            <div className="hidden lg:flex items-center gap-1.5 bg-white/5 px-3 py-1 rounded-full border border-white/10 text-xs">
+            <div className="flex items-center gap-1.5 bg-white/5 px-3 py-1 rounded-full border border-white/10 text-xs">
               <span className="text-slate-400">Profile:</span>
               <span className="font-mono text-indigo-300 font-bold">{userEmail}</span>
             </div>
@@ -3077,19 +3173,49 @@ export default function App() {
                 )}
               </button>
 
-              {/* TAB 5: AI ROUTINE COACH */}
+              {/* TAB 5 / ACTION: CHAT WITH AI COACH */}
               <button
                 id="tab_trigger_coach"
-                onClick={() => setActiveTab("coach")}
+                type="button"
+                onClick={() => setIsChatOpen(prev => !prev)}
                 className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
-                  activeTab === "coach"
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-400/50"
+                  isChatOpen
+                    ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-600/30 ring-2 ring-purple-400/60"
                     : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
                 }`}
+                title="Chat with AI Routine Coach & Goal Builder (Press C)"
               >
-                <Bot className="w-4 h-4 shrink-0" />
-                <span>AI Routine Coach</span>
-                {activeTab === "coach" && (
+                <Bot className={`w-4 h-4 shrink-0 ${isChatOpen ? "text-yellow-300" : "text-purple-400"}`} />
+                <span>Chat with AI</span>
+                {isChatOpen ? (
+                  <span
+                    className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
+                    style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
+                  >
+                    <span className="tab-active-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" style={{ backgroundColor: "#10b981" }} />
+                    <span className="tab-active-text" style={{ color: "#1e1b4b" }}>Open</span>
+                  </span>
+                ) : (
+                  <span className="text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider leading-none transition-all bg-purple-500/20 text-purple-600 dark:text-purple-300 border border-purple-500/30">
+                    Coach
+                  </span>
+                )}
+              </button>
+
+              {/* TAB 6: SETTINGS */}
+              <button
+                id="tab_trigger_settings"
+                onClick={() => setActiveTab("settings")}
+                className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                  activeTab === "settings"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/50"
+                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
+                }`}
+                title="System Settings, Circadian Rhythm, Autopilot & Sync"
+              >
+                <SettingsIcon className={`w-4 h-4 shrink-0 ${activeTab === "settings" ? "text-white" : "text-slate-400"}`} />
+                <span>Settings</span>
+                {activeTab === "settings" && (
                   <span
                     className="tab-active-badge text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs leading-none flex items-center gap-1 select-none shrink-0"
                     style={{ backgroundColor: "#ffffff", color: "#1e1b4b" }}
@@ -3153,6 +3279,7 @@ export default function App() {
               onUndoAutopilot={handleUndoAutopilot}
               onLifeHappenedToday={handleTriggerLifeHappened}
               burnoutLimits={burnoutLimits}
+              onNotify={triggerSystemNotification}
             />
           </div>
         )}
@@ -3264,6 +3391,53 @@ export default function App() {
                 "success"
               );
             }}
+            externalPrompt={coachSeedQuery || undefined}
+            onClearExternalPrompt={() => setCoachSeedQuery(null)}
+          />
+        )}
+
+        {activeTab === "settings" && (
+          <SettingsView
+            energyProfile={energyProfile}
+            onUpdateEnergyProfile={(p) => {
+              setEnergyProfile(p);
+              localStorage.setItem("user_energy_profile", JSON.stringify(p));
+            }}
+            autopilotMode={autopilotMode}
+            onChangeAutopilotMode={handleSetAutopilotMode}
+            autopilotPacing={autopilotPacing}
+            onChangeAutopilotPacing={handleSetAutopilotPacing}
+            burnoutLimits={burnoutLimits}
+            onChangeBurnoutLimits={handleSetBurnoutLimits}
+            coachPersona={coachPersona}
+            onChangeCoachPersona={(p) => {
+              setCoachPersona(p);
+              localStorage.setItem("coach_persona", p);
+              syncToCloud(goals, events, availability, notifications, coachMessages, p);
+            }}
+            themeMode={themeMode}
+            onChangeThemeMode={setThemeMode}
+            resolvedTheme={resolvedTheme}
+            alertLeadMinutes={alertLeadMinutes}
+            onChangeAlertLeadMinutes={(m) => {
+              setAlertLeadMinutes(m);
+              localStorage.setItem("alert_lead_minutes", String(m));
+            }}
+            alertPushEnabled={alertPushEnabled}
+            onChangeAlertPushEnabled={(b) => {
+              setAlertPushEnabled(b);
+              localStorage.setItem("alert_push_enabled", b ? "true" : "false");
+            }}
+            events={events}
+            goals={goals}
+            availability={availability}
+            userEmail={userEmail}
+            onClearExternalEvents={handleClearExternalEvents}
+            onResetAndRegenerateCalendar={handleResetAndRegenerateCalendar}
+            onImportData={handleImportDataBackup}
+            onNotify={triggerSystemNotification}
+            onNavigateToCalendar={() => handleNavigateToCalendar()}
+            onNavigateToGoals={() => setActiveTab("goals")}
           />
         )}
 
@@ -3356,18 +3530,80 @@ export default function App() {
 
         <button
           id="tab_trigger_coach_mobile"
-          onClick={() => setActiveTab("coach")}
+          type="button"
+          onClick={() => setIsChatOpen(prev => !prev)}
           className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
-            activeTab === "coach"
+            isChatOpen
+              ? "text-purple-400 font-bold scale-105"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+          title="Toggle AI Routine Coach & Goal Chat"
+        >
+          <div className="relative">
+            <Bot className={`w-5 h-5 ${isChatOpen ? "text-purple-400 animate-pulse" : "text-slate-400"}`} />
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400" />
+          </div>
+          <span className="text-[10px] tracking-wide font-medium">Chat AI</span>
+        </button>
+
+        <button
+          id="tab_trigger_settings_mobile"
+          onClick={() => setActiveTab("settings")}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+            activeTab === "settings"
               ? "text-indigo-400 font-bold scale-105"
               : "text-slate-400 hover:text-slate-200"
           }`}
+          title="System Settings"
         >
-          <Bot className="w-5 h-5" />
-          <span className="text-[10px] tracking-wide font-medium">AI Coach</span>
+          <SettingsIcon className="w-5 h-5" />
+          <span className="text-[10px] tracking-wide font-medium">Settings</span>
         </button>
 
       </div>
+
+      {/* Persistent Omnipresent Floating AI Chat Widget & Bottom Chat FAB Icon */}
+      <FloatingAIChatWidget
+        isOpen={isChatOpen}
+        onToggleOpen={() => setIsChatOpen(prev => !prev)}
+        onClose={() => setIsChatOpen(false)}
+        goals={goals}
+        events={events}
+        availability={availability}
+        coachMessages={coachMessages}
+        onAddMessage={handleAddCoachMessage}
+        onClearMessages={handleClearCoachHistory}
+        coachPersona={coachPersona}
+        onUpdatePersona={(p) => {
+          setCoachPersona(p);
+          localStorage.setItem("coach_persona", p);
+          syncToCloud(goals, events, availability, notifications, coachMessages, p);
+        }}
+        onAddGoal={handleAddGoal}
+        onEditGoal={handleEditGoal}
+        onDeleteGoal={handleDeleteGoal}
+        userEnergyProfile={energyProfile}
+        onBulkAddEvents={handleBulkAddEvents}
+        onUpdateEvents={(updatedEvts) => {
+          setEvents(updatedEvts);
+          syncToCloud(goals, updatedEvts, availability, notifications, coachMessages);
+        }}
+        onAddNotification={triggerSystemNotification}
+        onApplyEnergySchedule={(newEvts) => {
+          const updatedEvents = [...events, ...newEvts];
+          setEvents(updatedEvents);
+          syncToCloud(goals, updatedEvents, availability, notifications, coachMessages);
+          triggerSystemNotification(
+            "Energy Schedule Applied!",
+            `Successfully mapped ${newEvts.length} energy-optimized sessions into your calendar grid!`,
+            "success"
+          );
+        }}
+        externalPrompt={coachSeedQuery || undefined}
+        onClearExternalPrompt={() => setCoachSeedQuery(null)}
+        onNavigateToCalendar={handleNavigateToCalendar}
+        onNavigateToGoals={() => setActiveTab("goals")}
+      />
 
       {/* Persistent Global Focus Session Countdown Timer Modal & Floating Mini Bar */}
       <FocusTimerModal
@@ -3469,8 +3705,13 @@ export default function App() {
               </div>
 
               <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
-                <span className="font-medium text-slate-700 dark:text-slate-300">Toggle HUD Compact Mode</span>
+                <span className="font-medium text-slate-700 dark:text-slate-300">Open AI Routine Coach Chat</span>
                 <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">C</kbd>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                <span className="font-medium text-slate-700 dark:text-slate-300">Toggle HUD Compact Mode</span>
+                <kbd className="px-2.5 py-1 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded-md font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">H</kbd>
               </div>
 
               <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
@@ -3478,7 +3719,7 @@ export default function App() {
                 <div className="flex items-center gap-1">
                   <kbd className="px-2 py-0.5 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">1</kbd>
                   <span className="text-slate-400">–</span>
-                  <kbd className="px-2 py-0.5 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">5</kbd>
+                  <kbd className="px-2 py-0.5 bg-white dark:bg-black/50 border border-slate-300 dark:border-white/20 rounded font-mono font-bold text-slate-800 dark:text-slate-200 shadow-2xs">6</kbd>
                 </div>
               </div>
 

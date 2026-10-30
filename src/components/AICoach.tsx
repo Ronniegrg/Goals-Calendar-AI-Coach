@@ -23,7 +23,13 @@ import {
   Layers,
   Trash2,
   ShieldCheck,
-  HelpCircle
+  HelpCircle,
+  X,
+  Maximize2,
+  Minimize2,
+  ChevronDown,
+  SlidersHorizontal,
+  Trophy
 } from "lucide-react";
 import { CoachMessage, Goal, CalendarEvent, AvailabilityWindow, GoalType, TimePreference, UserEnergyProfile } from "../types";
 import GoalRecommendationEngine from "./GoalRecommendationEngine";
@@ -289,6 +295,12 @@ interface AICoachProps {
   onBulkAddEvents?: (newEvents: CalendarEvent[]) => void;
   onUpdateEvents?: (events: CalendarEvent[]) => void;
   onAddNotification?: (title: string, message: string, type: any) => void;
+  externalPrompt?: string;
+  onClearExternalPrompt?: () => void;
+  isFloatingMode?: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  onCloseFloating?: () => void;
 }
 
 interface DigestData {
@@ -314,15 +326,31 @@ export default function AICoach({
   onDeleteGoal,
   userEnergyProfile,
   onBulkAddEvents,
-  onAddNotification
+  onAddNotification,
+  externalPrompt,
+  onClearExternalPrompt,
+  isFloatingMode = false,
+  isExpanded = false,
+  onToggleExpand,
+  onCloseFloating
 }: AICoachProps) {
   const [activeSubTab, setActiveSubTab] = useState<"chat" | "digest" | "energy" | "recommendations">("chat");
   const [appliedGoalActions, setAppliedGoalActions] = useState<Record<string, boolean>>({});
+  const [showPromptsDrawer, setShowPromptsDrawer] = useState<boolean>(false);
 
   // Chat State
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Sync external prompt when passed from Proactive Sentinel
+  useEffect(() => {
+    if (externalPrompt) {
+      setInputText(externalPrompt);
+      setActiveSubTab("chat");
+      onClearExternalPrompt?.();
+    }
+  }, [externalPrompt, onClearExternalPrompt]);
 
   // Digest State
   const [digestData, setDigestData] = useState<DigestData | null>(null);
@@ -551,76 +579,379 @@ export default function AICoach({
   };
 
   return (
-    <div className="coach-high-contrast space-y-6" id="ai_routine_coach_view">
+    <div className={`coach-high-contrast ${isFloatingMode ? "flex flex-col h-full overflow-hidden" : "space-y-6"}`} id="ai_routine_coach_view">
       
+      {/* FLOATING TOP WINDOW BAR */}
+      {isFloatingMode && (
+        <div className="bg-slate-900/95 border-b border-indigo-500/20 px-4 py-3 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-600/30">
+              <Bot className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-extrabold text-white text-xs sm:text-sm leading-none">AI Routine Coach & Builder</h3>
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5 capitalize">
+                Persona: <strong className="text-indigo-300 font-bold">{coachPersona}</strong> • Gemini Live
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              id="coach_open_report_card_btn"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("open_weekly_habit_report"));
+              }}
+              className="p-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
+              title="Open Weekly AI Habit Report Card & Sunday Recap"
+            >
+              <Trophy className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline text-[10.5px]">Report Card</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowPromptsDrawer(prev => !prev)}
+              className={`p-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                showPromptsDrawer 
+                  ? "bg-indigo-600 text-white border-indigo-400/50" 
+                  : "bg-white/5 text-slate-300 hover:text-white border-white/10 hover:bg-white/10"
+              }`}
+              title="Toggle Coaching Prompts & Persona Settings"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline text-[10.5px]">Tools</span>
+            </button>
+
+            {onToggleExpand && (
+              <button
+                type="button"
+                onClick={onToggleExpand}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 transition cursor-pointer"
+                title={isExpanded ? "Restore compact window" : "Expand window"}
+              >
+                {isExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              </button>
+            )}
+
+            {onCloseFloating && (
+              <button
+                type="button"
+                onClick={onCloseFloating}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 transition cursor-pointer"
+                title="Close (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 1. TOP SUB-HEADER TABS: HIGH CONTRAST & ACCESSIBLE */}
-      <div className="bg-slate-900/80 backdrop-blur-md border border-white/15 p-2 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg" id="aicoach_subnav_tabs">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setActiveSubTab("chat")}
-            id="coach_tab_chat"
-            className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
-              activeSubTab === "chat"
-                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                : "text-slate-300 hover:text-white hover:bg-white/10"
-            }`}
-          >
-            <Bot className="w-4 h-4 text-indigo-300" />
-            <span>Interactive AI Coach</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab("digest")}
-            id="coach_tab_digest"
-            className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
-              activeSubTab === "digest"
-                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                : "text-slate-300 hover:text-white hover:bg-white/10"
-            }`}
-          >
-            <FileText className="w-4 h-4 text-amber-300" />
-            <span>Weekly Digest & Insights</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab("energy")}
-            id="coach_tab_energy"
-            className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
-              activeSubTab === "energy"
-                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                : "text-slate-300 hover:text-white hover:bg-white/10"
-            }`}
-          >
-            <Zap className="w-4 h-4 text-emerald-300" />
-            <span>Smart Energy Scheduling</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab("recommendations")}
-            id="coach_tab_recommendations"
-            className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
-              activeSubTab === "recommendations"
-                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                : "text-slate-300 hover:text-white hover:bg-white/10"
-            }`}
-          >
-            <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
-            <span>Routine Recommendations</span>
-          </button>
+      {isFloatingMode && !isExpanded ? (
+        <div className="bg-slate-900/60 border-b border-white/10 px-3 py-2 flex items-center justify-between gap-2 overflow-x-auto shrink-0 scrollbar-none" id="aicoach_subnav_tabs">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("chat")}
+              id="coach_tab_chat"
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === "chat"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-300 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>Chat</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("digest")}
+              id="coach_tab_digest"
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === "digest"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-300 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5 text-amber-300" />
+              <span>Digest</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("energy")}
+              id="coach_tab_energy"
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === "energy"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-300 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5 text-emerald-300" />
+              <span>Energy</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("recommendations")}
+              id="coach_tab_recommendations"
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+                activeSubTab === "recommendations"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-300 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <span>Ideas</span>
+            </button>
+          </div>
+          <span className="text-[10px] text-slate-400 font-medium">
+            {goals.length} Goals
+          </span>
         </div>
+      ) : (
+        <div className="bg-slate-900/80 backdrop-blur-md border border-white/15 p-2 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg" id="aicoach_subnav_tabs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("chat")}
+              id="coach_tab_chat"
+              className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
+                activeSubTab === "chat"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-slate-300 hover:text-white hover:bg-white/10"
+              }`}
+            >
+              <Bot className="w-4 h-4 text-indigo-300" />
+              <span>Interactive AI Coach</span>
+            </button>
 
-        <div className="text-xs text-slate-300 font-semibold px-3 py-1.5 bg-black/40 rounded-xl border border-white/10 flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-          <span>Gemini Intelligence Active</span>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("digest")}
+              id="coach_tab_digest"
+              className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
+                activeSubTab === "digest"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-slate-300 hover:text-white hover:bg-white/10"
+              }`}
+            >
+              <FileText className="w-4 h-4 text-amber-300" />
+              <span>Weekly Digest & Insights</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("energy")}
+              id="coach_tab_energy"
+              className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
+                activeSubTab === "energy"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-slate-300 hover:text-white hover:bg-white/10"
+              }`}
+            >
+              <Zap className="w-4 h-4 text-emerald-300" />
+              <span>Smart Energy Scheduling</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSubTab("recommendations")}
+              id="coach_tab_recommendations"
+              className={`text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 cursor-pointer ${
+                activeSubTab === "recommendations"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-slate-300 hover:text-white hover:bg-white/10"
+              }`}
+            >
+              <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+              <span>Routine Recommendations</span>
+            </button>
+          </div>
+
+          <div className="text-xs text-slate-300 font-semibold px-3 py-1.5 bg-black/40 rounded-xl border border-white/10 flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-amber-400" />
+            <span>Gemini Intelligence Active</span>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 2. CHAT SUB-TAB */}
       {activeSubTab === "chat" && (
+        isFloatingMode && !isExpanded ? (
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden" id="aicoach_container_floating">
+            {/* Quick Tools & Persona Drawer (if opened) */}
+            {showPromptsDrawer && (
+              <div className="p-3 bg-slate-900 border-b border-white/10 space-y-2.5 animate-in fade-in slide-in-from-top-2 shrink-0">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">Persona:</span>
+                  <div className="flex gap-1">
+                    {(["mentor", "drill", "data"] as const).map(p => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => onUpdatePersona?.(p)}
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer ${
+                          coachPersona === p ? "bg-indigo-600 text-white" : "bg-white/5 text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        {p === "mentor" ? "🌸 Mentor" : p === "drill" ? "🏋️ Drill" : "📊 Data"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleTriggerAnalysis();
+                      setShowPromptsDrawer(false);
+                    }}
+                    disabled={loading}
+                    className="text-left text-[11px] bg-white/5 hover:bg-indigo-950/40 border border-white/10 p-2 rounded-xl transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    <span className="font-semibold text-white truncate">Analyze Routine</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleTriggerStudyStrategy();
+                      setShowPromptsDrawer(false);
+                    }}
+                    disabled={loading}
+                    className="text-left text-[11px] bg-white/5 hover:bg-cyan-950/40 border border-white/10 p-2 rounded-xl transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <Brain className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span className="font-semibold text-white truncate">Study Strategies</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Chat Message Stream */}
+            <div 
+              ref={scrollRef}
+              className="flex-1 p-4 overflow-y-auto space-y-3.5 bg-transparent min-h-0"
+              id="chat_messages_scroller"
+            >
+              {coachMessages.map((msg) => {
+                const isCoach = msg.sender === "coach";
+                const { displayText, goalAction } = parseGoalActionFromText(msg.text);
+                const isActionApplied = !!appliedGoalActions[msg.id];
+
+                return (
+                  <div 
+                    key={msg.id} 
+                    className={`flex gap-2.5 max-w-[92%] ${isCoach ? "mr-auto" : "ml-auto flex-row-reverse"}`}
+                  >
+                    <div className={`w-7 h-7 rounded-full shrink-0 flex items-center justify-center border font-mono select-none shadow-md ${
+                      isCoach 
+                        ? "bg-indigo-600 text-white border-indigo-400/40" 
+                        : "bg-purple-600 text-white border-purple-400/40"
+                    }`}>
+                      {isCoach ? <Bot className="w-3.5 h-3.5" /> : <User className="w-3.5 h-3.5" />}
+                    </div>
+
+                    <div className={`p-3.5 rounded-2xl text-xs sm:text-sm leading-relaxed shadow-lg ${
+                      isCoach 
+                        ? "coach-bubble-coach bg-slate-900/95 border border-indigo-500/30 text-slate-100 shadow-indigo-950/40" 
+                        : "coach-bubble-user bg-indigo-600 border border-indigo-400/30 text-white shadow-indigo-600/30"
+                    }`}>
+                      <div id={`msg_bubble_${msg.id}`}>
+                        <FormattedCoachMessage text={displayText} isCoach={isCoach} />
+                        {isCoach && goalAction && (
+                          <GoalActionCard 
+                            action={goalAction}
+                            isApplied={isActionApplied}
+                            goals={goals}
+                            onApply={() => handleExecuteGoalAction(msg.id, goalAction)}
+                          />
+                        )}
+                      </div>
+
+                      <span className={`${isCoach ? "coach-timestamp-coach text-slate-400" : "coach-timestamp-user text-indigo-100"} text-[10px] block mt-1.5 text-right font-medium`}>
+                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {loading && (
+                <div className="flex gap-2.5 max-w-[90%] mr-auto items-center p-3 bg-slate-900/70 border border-indigo-500/20 rounded-2xl animate-pulse" id="coach_loading_indicator">
+                  <div className="w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 shrink-0 flex items-center justify-center animate-spin">
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </div>
+                  <span className="text-xs text-indigo-200 font-bold">AI Coach is thinking and crafting your guidance...</span>
+                </div>
+              )}
+            </div>
+
+            {/* Quick Preset Chips */}
+            <div className="px-3 py-2 flex items-center gap-1.5 overflow-x-auto border-t border-white/10 bg-slate-950/70 shrink-0 scrollbar-none" id="coach_preset_prompt_chips">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0 select-none">Quick:</span>
+              {[
+                { label: "➕ Propose Goal", prompt: "Please analyze my schedule and propose a new goal with recommended targets and time windows for me!" },
+                { label: "⚡ 2-Min Reset", prompt: "I'm feeling unmotivated today. Look at my goals and give me one absurdly easy 2-minute micro-action." },
+                { label: "📊 Streaks", prompt: "How has my completion streak changed this week? Give me an encouraging status report." },
+                { label: "🏋️ Workout", prompt: "How should I structure my workout blocks this week? Design a quick high-yield routine." },
+                { label: "⏱️ Deconflict", prompt: "How should I deconflict overlapping goals in my routine?" }
+              ].map((chip, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => {
+                    if (loading) return;
+                    handleSendQuestion(chip.prompt);
+                  }}
+                  disabled={loading}
+                  className="coach-preset-chip text-[11px] bg-slate-800/90 hover:bg-indigo-600 text-slate-200 hover:text-white border border-white/15 px-2.5 py-1 rounded-xl transition font-medium whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer shadow-xs"
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Input Panel Footer */}
+            <div className="coach-chat-footer p-3 border-t border-white/10 bg-slate-950/90 shrink-0">
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSendQuestion();
+                }} 
+                className="flex items-center gap-2"
+              >
+                <input
+                  type="text"
+                  id="coach_message_input"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  placeholder="Ask anything or request a schedule tweak..."
+                  disabled={loading}
+                  className="coach-input-field flex-1 text-xs px-3.5 py-2.5 bg-slate-900 border border-white/20 rounded-xl focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 text-white placeholder:text-slate-400 disabled:opacity-50 shadow-inner"
+                />
+                <button
+                  type="submit"
+                  id="coach_message_send_btn"
+                  disabled={loading || !inputText.trim()}
+                  className="coach-send-btn px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition shadow-md shadow-indigo-600/30 disabled:opacity-40 cursor-pointer flex items-center justify-center shrink-0 font-bold"
+                  title="Send Message"
+                >
+                  <Send className="w-3.5 h-3.5 mr-1" />
+                  <span className="text-xs">Send</span>
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[620px] max-h-[85vh] h-[780px]" id="aicoach_container_grid">
           
           {/* SIDEBAR: SYSTEM INFORMATION & ACTIONS (4 Columns) */}
@@ -905,11 +1236,12 @@ export default function AICoach({
           </div>
 
         </div>
+        )
       )}
 
       {/* 3. WEEKLY DIGEST & INSIGHTS SUB-TAB */}
       {activeSubTab === "digest" && (
-        <div className="coach-digest-panel space-y-6" id="weekly_digest_panel">
+        <div className={`coach-digest-panel ${isFloatingMode ? "flex-1 overflow-y-auto p-4 space-y-4" : "space-y-6"}`} id="weekly_digest_panel">
           
           {/* Header Action Row */}
           <div className="bg-slate-900/80 backdrop-blur-md border border-white/15 p-5 rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xl">
@@ -1027,7 +1359,7 @@ export default function AICoach({
 
       {/* 4. SMART ENERGY-BASED SCHEDULING SUB-TAB */}
       {activeSubTab === "energy" && (
-        <div className="coach-energy-panel space-y-6" id="energy_scheduling_panel">
+        <div className={`coach-energy-panel ${isFloatingMode ? "flex-1 overflow-y-auto p-4 space-y-4" : "space-y-6"}`} id="energy_scheduling_panel">
           
           {/* Top Energy Profile Selection Panel */}
           <div className="bg-slate-900/80 backdrop-blur-md border border-white/15 p-5 rounded-3xl space-y-5 shadow-xl">
@@ -1255,7 +1587,7 @@ export default function AICoach({
 
       {/* 5. GOAL & ROUTINE RECOMMENDATION ENGINE SUB-TAB */}
       {activeSubTab === "recommendations" && (
-        <div className="space-y-6">
+        <div className={isFloatingMode ? "flex-1 overflow-y-auto p-4 space-y-4" : "space-y-6"}>
           <GoalRecommendationEngine
             goals={goals}
             events={events}

@@ -780,6 +780,79 @@ Return ONLY valid JSON. No markdown syntax wrapper.`;
   });
 });
 
+// 4b. LIVE PROACTIVE AI GOAL SENTINEL DEEP SCAN EVALUATOR
+app.post("/api/sentinel/evaluate", async (req, res) => {
+  const { 
+    goals = [], 
+    events = [], 
+    energyProfile = {}, 
+    burnoutLimits = {} 
+  } = req.body;
+
+  const keyAvailable = !!process.env.GEMINI_API_KEY;
+
+  if (keyAvailable) {
+    try {
+      const systemPrompt = `You are an Autonomous Routine & Goal Sentinel. You actively monitor a user's weekly goals, scheduled calendar events, chronotype energy zones, and burnout limits.
+Provide a sharp, encouraging, 1-2 sentence proactive directive to optimize their habit consistency, protect against circadian slumps, or catch up on lagging goals.
+Do not include generic fluff. Be direct, specific, and actionable. Refer specifically to one of their goals or energy peak windows if possible.
+Return a JSON object with:
+{
+  "personalizedAdvice": "string (1-2 sentences)",
+  "focusRecommendation": "string"
+}
+Return ONLY valid JSON. No markdown ticks.`;
+
+      const userPrompt = `Active Goals: ${JSON.stringify(goals.map((g: any) => ({ id: g.id, name: g.name, target: g.weeklyTarget, completed: g.completedCount, duration: g.durationMinutes })))}
+Weekly Events Scheduled: ${events.length} events
+Energy Chronotype: ${energyProfile.chronotype || "steady"} (Slump protection: ${energyProfile.slumpProtection !== false})
+Burnout Ceiling: ${burnoutLimits.weekdayMaxHours || 3.5}h weekday / ${burnoutLimits.weekendMaxHours || 5.0}h weekend`;
+
+      const result = await generateWithFallback({
+        primaryModel: "gemini-3.8-flash",
+        fallbackModel: "gemini-3.1-flash-lite",
+        contents: userPrompt,
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.3,
+          responseMimeType: "application/json"
+        }
+      });
+
+      if (result && result.text) {
+        const parsed = JSON.parse(result.text.trim());
+        if (parsed && parsed.personalizedAdvice) {
+          return res.json({
+            success: true,
+            personalizedAdvice: parsed.personalizedAdvice,
+            focusRecommendation: parsed.focusRecommendation || "Align deep work blocks with morning alertness peak."
+          });
+        }
+      }
+    } catch (err: any) {
+      console.warn("Sentinel evaluate AI generation notice:", err?.message || err);
+    }
+  }
+
+  // Fallback intelligent heuristic synthesis
+  const activeCount = Array.isArray(goals) ? goals.filter((g: any) => !g.isPaused).length : 0;
+  const chronotype = energyProfile?.chronotype || "steady";
+  let advice = "Your calendar schedule is synchronized with active goals.";
+  if (chronotype === "early_bird") {
+    advice = "Your Early Bird rhythm reaches maximum cognitive absorption before 11:30 AM. Protect morning hours for high-difficulty technical blocks.";
+  } else if (chronotype === "night_owl") {
+    advice = "Night Owl alertness naturally elevates in late afternoon and evening. Reserve midday slump periods for light administrative review and active movement.";
+  } else {
+    advice = "Keep high-priority sessions anchored to your morning peak, leaving a mandatory 15-minute buffer between tasks to eliminate cognitive fatigue.";
+  }
+
+  return res.json({
+    success: true,
+    personalizedAdvice: advice,
+    focusRecommendation: "Protect your recovery windows and maintain daily session pacing."
+  });
+});
+
 // 5. AI SUB-STEPS & SESSION PHASING GENERATOR
 app.post("/api/coach/suggest-substeps", async (req, res) => {
   const { 
