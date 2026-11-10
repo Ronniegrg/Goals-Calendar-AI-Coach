@@ -25,7 +25,10 @@ import {
   Info,
   CheckCircle2,
   ExternalLink,
-  Laptop
+  Laptop,
+  Trophy,
+  BookOpen,
+  FileText
 } from "lucide-react";
 import { 
   Goal, 
@@ -42,6 +45,7 @@ import {
   DEFAULT_USER_ENERGY_PROFILE 
 } from "../lib/energyProfile";
 import { generateIcsCalendar, downloadIcsFile } from "../lib/icalParser";
+import CalendarSyncModal from "./CalendarSyncModal";
 
 export interface SettingsViewProps {
   energyProfile: UserEnergyProfile;
@@ -66,6 +70,7 @@ export interface SettingsViewProps {
   availability: AvailabilityWindow[];
   userEmail: string;
   onClearExternalEvents?: () => void;
+  onImportCalendar?: (name: string, dataString: string, realEvents?: CalendarEvent[]) => void;
   onResetAndRegenerateCalendar?: (options?: { clearMode?: "uncompleted_goals" | "all_events"; keepExternal?: boolean }) => void;
   onImportData?: (data: { goals: Goal[]; events: CalendarEvent[]; energyProfile?: UserEnergyProfile; availability?: AvailabilityWindow[] }) => void;
   onNotify?: (title: string, message: string, type: any) => void;
@@ -105,6 +110,7 @@ export default function SettingsView({
   availability,
   userEmail,
   onClearExternalEvents,
+  onImportCalendar,
   onResetAndRegenerateCalendar,
   onImportData,
   onNotify,
@@ -112,6 +118,7 @@ export default function SettingsView({
   onNavigateToGoals
 }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("energy");
+  const [showSyncModal, setShowSyncModal] = useState<boolean>(false);
 
   // Local settings state with instant localStorage backup
   const [soundAlerts, setSoundAlerts] = useState<boolean>(() => {
@@ -119,7 +126,24 @@ export default function SettingsView({
   });
 
   const [sundayRecapEnabled, setSundayRecapEnabled] = useState<boolean>(() => {
-    return localStorage.getItem("sunday_recap_prompt_enabled") !== "false";
+    return localStorage.getItem("weekly_report_auto_display") !== "false" && localStorage.getItem("sunday_recap_prompt_enabled") !== "false";
+  });
+
+  const [weeklyReportDay, setWeeklyReportDay] = useState<number>(() => {
+    const val = localStorage.getItem("weekly_report_day");
+    return val !== null ? Number(val) : 0; // 0 = Sunday
+  });
+
+  const [weeklyReportTimeMode, setWeeklyReportTimeMode] = useState<"anytime" | "evening" | "custom">(() => {
+    return (localStorage.getItem("weekly_report_time_mode") as any) || "anytime";
+  });
+
+  const [weeklyReportCustomTime, setWeeklyReportCustomTime] = useState<string>(() => {
+    return localStorage.getItem("weekly_report_custom_time") || "18:00";
+  });
+
+  const [lastSeenReportDate, setLastSeenReportDate] = useState<string | null>(() => {
+    return localStorage.getItem("last_weekly_report_seen_date") || localStorage.getItem("last_sunday_report_seen") || null;
   });
 
   const [sentinelFrequency, setSentinelFrequency] = useState<"instant" | "hourly" | "quiet">(() => {
@@ -147,8 +171,39 @@ export default function SettingsView({
 
   const handleToggleSundayRecap = (enabled: boolean) => {
     setSundayRecapEnabled(enabled);
+    localStorage.setItem("weekly_report_auto_display", enabled ? "true" : "false");
     localStorage.setItem("sunday_recap_prompt_enabled", enabled ? "true" : "false");
-    onNotify?.("Sunday Report Card", `Sunday habit recap prompt ${enabled ? "enabled" : "disabled"}.`, "success");
+    onNotify?.("Weekly Report Card", `Weekly habit report auto-display ${enabled ? "enabled" : "disabled"}.`, "success");
+  };
+
+  const handleSetWeeklyReportDay = (day: number) => {
+    setWeeklyReportDay(day);
+    localStorage.setItem("weekly_report_day", String(day));
+    const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    onNotify?.("Weekly Report Schedule", `Automatic habit review scheduled for ${dayNames[day]}.`, "success");
+  };
+
+  const handleSetWeeklyReportTimeMode = (mode: "anytime" | "evening" | "custom") => {
+    setWeeklyReportTimeMode(mode);
+    localStorage.setItem("weekly_report_time_mode", mode);
+    const label = mode === "anytime" ? "Anytime on launch" : mode === "evening" ? "Evening (After 6:00 PM)" : "Custom time";
+    onNotify?.("Delivery Timing", `Habit report timing set to: ${label}.`, "success");
+  };
+
+  const handleSetWeeklyReportCustomTime = (time: string) => {
+    setWeeklyReportCustomTime(time);
+    localStorage.setItem("weekly_report_custom_time", time);
+  };
+
+  const handleResetReportSeenStatus = () => {
+    localStorage.removeItem("last_weekly_report_seen_date");
+    localStorage.removeItem("last_sunday_report_seen");
+    setLastSeenReportDate(null);
+    onNotify?.("Report Status Reset", "Weekly Report delivery status reset! It will pop up next time you open the app on your selected schedule.", "success");
+  };
+
+  const handlePreviewReportCard = () => {
+    window.dispatchEvent(new CustomEvent("open_weekly_habit_report"));
   };
 
   const handleSetSentinelFrequency = (freq: "instant" | "hourly" | "quiet") => {
@@ -724,38 +779,103 @@ export default function SettingsView({
           {/* 4. CALENDAR SYNC & FEEDS */}
           {activeSection === "calendar" && (
             <div className="bg-white/80 dark:bg-[#0f111a]/80 backdrop-blur-md border border-slate-200 dark:border-white/10 rounded-3xl p-6 shadow-xl space-y-6 animate-in fade-in duration-200">
-              <div className="border-b border-slate-200 dark:border-white/10 pb-4">
-                <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                  <Calendar className="w-5 h-5 text-blue-500" />
-                  <span>Calendar Synchronization & Feeds</span>
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                  Export scheduled goals to Apple Calendar, Google Calendar, or Microsoft Outlook via standard .ics format.
-                </p>
-              </div>
-
-              {/* Connected Account Card */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-xs font-bold text-slate-900 dark:text-white">Active Google Account</span>
-                  </div>
-                  <p className="text-xs font-mono text-indigo-600 dark:text-indigo-300 font-bold">
-                    {userEmail}
-                  </p>
-                  <p className="text-[10.5px] text-slate-400">
-                    Your routines are cloud-synced with end-to-end local persistence.
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-200 dark:border-white/10 gap-3">
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-blue-500" />
+                    <span>Calendar Synchronization & Feeds</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                    Direct sync with Apple Calendar, Google Calendar, and Microsoft Outlook. Keep your devices updated and protect against double-booking.
                   </p>
                 </div>
-                <div className="shrink-0 flex items-center gap-2">
+                <button
+                  type="button"
+                  id="settings_launch_sync_hub_btn"
+                  onClick={() => setShowSyncModal(true)}
+                  className="px-4 py-2 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-md shadow-blue-500/20 cursor-pointer flex items-center gap-2 shrink-0 active:scale-95"
+                >
+                  <Calendar className="w-4 h-4" />
+                  <span>Launch Sync Wizard</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Provider Integration Cards Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {/* 1. Google Calendar Card */}
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex flex-col justify-between gap-3">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <span className="text-sm">🌐</span> Google Calendar
+                      </span>
+                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+                        Active
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Sync routines directly with your Google account. Push schedules and exclude busy work events.
+                    </p>
+                    <p className="text-[10.5px] font-mono text-indigo-600 dark:text-indigo-300 truncate">
+                      {userEmail}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSyncModal(true)}
+                    className="w-full text-center px-3 py-1.5 bg-blue-50 dark:bg-blue-500/10 hover:bg-blue-100 dark:hover:bg-blue-500/20 text-blue-700 dark:text-blue-300 rounded-lg text-xs font-bold border border-blue-200 dark:border-blue-500/30 transition cursor-pointer"
+                  >
+                    Manage Google Sync
+                  </button>
+                </div>
+
+                {/* 2. Apple Calendar Card */}
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex flex-col justify-between gap-3">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <span className="text-sm">🍎</span> Apple Calendar
+                      </span>
+                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-700 dark:text-indigo-300">
+                        iCal Feed
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Subscribe on iPhone, iPad, and Mac. Sessions automatically update when your study schedule changes.
+                    </p>
+                  </div>
                   <button
                     type="button"
                     onClick={handleDownloadIcs}
-                    className="text-xs font-bold px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md transition cursor-pointer flex items-center gap-1.5"
+                    className="w-full text-center px-3 py-1.5 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 rounded-lg text-xs font-bold border border-indigo-200 dark:border-indigo-500/30 transition cursor-pointer flex items-center justify-center gap-1.5"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>Download .ICS Feed</span>
+                  </button>
+                </div>
+
+                {/* 3. Microsoft Outlook Card */}
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex flex-col justify-between gap-3">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <span className="text-sm">💼</span> Microsoft Outlook
+                      </span>
+                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                        Outlook Live
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Import study routines into Outlook on the web or Windows desktop calendar with conflict prevention.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSyncModal(true)}
+                    className="w-full text-center px-3 py-1.5 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-amber-800 dark:text-amber-300 rounded-lg text-xs font-bold border border-amber-200 dark:border-amber-500/30 transition cursor-pointer"
+                  >
+                    Outlook Sync Guide
                   </button>
                 </div>
               </div>
@@ -809,6 +929,8 @@ export default function SettingsView({
               )}
             </div>
           )}
+
+
 
           {/* 5. NOTIFICATIONS & TIMER */}
           {activeSection === "notifications" && (
@@ -909,27 +1031,187 @@ export default function SettingsView({
                 </button>
               </div>
 
-              {/* Sunday Habit Report Card Auto Prompt */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <span className="text-xs font-bold text-slate-900 dark:text-white block">Sunday AI Habit Report Prompt</span>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
-                    Displays the weekly consistency grade, circadian alignment score, and 1-click optimizations automatically on Sunday evenings.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleToggleSundayRecap(!sundayRecapEnabled)}
-                  className={`w-12 h-6.5 rounded-full transition-colors relative cursor-pointer shrink-0 p-0.5 ${
-                    sundayRecapEnabled ? "bg-amber-500" : "bg-slate-300 dark:bg-white/20"
-                  }`}
-                >
-                  <div
-                    className={`w-5.5 h-5.5 rounded-full bg-white shadow-md transition-transform duration-200 ${
-                      sundayRecapEnabled ? "translate-x-5.5" : "translate-x-0"
+              {/* Weekly Habit Report Card Auto-Display Configuration */}
+              <div className="p-5 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0">
+                        <Trophy className="w-4 h-4" />
+                      </div>
+                      <span className="text-xs font-bold text-slate-900 dark:text-white block">
+                        Weekly Habit Report Card Auto-Display
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                      Automatically pops up your weekly habit performance grades, circadian alignment score, and 1-click schedule optimizations when you launch the application.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    id="toggle_weekly_report_auto_display"
+                    onClick={() => handleToggleSundayRecap(!sundayRecapEnabled)}
+                    className={`w-12 h-6.5 rounded-full transition-colors relative cursor-pointer shrink-0 p-0.5 ${
+                      sundayRecapEnabled ? "bg-amber-500" : "bg-slate-300 dark:bg-white/20"
                     }`}
-                  />
-                </button>
+                    title={sundayRecapEnabled ? "Auto-display enabled" : "Auto-display disabled"}
+                  >
+                    <div
+                      className={`w-5.5 h-5.5 rounded-full bg-white shadow-md transition-transform duration-200 ${
+                        sundayRecapEnabled ? "translate-x-5.5" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {sundayRecapEnabled && (
+                  <div className="pt-3 border-t border-slate-200 dark:border-white/10 space-y-4 animate-in fade-in duration-200">
+                    {/* 1. Day of the Week Picker */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                          Auto-Display Day of Week
+                        </span>
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold font-mono">
+                          {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][weeklyReportDay]}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1.5 pt-0.5">
+                        {[
+                          { day: 0, label: "Sun", rec: true },
+                          { day: 1, label: "Mon", rec: false },
+                          { day: 2, label: "Tue", rec: false },
+                          { day: 3, label: "Wed", rec: false },
+                          { day: 4, label: "Thu", rec: false },
+                          { day: 5, label: "Fri", rec: false },
+                          { day: 6, label: "Sat", rec: false }
+                        ].map(item => (
+                          <button
+                            key={item.day}
+                            type="button"
+                            onClick={() => handleSetWeeklyReportDay(item.day)}
+                            className={`py-2 px-1 rounded-xl text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer relative ${
+                              weeklyReportDay === item.day
+                                ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/25 ring-2 ring-amber-400/40"
+                                : "bg-white dark:bg-white/10 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/15"
+                            }`}
+                          >
+                            <span>{item.label}</span>
+                            {item.rec && (
+                              <span className={`text-[8px] font-black uppercase tracking-tight scale-90 ${weeklyReportDay === item.day ? "text-amber-950" : "text-amber-500"}`}>
+                                Rec
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 2. Timing Condition Rule */}
+                    <div className="space-y-1.5">
+                      <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block">
+                        Launch Delivery Timing
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSetWeeklyReportTimeMode("anytime")}
+                          className={`p-2.5 rounded-xl text-left border transition cursor-pointer text-xs ${
+                            weeklyReportTimeMode === "anytime"
+                              ? "bg-amber-500/15 border-amber-500 text-amber-950 dark:text-amber-200 font-bold shadow-xs"
+                              : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-100"
+                          }`}
+                        >
+                          <span className="block font-bold">Anytime on Launch</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal block mt-0.5">
+                            Pops up the first time you open the app on {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][weeklyReportDay]}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSetWeeklyReportTimeMode("evening")}
+                          className={`p-2.5 rounded-xl text-left border transition cursor-pointer text-xs ${
+                            weeklyReportTimeMode === "evening"
+                              ? "bg-amber-500/15 border-amber-500 text-amber-950 dark:text-amber-200 font-bold shadow-xs"
+                              : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-100"
+                          }`}
+                        >
+                          <span className="block font-bold">Evening (After 6:00 PM)</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal block mt-0.5">
+                            Only displays during evening unwind hours to review the full week
+                          </span>
+                        </button>
+
+                        <div
+                          onClick={() => handleSetWeeklyReportTimeMode("custom")}
+                          className={`p-2.5 rounded-xl text-left border transition cursor-pointer text-xs flex flex-col justify-between ${
+                            weeklyReportTimeMode === "custom"
+                              ? "bg-amber-500/15 border-amber-500 text-amber-950 dark:text-amber-200 font-bold shadow-xs"
+                              : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-100"
+                          }`}
+                        >
+                          <div>
+                            <span className="block font-bold">Custom Time</span>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal block mt-0.5">
+                              Deliver after a specific hour
+                            </span>
+                          </div>
+                          {weeklyReportTimeMode === "custom" && (
+                            <input
+                              type="time"
+                              value={weeklyReportCustomTime}
+                              onChange={(e) => handleSetWeeklyReportCustomTime(e.target.value)}
+                              className="mt-1.5 px-2 py-1 rounded bg-white dark:bg-[#151726] border border-amber-400 dark:border-amber-500 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 3. Delivery Status & Quick Actions Bar */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 bg-white dark:bg-white/5 p-3 rounded-xl border border-slate-200 dark:border-white/10">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-800 dark:text-slate-200">
+                          <Clock className="w-3.5 h-3.5 text-indigo-500" />
+                          <span>Status:</span>
+                          <span className="font-mono text-xs text-indigo-600 dark:text-indigo-400">
+                            {lastSeenReportDate ? `Last viewed ${lastSeenReportDate}` : "Ready to auto-display on schedule"}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                          Once viewed, it will not interrupt you again until next week.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {lastSeenReportDate && (
+                          <button
+                            type="button"
+                            id="reset_weekly_report_seen_btn"
+                            onClick={handleResetReportSeenStatus}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-[11px] font-bold text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-white/10 transition cursor-pointer flex items-center gap-1"
+                            title="Reset delivery status so you can test auto-display on your next page refresh"
+                          >
+                            <RotateCcw className="w-3 h-3 text-slate-500" />
+                            <span>Reset Status</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          id="preview_weekly_report_btn"
+                          onClick={handlePreviewReportCard}
+                          className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-indigo-600 hover:from-amber-400 hover:to-indigo-500 text-white text-[11px] font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5 active:scale-95"
+                          title="Preview the Weekly Habit Report Card immediately"
+                        >
+                          <Trophy className="w-3.5 h-3.5 text-amber-200" />
+                          <span>Preview Report Card Now</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1097,6 +1379,18 @@ export default function SettingsView({
         </main>
       </div>
 
+      {/* Interactive Calendar Sync Hub Modal (Apple • Google • Outlook) */}
+      <CalendarSyncModal
+        isOpen={showSyncModal}
+        onClose={() => setShowSyncModal(false)}
+        events={events}
+        goals={goals}
+        userEmail={userEmail || "rounigorgees@gmail.com"}
+        onImportCalendar={onImportCalendar || (() => {})}
+        onClearExternalEvents={onClearExternalEvents}
+        autoGcalExport={autoGcalExport}
+        onToggleAutoGcalExport={handleToggleAutoGcal}
+      />
     </div>
   );
 }

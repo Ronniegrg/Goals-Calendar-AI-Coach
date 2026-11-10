@@ -29,12 +29,23 @@ import {
   ArrowRight,
   Bot,
   Shield,
-  ExternalLink
+  ExternalLink,
+  ArrowUp,
+  ArrowDown,
+  ChevronUp,
+  ChevronDown,
+  Wand2,
+  Loader2,
+  Brain,
+  Award,
+  Zap,
+  BatteryCharging
 } from "lucide-react";
-import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits } from "../types";
+import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, SessionSubStep, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits, GoalKnowledgeHub } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
 import GoalStartBriefingModal from "./GoalStartBriefingModal";
+import { GoalKnowledgeHubModal } from "./GoalKnowledgeHubModal";
 import { getStreakShieldBank } from "../lib/streakProtection";
 import { 
   alignDailyEventsByPriority, 
@@ -43,7 +54,6 @@ import {
   getPriorityScore 
 } from "../lib/scheduleOptimizer";
 import { inferGoalEnergyLevel, getEnergyBadgeData } from "../lib/energyProfile";
-import { Brain, Zap, BatteryCharging } from "lucide-react";
 import GoalRecommendationEngine from "./GoalRecommendationEngine";
 import HabitConsistencyHeatmap from "./HabitConsistencyHeatmap";
 
@@ -183,6 +193,7 @@ interface GoalTrackerProps {
   onOpenStreakShield?: () => void;
   burnoutLimits?: DailyBurnoutLimits;
   onUpdateBurnoutLimits?: (limits: DailyBurnoutLimits) => void;
+  onUpdateGoalKnowledgeHub?: (goalId: string, updatedHub: GoalKnowledgeHub) => void;
 }
 
 export default function GoalTracker({
@@ -208,13 +219,18 @@ export default function GoalTracker({
   onNavigateToAiSchedule,
   onOpenStreakShield,
   burnoutLimits,
-  onUpdateBurnoutLimits
+  onUpdateBurnoutLimits,
+  onUpdateGoalKnowledgeHub
 }: GoalTrackerProps) {
   const streakBank = getStreakShieldBank();
   // Goal Form State
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [knowledgeHubGoal, setKnowledgeHubGoal] = useState<Goal | null>(null);
+  const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
+  const [editingMilestoneText, setEditingMilestoneText] = useState<string>("");
+  const [generatingMilestonesGoalId, setGeneratingMilestonesGoalId] = useState<string | null>(null);
 
   // Goal Hold / Freeze Modal State
   const [pauseModalGoal, setPauseModalGoal] = useState<Goal | null>(null);
@@ -310,6 +326,18 @@ export default function GoalTracker({
       }
     } catch {}
 
+    const rawSubSteps = g.subSteps;
+    const rawSubtasks = g.subtasks;
+    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? rawSubSteps : undefined;
+    if (!resolvedSubSteps && rawSubtasks && rawSubtasks.length > 0) {
+      resolvedSubSteps = rawSubtasks.map(s => ({
+        id: s.id,
+        title: s.title,
+        durationMinutes: s.durationMinutes || 15,
+        completed: s.completed || false
+      }));
+    }
+
     triggerFocusTimer({
       title: g.name,
       duration: isStudyAhead ? (g.durationMinutes || 45) : (g.durationMinutes || 60),
@@ -317,7 +345,7 @@ export default function GoalTracker({
       category: g.category || g.type,
       color: g.color || "#6366f1",
       previousSessionNote: noteOverride !== undefined ? noteOverride : g.lastSessionNote,
-      subSteps: g.subSteps,
+      subSteps: resolvedSubSteps,
       autoStart: true,
       openModal: !isStudyAhead
     });
@@ -484,7 +512,14 @@ export default function GoalTracker({
               goalId: goal.id,
               completed: false,
               notes: `Scheduled session for ${goal.name}`,
-              icon: goal.icon
+              icon: goal.icon,
+              subtasks: goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks : undefined,
+              subSteps: goal.subSteps || (goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks.map(s => ({
+                id: s.id,
+                title: s.title,
+                durationMinutes: s.durationMinutes || 15,
+                completed: s.completed || false
+              })) : undefined)
             });
             booked++;
             slotFound = true;
@@ -579,6 +614,73 @@ export default function GoalTracker({
       event: lastEvt,
       totalCompleted: completed.length
     };
+  };
+
+  const handleGenerateGoalMilestones = async (goal: Goal) => {
+    setGeneratingMilestonesGoalId(goal.id);
+    try {
+      const res = await fetch("/api/coach/suggest-substeps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalName: goal.name,
+          goalType: goal.type,
+          category: goal.category || "Study",
+          durationMinutes: goal.durationMinutes || 45,
+          difficulty: "intermediate",
+          focusStyle: "balanced"
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.subSteps && Array.isArray(data.subSteps) && data.subSteps.length > 0) {
+          const generated: SubTask[] = data.subSteps.map((s: any, idx: number) => ({
+            id: s.id || `milestone_${Date.now()}_${idx}`,
+            title: s.title || `Milestone ${idx + 1}`,
+            durationMinutes: Number(s.durationMinutes) || 15,
+            completed: false
+          }));
+          onEditGoal(goal.id, { subtasks: generated });
+          return;
+        }
+      }
+
+      // Fallback 3-step default milestones
+      const total = goal.durationMinutes || 45;
+      const s1 = Math.max(5, Math.round(total * 0.25));
+      const s2 = Math.max(10, Math.round(total * 0.55));
+      const s3 = Math.max(5, total - (s1 + s2));
+      const fallbackSteps: SubTask[] = [
+        { id: `milestone_${Date.now()}_1`, title: "Foundations & Notes Review", durationMinutes: s1, completed: false },
+        { id: `milestone_${Date.now()}_2`, title: "Deep Practice & Exercises", durationMinutes: s2, completed: false },
+        { id: `milestone_${Date.now()}_3`, title: "Knowledge Check & Wrap-up", durationMinutes: s3, completed: false }
+      ];
+      onEditGoal(goal.id, { subtasks: fallbackSteps });
+    } catch (err) {
+      console.error("Failed to generate milestones:", err);
+    } finally {
+      setGeneratingMilestonesGoalId(null);
+    }
+  };
+
+  const handleMoveMilestone = (goal: Goal, milestoneId: string, direction: "up" | "down") => {
+    const list = [...(goal.subtasks || [])];
+    const idx = list.findIndex(s => s.id === milestoneId);
+    if (idx === -1) return;
+    if (direction === "up" && idx === 0) return;
+    if (direction === "down" && idx === list.length - 1) return;
+    const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+    const temp = list[idx];
+    list[idx] = list[targetIdx];
+    list[targetIdx] = temp;
+    const mappedSubSteps: SessionSubStep[] = list.map(s => ({
+      id: s.id,
+      title: s.title,
+      durationMinutes: s.durationMinutes || 15,
+      completed: s.completed || false
+    }));
+    onEditGoal(goal.id, { subtasks: list, subSteps: mappedSubSteps });
   };
 
   // Delay Goal Agenda: Shifts all uncompleted sessions associated with this goal forward by delayDays
@@ -754,6 +856,111 @@ export default function GoalTracker({
   const [targetExamTitle, setTargetExamTitle] = useState("");
   const [chapters, setChapters] = useState<{ id: string; title: string; completed: boolean }[]>([]);
   const [newChapterInput, setNewChapterInput] = useState("");
+  const [enableKnowledgeHub, setEnableKnowledgeHub] = useState<boolean>(true);
+
+  // Default Session Phases & Routine for this Goal (Reorderable)
+  const [formPhases, setFormPhases] = useState<SessionSubStep[]>([
+    { id: "phase_rev", title: "15m Concept Review & Carryover Notes", durationMinutes: 15, completed: false },
+    { id: "phase_core", title: "Core Focus & Practice", durationMinutes: 45, completed: false }
+  ]);
+  const [newPhaseTitle, setNewPhaseTitle] = useState("");
+  const [newPhaseDuration, setNewPhaseDuration] = useState<number>(15);
+
+  const totalPhasesDuration = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
+
+  const handleMovePhase = (index: number, direction: "up" | "down") => {
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= formPhases.length) return;
+    const updated = [...formPhases];
+    const [moved] = updated.splice(index, 1);
+    updated.splice(targetIndex, 0, moved);
+    setFormPhases(updated);
+  };
+
+  const handleUpdatePhase = (index: number, updates: Partial<SessionSubStep>) => {
+    setFormPhases(prev => prev.map((p, i) => i === index ? { ...p, ...updates } : p));
+  };
+
+  const handleDeletePhase = (index: number) => {
+    setFormPhases(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleAddPhase = (title?: string, duration?: number) => {
+    const phaseTitle = (title || newPhaseTitle).trim();
+    if (!phaseTitle) return;
+    const phaseDur = duration !== undefined ? duration : (Number(newPhaseDuration) || 15);
+    const newPhase: SessionSubStep = {
+      id: `phase_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      title: phaseTitle,
+      durationMinutes: Math.max(1, phaseDur),
+      completed: false
+    };
+    setFormPhases(prev => [...prev, newPhase]);
+    setNewPhaseTitle("");
+  };
+
+  const handleApplyPhasePreset = (presetType: "review_focus" | "pomodoro" | "spaced_recall" | "lab_practice") => {
+    const total = durationMinutes || 60;
+    let newSteps: SessionSubStep[] = [];
+    if (presetType === "review_focus") {
+      const revMins = Math.min(15, Math.max(5, Math.floor(total * 0.25)));
+      const recapMins = Math.min(10, Math.max(5, Math.floor(total * 0.15)));
+      const coreMins = Math.max(10, total - revMins - recapMins);
+      newSteps = [
+        { id: `phase_rev_${Date.now()}`, title: "15m Concept Review & Carryover Notes", durationMinutes: revMins, completed: false },
+        { id: `phase_core_${Date.now()}`, title: "Core Focus & Hands-on Deep Work", durationMinutes: coreMins, completed: false },
+        { id: `phase_recap_${Date.now()}`, title: "Recap, Flashcards & Key Takeaways", durationMinutes: recapMins, completed: false }
+      ];
+    } else if (presetType === "pomodoro") {
+      newSteps = [
+        { id: `phase_pomo1_${Date.now()}`, title: "Sprint 1: Deep Immersion", durationMinutes: 25, completed: false },
+        { id: `phase_break1_${Date.now()}`, title: "Cognitive Breath & Quick Break", durationMinutes: 5, completed: false },
+        { id: `phase_pomo2_${Date.now()}`, title: "Sprint 2: Application & Problem Solving", durationMinutes: 25, completed: false },
+        { id: `phase_review_${Date.now()}`, title: "Synthesis & Wrap-up", durationMinutes: Math.max(5, total - 55), completed: false }
+      ];
+    } else if (presetType === "spaced_recall") {
+      const recallMins = Math.min(10, Math.floor(total * 0.2));
+      const recapMins = Math.min(10, Math.floor(total * 0.2));
+      const mainMins = Math.max(15, total - recallMins - recapMins);
+      newSteps = [
+        { id: `phase_recall_${Date.now()}`, title: "Active Recall: Quiz & Previous Mistakes", durationMinutes: recallMins, completed: false },
+        { id: `phase_deep_${Date.now()}`, title: "Deep Practice & New Material", durationMinutes: mainMins, completed: false },
+        { id: `phase_synth_${Date.now()}`, title: "Synthesis & Reflection Summary", durationMinutes: recapMins, completed: false }
+      ];
+    } else if (presetType === "lab_practice") {
+      newSteps = [
+        { id: `phase_setup_${Date.now()}`, title: "Lab Setup & Environment Check", durationMinutes: 10, completed: false },
+        { id: `phase_lab_${Date.now()}`, title: "Hands-on Lab Exercises & Scenarios", durationMinutes: Math.max(20, total - 25), completed: false },
+        { id: `phase_docs_${Date.now()}`, title: "Documentation & Findings Recap", durationMinutes: 15, completed: false }
+      ];
+    }
+    setFormPhases(newSteps);
+  };
+
+  const handleAddRemainderPhase = () => {
+    const currentTotal = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
+    const remainder = durationMinutes - currentTotal;
+    if (remainder > 0) {
+      handleAddPhase(name ? `${name} Core Practice` : "Core Deep Work", remainder);
+    }
+  };
+
+  const handleScalePhasesToDuration = () => {
+    const currentTotal = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
+    if (currentTotal <= 0 || formPhases.length === 0) return;
+    const target = durationMinutes || 60;
+    let remaining = target;
+    const scaled = formPhases.map((p, idx) => {
+      if (idx === formPhases.length - 1) {
+        return { ...p, durationMinutes: Math.max(1, remaining) };
+      }
+      const ratio = (Number(p.durationMinutes) || 1) / currentTotal;
+      const dur = Math.max(1, Math.round(target * ratio));
+      remaining -= dur;
+      return { ...p, durationMinutes: dur };
+    });
+    setFormPhases(scaled);
+  };
 
   // Catalog filter and sort state
   const [priorityFilter, setPriorityFilter] = useState<"all" | GoalPriority>("all");
@@ -777,6 +984,15 @@ export default function GoalTracker({
     setPriority(preset.priority || "normal");
     setEnergyLevel(preset.energyLevel || "moderate");
     setIcon(preset.type === GoalType.WORKOUT ? "dumbbell" : preset.type === GoalType.STUDY ? "book" : preset.type === GoalType.JOB_SEARCH ? "briefcase" : preset.type === GoalType.SIDE_PROJECT ? "laptop" : preset.type === GoalType.ROUTINE ? "coffee" : "smile");
+
+    const presetDur = preset.durationMinutes || 60;
+    const revMins = Math.min(15, Math.max(5, Math.floor(presetDur * 0.25)));
+    const coreMins = Math.max(10, presetDur - revMins);
+    setFormPhases([
+      { id: `phase_rev_${Date.now()}`, title: "15m Concept Review & Carryover Notes", durationMinutes: revMins, completed: false },
+      { id: `phase_core_${Date.now()}`, title: `${preset.name} Core Practice`, durationMinutes: coreMins, completed: false }
+    ]);
+
     setEditingGoalId(null);
     setShowAddGoal(true);
     
@@ -916,6 +1132,14 @@ export default function GoalTracker({
     const customStartVal = timePreference === TimePreference.CUSTOM ? customTimeStart : undefined;
     const customEndVal = timePreference === TimePreference.CUSTOM ? customTimeEnd : undefined;
 
+    const finalSubSteps = formPhases.length > 0 ? formPhases : undefined;
+    const finalSubtasks = formPhases.length > 0 ? formPhases.map(p => ({
+      id: p.id,
+      title: p.title,
+      durationMinutes: p.durationMinutes,
+      completed: false
+    })) : undefined;
+
     if (editingGoalId) {
       onEditGoal(editingGoalId, {
         name,
@@ -943,12 +1167,15 @@ export default function GoalTracker({
         targetCompletionDate: targetCompletionDate || undefined,
         targetExamDate: targetExamDate || undefined,
         targetExamTitle: targetExamTitle.trim() || undefined,
-        chapters: chapters.length > 0 ? chapters : undefined
+        chapters: chapters.length > 0 ? chapters : undefined,
+        enableKnowledgeHub: enableKnowledgeHub,
+        subSteps: finalSubSteps,
+        subtasks: finalSubtasks
       });
 
       onAddNotification(
         "Goal Updated Successfully",
-        `Goal "${name}" (${priority.toUpperCase()} priority, ${energyLevel.replace("_", " ").toUpperCase()}) updated.`,
+        `Goal "${name}" (${priority.toUpperCase()} priority, ${energyLevel.replace("_", " ").toUpperCase()}) updated with ${formPhases.length} default phase(s).`,
         "success"
       );
     } else {
@@ -978,12 +1205,15 @@ export default function GoalTracker({
         targetCompletionDate: targetCompletionDate || undefined,
         targetExamDate: targetExamDate || undefined,
         targetExamTitle: targetExamTitle.trim() || undefined,
-        chapters: chapters.length > 0 ? chapters : undefined
+        chapters: chapters.length > 0 ? chapters : undefined,
+        enableKnowledgeHub: enableKnowledgeHub,
+        subSteps: finalSubSteps,
+        subtasks: finalSubtasks
       });
 
       onAddNotification(
         "Goal Created Successfully",
-        `New goal "${name}" (${priority.toUpperCase()} priority, ${energyLevel.replace("_", " ").toUpperCase()}) added!`,
+        `New goal "${name}" (${priority.toUpperCase()} priority, ${energyLevel.replace("_", " ").toUpperCase()}) added with ${formPhases.length} default phase(s)!`,
         "success"
       );
     }
@@ -1003,6 +1233,13 @@ export default function GoalTracker({
     setIcon("target");
     setPriority("normal");
     setEnergyLevel("moderate");
+    setEnableKnowledgeHub(true);
+    setFormPhases([
+      { id: "phase_rev", title: "15m Concept Review & Carryover Notes", durationMinutes: 15, completed: false },
+      { id: "phase_core", title: "Core Focus & Practice", durationMinutes: 45, completed: false }
+    ]);
+    setNewPhaseTitle("");
+    setNewPhaseDuration(15);
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -1024,6 +1261,12 @@ export default function GoalTracker({
       setIcon("target");
       setPriority("normal");
       setEnergyLevel("moderate");
+      setFormPhases([
+        { id: "phase_rev", title: "15m Concept Review & Carryover Notes", durationMinutes: 15, completed: false },
+        { id: "phase_core", title: "Core Focus & Practice", durationMinutes: 45, completed: false }
+      ]);
+      setNewPhaseTitle("");
+      setNewPhaseDuration(15);
       setShowAddGoal(true);
     } else {
       setShowAddGoal((prev) => !prev);
@@ -1055,6 +1298,13 @@ export default function GoalTracker({
     setTargetExamTitle("");
     setChapters([]);
     setNewChapterInput("");
+    setEnableKnowledgeHub(true);
+    setFormPhases([
+      { id: "phase_rev", title: "15m Concept Review & Carryover Notes", durationMinutes: 15, completed: false },
+      { id: "phase_core", title: "Core Focus & Practice", durationMinutes: 45, completed: false }
+    ]);
+    setNewPhaseTitle("");
+    setNewPhaseDuration(15);
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -1073,6 +1323,29 @@ export default function GoalTracker({
     setTargetExamTitle(g.targetExamTitle || "");
     setChapters(g.chapters ? [...g.chapters] : []);
     setNewChapterInput("");
+    setEnableKnowledgeHub(g.enableKnowledgeHub !== undefined ? g.enableKnowledgeHub : (g.type === GoalType.STUDY || g.type === GoalType.JOB_SEARCH || g.type === GoalType.SIDE_PROJECT));
+
+    if (g.subSteps && g.subSteps.length > 0) {
+      setFormPhases(g.subSteps.map(s => ({ ...s, completed: false })));
+    } else if (g.subtasks && g.subtasks.length > 0) {
+      setFormPhases(g.subtasks.map(s => ({
+        id: s.id,
+        title: s.title,
+        durationMinutes: s.durationMinutes || 15,
+        completed: false
+      })));
+    } else {
+      const dur = g.durationMinutes || 60;
+      const revMins = Math.min(15, Math.max(5, Math.floor(dur * 0.25)));
+      const coreMins = Math.max(10, dur - revMins);
+      setFormPhases([
+        { id: `phase_rev_${Date.now()}`, title: "15m Concept Review & Carryover Notes", durationMinutes: revMins, completed: false },
+        { id: `phase_core_${Date.now()}`, title: `${g.name} Core Focus & Practice`, durationMinutes: coreMins, completed: false }
+      ]);
+    }
+    setNewPhaseTitle("");
+    setNewPhaseDuration(15);
+
     if (g.weeklyTarget > 7) {
       setIsCustomTarget(true);
       setCustomTargetVal(String(g.weeklyTarget));
@@ -1884,12 +2157,12 @@ export default function GoalTracker({
             {/* Goal Icon Selector */}
             <GoalIconPicker selectedIcon={icon} onSelectIcon={setIcon} accentColor={color} />
 
-            {/* 1-Click Study Material & Curriculum Forecaster Settings */}
+            {/* 1-Click Course Portal & Curriculum Forecaster Settings */}
             <div className="pt-3 border-t border-white/5 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
                   <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Study Materials & Completion Forecast</span>
+                  <span>Course Portal & Completion Forecast</span>
                 </span>
                 <span className="text-[10px] text-slate-400">1-Click Launch</span>
               </div>
@@ -2047,6 +2320,268 @@ export default function GoalTracker({
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Default Session Phases & Study Routine (Reorderable) */}
+            <div className="pt-3 border-t border-white/5 space-y-3" id="goal_phases_editor_section">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Default Session Phases & Routine ({formPhases.length})</span>
+                  </span>
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    Order and customize the phases that automatically execute whenever a session starts for this goal.
+                  </p>
+                </div>
+
+                {/* Quick Routine Presets */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[9px] font-bold text-slate-400 mr-0.5">Presets:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPhasePreset("review_focus")}
+                    className="px-2 py-1 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 text-[10px] font-medium transition cursor-pointer flex items-center gap-1"
+                    title="15m Review + Core Focus + 10m Recap"
+                  >
+                    <span>📖 Review 15m + Focus</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPhasePreset("pomodoro")}
+                    className="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-[10px] font-medium transition cursor-pointer flex items-center gap-1"
+                    title="25m Focus + 5m Break + 25m Focus"
+                  >
+                    <span>🍅 Pomodoro 25/5</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPhasePreset("spaced_recall")}
+                    className="px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 text-[10px] font-medium transition cursor-pointer flex items-center gap-1"
+                    title="Active Recall Quiz + Deep Practice + Synthesis"
+                  >
+                    <span>⚡ Active Recall</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPhasePreset("lab_practice")}
+                    className="px-2 py-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 text-[10px] font-medium transition cursor-pointer flex items-center gap-1"
+                    title="Lab Setup + Hands-on Lab + Documentation"
+                  >
+                    <span>🔬 Lab & Practice</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Time Budget Gauge */}
+              <div className="bg-[#0b0d14] p-2.5 rounded-xl border border-white/5 flex items-center justify-between flex-wrap gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 font-medium text-[11px]">Time Budget:</span>
+                  <span className={`font-mono font-bold text-xs ${
+                    totalPhasesDuration === durationMinutes ? "text-emerald-400" :
+                    totalPhasesDuration < durationMinutes ? "text-amber-400" : "text-rose-400"
+                  }`}>
+                    {totalPhasesDuration}m / {durationMinutes}m
+                  </span>
+                  {totalPhasesDuration < durationMinutes && (
+                    <span className="text-[10px] text-amber-300/80 hidden sm:inline">
+                      ({durationMinutes - totalPhasesDuration}m unallocated)
+                    </span>
+                  )}
+                  {totalPhasesDuration > durationMinutes && (
+                    <span className="text-[10px] text-rose-300/80 hidden sm:inline">
+                      ({totalPhasesDuration - durationMinutes}m over planned duration)
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {totalPhasesDuration < durationMinutes && (
+                    <button
+                      type="button"
+                      onClick={handleAddRemainderPhase}
+                      className="text-[10px] font-semibold text-amber-300 hover:text-amber-200 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-md transition cursor-pointer"
+                    >
+                      + Fill Remainder ({durationMinutes - totalPhasesDuration}m)
+                    </button>
+                  )}
+                  {formPhases.length > 0 && totalPhasesDuration !== durationMinutes && (
+                    <button
+                      type="button"
+                      onClick={handleScalePhasesToDuration}
+                      className="text-[10px] font-semibold text-indigo-300 hover:text-indigo-200 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md transition cursor-pointer"
+                      title="Proportionally scale all phases to match target duration"
+                    >
+                      ⚖️ Auto-Fit to {durationMinutes}m
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Ordered Phases List */}
+              <div className="space-y-1.5">
+                {formPhases.map((phase, idx) => {
+                  const isFirst = idx === 0;
+                  const isLast = idx === formPhases.length - 1;
+                  return (
+                    <div
+                      key={phase.id || idx}
+                      className="flex items-center gap-2 p-2 bg-[#0c0e16] border border-white/10 hover:border-indigo-500/40 rounded-lg group transition"
+                    >
+                      {/* Step Number & Up/Down Reorder Controls */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="w-5 h-5 rounded bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 font-mono text-[10px] font-bold flex items-center justify-center">
+                          {idx + 1}
+                        </span>
+                        <div className="flex flex-col">
+                          <button
+                            type="button"
+                            disabled={isFirst}
+                            onClick={() => handleMovePhase(idx, "up")}
+                            className={`p-0.5 rounded text-slate-400 hover:text-white transition cursor-pointer ${
+                              isFirst ? "opacity-20 cursor-not-allowed" : "hover:bg-white/10"
+                            }`}
+                            title="Move phase up (runs earlier)"
+                          >
+                            <ChevronUp className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isLast}
+                            onClick={() => handleMovePhase(idx, "down")}
+                            className={`p-0.5 rounded text-slate-400 hover:text-white transition cursor-pointer ${
+                              isLast ? "opacity-20 cursor-not-allowed" : "hover:bg-white/10"
+                            }`}
+                            title="Move phase down (runs later)"
+                          >
+                            <ChevronDown className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Phase Title Input */}
+                      <div className="flex-1 min-w-0">
+                        <input
+                          type="text"
+                          value={phase.title}
+                          onChange={(e) => handleUpdatePhase(idx, { title: e.target.value })}
+                          placeholder="e.g. 15m Concept Review & Carryover Notes"
+                          className="w-full text-xs px-2.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white focus:outline-none focus:border-indigo-400 font-medium"
+                        />
+                      </div>
+
+                      {/* Phase Duration Input */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <input
+                          type="number"
+                          min="1"
+                          max="300"
+                          value={phase.durationMinutes}
+                          onChange={(e) => handleUpdatePhase(idx, { durationMinutes: Math.max(1, Number(e.target.value) || 5) })}
+                          className="w-14 text-xs px-1.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
+                        />
+                        <span className="text-[10px] text-slate-400 font-medium">min</span>
+                      </div>
+
+                      {/* Delete Phase Button */}
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePhase(idx)}
+                        className="p-1 text-slate-500 hover:text-rose-400 transition cursor-pointer shrink-0 rounded hover:bg-rose-500/10"
+                        title="Remove this phase"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {formPhases.length === 0 && (
+                  <div className="text-center py-4 bg-white/[0.02] border border-dashed border-white/10 rounded-lg text-slate-400 text-xs">
+                    No routine phases configured. Click a routine template above or add a custom phase below.
+                  </div>
+                )}
+              </div>
+
+              {/* Add Phase Input Bar */}
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  value={newPhaseTitle}
+                  onChange={(e) => setNewPhaseTitle(e.target.value)}
+                  placeholder="Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."
+                  className="flex-1 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddPhase();
+                    }
+                  }}
+                />
+                <div className="flex items-center gap-1 shrink-0">
+                  <input
+                    type="number"
+                    min="1"
+                    max="180"
+                    value={newPhaseDuration}
+                    onChange={(e) => setNewPhaseDuration(Math.max(1, Number(e.target.value) || 5))}
+                    className="w-14 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white font-mono font-bold text-center focus:outline-none focus:border-indigo-400"
+                  />
+                  <span className="text-[10px] text-slate-400 font-medium">min</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleAddPhase()}
+                  className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Phase</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Artifacts Goal Knowledge Tester & Study Material Notes Hub Option Toggle */}
+            <div className="pt-3 border-t border-white/5" id="knowledge_hub_toggle_section">
+              <div className="p-3 rounded-xl bg-gradient-to-r from-violet-950/40 to-indigo-950/30 border border-violet-800/30 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-lg transition-colors ${enableKnowledgeHub ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                    <BookOpen className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white">
+                        Artifacts Knowledge Tester & Study Notes Hub
+                      </span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                        enableKnowledgeHub 
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                          : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      }`}>
+                        {enableKnowledgeHub ? 'Enabled for this Goal' : 'Disabled / Off'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Enable technical cheat sheets, diagnostic assessment tests, and active recall flashcards. Turn off for clean simple workout/routine habits.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setEnableKnowledgeHub(!enableKnowledgeHub)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    enableKnowledgeHub ? 'bg-violet-600' : 'bg-slate-800'
+                  }`}
+                  role="switch"
+                  aria-checked={enableKnowledgeHub}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                      enableKnowledgeHub ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
             </div>
 
@@ -2485,79 +3020,269 @@ export default function GoalTracker({
                       );
                     })()}
 
+                    {/* Goal Knowledge Tester & Study Material Notes Hub Card Trigger */}
+                    {(() => {
+                      const isHubActive = g.enableKnowledgeHub !== undefined 
+                        ? g.enableKnowledgeHub 
+                        : (g.type === GoalType.STUDY || (g.chapters && g.chapters.length > 0));
+                      if (!isHubActive) return null;
+
+                      const hub = g.knowledgeHub;
+                      const notesCount = hub?.notes?.length || 0;
+                      const testsCount = hub?.tests?.length || 0;
+                      const flashcardsCount = hub?.flashcards?.length || 0;
+                      const masteryScore = hub?.overallMasteryScore || 0;
+
+                      return (
+                        <div className="p-2.5 bg-gradient-to-r from-violet-950/40 via-[#15172b] to-indigo-950/40 border border-violet-800/30 rounded-xl space-y-2 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-violet-300 uppercase tracking-wider flex items-center gap-1.5">
+                              <BookOpen className="w-3.5 h-3.5 text-violet-400" />
+                              <span>Knowledge Hub & Tester</span>
+                            </span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/15 text-amber-300 border border-amber-500/20">
+                              {masteryScore}% Mastery
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[11px] text-slate-300">
+                            <div className="flex items-center gap-2 text-slate-400 text-[10px]">
+                              <span>📝 {notesCount} Notes</span>
+                              <span>•</span>
+                              <span>🧪 {testsCount} Tests</span>
+                              <span>•</span>
+                              <span>⚡ {flashcardsCount} Cards</span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setKnowledgeHubGoal(g)}
+                              className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-bold shadow-md shadow-violet-900/30 flex items-center gap-1 transition-all cursor-pointer"
+                            >
+                              <span>Open Hub</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* Subtasks Section */}
-                    <div className="pt-3 border-t border-white/5 mt-3 space-y-1.5" id={`goal_subtasks_sec_${g.id}`}>
+                    <div className="pt-3 border-t border-white/5 mt-3 space-y-2" id={`goal_subtasks_sec_${g.id}`}>
                       {(() => {
                         const totalAllocated = (g.subtasks || []).reduce((acc, s) => acc + (s.durationMinutes || 0), 0);
                         const targetMins = g.durationMinutes || 45;
+                        const subtasksList = g.subtasks || [];
+                        const completedCount = subtasksList.filter(s => s.completed).length;
+                        const pct = subtasksList.length > 0 ? Math.round((completedCount / subtasksList.length) * 100) : 0;
+                        const isGenerating = generatingMilestonesGoalId === g.id;
+
                         return (
-                          <div className="flex items-center justify-between">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Subtasks / Milestones</span>
-                            {totalAllocated > 0 && (
-                              <span className={`text-[9px] font-mono font-bold ${
-                                totalAllocated > targetMins ? "text-amber-400" : "text-emerald-400"
-                              }`}>
-                                {totalAllocated}m / {targetMins}m allocated
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-1 flex-wrap">
+                              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">
+                                Subtasks / Milestones
                               </span>
+
+                              <div className="flex items-center gap-1.5">
+                                {totalAllocated > 0 && (
+                                  <span className={`text-[9px] font-mono font-bold ${
+                                    totalAllocated > targetMins ? "text-amber-400" : "text-emerald-400"
+                                  }`}>
+                                    {totalAllocated}m / {targetMins}m
+                                  </span>
+                                )}
+
+                                {/* AI Milestone Breakdown Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleGenerateGoalMilestones(g)}
+                                  disabled={isGenerating}
+                                  className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-400/40 transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                  title="Auto-break this goal into 3-4 structured study milestones"
+                                >
+                                  {isGenerating ? (
+                                    <>
+                                      <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-300" />
+                                      <span>AI Steps...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Wand2 className="w-2.5 h-2.5 text-amber-300" />
+                                      <span>AI Steps</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Mini Segmented Progress Bar */}
+                            {subtasksList.length > 0 && (
+                              <div className="space-y-1">
+                                <div className="flex gap-1 w-full h-1.5 rounded-full overflow-hidden bg-black/40 p-0.2">
+                                  {subtasksList.map((st, sIdx) => (
+                                    <div
+                                      key={st.id || sIdx}
+                                      className={`h-full rounded-full transition-all duration-300 flex-1 ${
+                                        st.completed ? "bg-emerald-400" : "bg-white/10"
+                                      }`}
+                                      title={`${st.title} (${st.durationMinutes || 10}m) - ${st.completed ? "Done" : "Pending"}`}
+                                    />
+                                  ))}
+                                </div>
+                                <div className="flex items-center justify-between text-[9px] font-mono text-slate-400 px-0.5">
+                                  <span>{completedCount} of {subtasksList.length} completed</span>
+                                  <span className={pct === 100 ? "text-emerald-400 font-bold" : "text-slate-400"}>{pct}%</span>
+                                </div>
+                              </div>
                             )}
                           </div>
                         );
                       })()}
                       
                       {g.subtasks && g.subtasks.length > 0 ? (
-                        <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
-                          {g.subtasks.map((sub) => (
-                            <div key={sub.id} className="flex items-center justify-between gap-1 group bg-black/15 px-2 py-1 rounded border border-white/5">
-                              <label className="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer flex-1 min-w-0 select-none">
-                                <input
-                                  type="checkbox"
-                                  checked={sub.completed}
-                                  onChange={() => {
-                                    const updatedSubtasks = g.subtasks?.map(s => 
-                                      s.id === sub.id ? { ...s, completed: !s.completed } : s
-                                    ) || [];
-                                    onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                  }}
-                                  className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer"
-                                />
-                                <span className={`truncate ${sub.completed ? "line-through text-slate-500 font-medium" : "font-semibold"}`}>
-                                  {sub.title}
-                                </span>
-                              </label>
+                        <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                          {g.subtasks.map((sub, sIdx) => {
+                            const isEditing = editingMilestoneId === sub.id;
 
-                              {/* Time allocation pill */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const currentMins = sub.durationMinutes || 10;
-                                  const nextMins = currentMins >= 45 ? 5 : currentMins + 5;
-                                  const updatedSubtasks = g.subtasks?.map(s => 
-                                    s.id === sub.id ? { ...s, durationMinutes: nextMins } : s
-                                  ) || [];
-                                  onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                }}
-                                className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition shrink-0 cursor-pointer"
-                                title="Click to adjust duration (+5m)"
-                              >
-                                {sub.durationMinutes ? `${sub.durationMinutes}m` : "+time"}
-                              </button>
+                            return (
+                              <div key={sub.id} className="flex items-center justify-between gap-1 group bg-black/20 hover:bg-black/35 px-2 py-1 rounded-lg border border-white/5 transition">
+                                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                  <span className="text-[9px] font-mono text-slate-500 w-3 text-center shrink-0">
+                                    {sIdx + 1}
+                                  </span>
+                                  <input
+                                    type="checkbox"
+                                    checked={sub.completed}
+                                    onChange={() => {
+                                      const updatedSubtasks = g.subtasks?.map(s => 
+                                        s.id === sub.id ? { ...s, completed: !s.completed } : s
+                                      ) || [];
+                                      onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                    }}
+                                    className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer shrink-0"
+                                  />
 
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const updatedSubtasks = g.subtasks?.filter(s => s.id !== sub.id) || [];
-                                  onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                }}
-                                className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer shrink-0"
-                                title="Delete Subtask"
-                              >
-                                <X className="w-2.5 h-2.5" />
-                              </button>
-                            </div>
-                          ))}
+                                  {isEditing ? (
+                                    <form
+                                      onSubmit={(e) => {
+                                        e.preventDefault();
+                                        if (editingMilestoneText.trim()) {
+                                          const updatedSubtasks = g.subtasks?.map(s => 
+                                            s.id === sub.id ? { ...s, title: editingMilestoneText.trim() } : s
+                                          ) || [];
+                                          onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                        }
+                                        setEditingMilestoneId(null);
+                                      }}
+                                      className="flex items-center gap-1 flex-1 min-w-0"
+                                    >
+                                      <input
+                                        type="text"
+                                        autoFocus
+                                        value={editingMilestoneText}
+                                        onChange={(e) => setEditingMilestoneText(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Escape") setEditingMilestoneId(null);
+                                        }}
+                                        className="flex-1 bg-black text-[10px] text-white px-1 py-0.5 rounded border border-indigo-500 focus:outline-none"
+                                      />
+                                      <button type="submit" className="text-emerald-400 hover:text-emerald-300 p-0.5">
+                                        <Check className="w-2.5 h-2.5" />
+                                      </button>
+                                      <button type="button" onClick={() => setEditingMilestoneId(null)} className="text-slate-400 hover:text-white p-0.5">
+                                        <X className="w-2.5 h-2.5" />
+                                      </button>
+                                    </form>
+                                  ) : (
+                                    <span 
+                                      onDoubleClick={() => {
+                                        setEditingMilestoneId(sub.id);
+                                        setEditingMilestoneText(sub.title);
+                                      }}
+                                      className={`text-[10px] truncate flex-1 min-w-0 cursor-pointer ${
+                                        sub.completed ? "line-through text-slate-500 font-medium" : "text-slate-200 font-semibold"
+                                      }`}
+                                      title="Double-click to edit milestone"
+                                    >
+                                      {sub.title}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {/* Reorder Buttons */}
+                                  {sIdx > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMoveMilestone(g, sub.id, "up")}
+                                      className="p-0.5 text-slate-500 hover:text-white opacity-40 group-hover:opacity-100 transition cursor-pointer"
+                                      title="Move up"
+                                    >
+                                      <ArrowUp className="w-2.5 h-2.5" />
+                                    </button>
+                                  )}
+                                  {sIdx < (g.subtasks?.length || 0) - 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMoveMilestone(g, sub.id, "down")}
+                                      className="p-0.5 text-slate-500 hover:text-white opacity-40 group-hover:opacity-100 transition cursor-pointer"
+                                      title="Move down"
+                                    >
+                                      <ArrowDown className="w-2.5 h-2.5" />
+                                    </button>
+                                  )}
+
+                                  {/* Edit Button */}
+                                  {!isEditing && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingMilestoneId(sub.id);
+                                        setEditingMilestoneText(sub.title);
+                                      }}
+                                      className="p-0.5 text-slate-500 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                                      title="Edit title"
+                                    >
+                                      <Pencil className="w-2.5 h-2.5" />
+                                    </button>
+                                  )}
+
+                                  {/* Time allocation pill */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const currentMins = sub.durationMinutes || 10;
+                                      const nextMins = currentMins >= 60 ? 5 : currentMins + 5;
+                                      const updatedSubtasks = g.subtasks?.map(s => 
+                                        s.id === sub.id ? { ...s, durationMinutes: nextMins } : s
+                                      ) || [];
+                                      onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                    }}
+                                    className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition shrink-0 cursor-pointer"
+                                    title="Click to adjust duration (+5m)"
+                                  >
+                                    {sub.durationMinutes ? `${sub.durationMinutes}m` : "+time"}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updatedSubtasks = g.subtasks?.filter(s => s.id !== sub.id) || [];
+                                      onEditGoal(g.id, { subtasks: updatedSubtasks });
+                                    }}
+                                    className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer shrink-0"
+                                    title="Delete Subtask"
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       ) : (
-                        <p className="text-[9px] text-slate-500 italic">No milestones defined yet.</p>
+                        <p className="text-[9px] text-slate-500 italic">No milestones defined yet. Click "AI Steps" or add one below.</p>
                       )}
 
                       <form 
@@ -2745,6 +3470,7 @@ export default function GoalTracker({
                               <span>Log & Finish</span>
                             </button>
                           </div>
+
 
                           {/* Dynamic Next Scheduled Session Indicator & Shift Confirmation */}
                           {(() => {
@@ -3253,6 +3979,22 @@ export default function GoalTracker({
               lastSessionNote: updatedNote,
               lastSessionNoteDate: new Date().toISOString()
             });
+          }}
+        />
+      )}
+
+      {/* Goal Knowledge Tester & Study Material Notes Hub Modal */}
+      {knowledgeHubGoal && (
+        <GoalKnowledgeHubModal
+          goal={knowledgeHubGoal}
+          isOpen={Boolean(knowledgeHubGoal)}
+          onClose={() => setKnowledgeHubGoal(null)}
+          onUpdateKnowledgeHub={(goalId, updatedHub) => {
+            if (onUpdateGoalKnowledgeHub) {
+              onUpdateGoalKnowledgeHub(goalId, updatedHub);
+            }
+            onEditGoal(goalId, { knowledgeHub: updatedHub });
+            setKnowledgeHubGoal(prev => prev && prev.id === goalId ? { ...prev, knowledgeHub: updatedHub } : prev);
           }}
         />
       )}

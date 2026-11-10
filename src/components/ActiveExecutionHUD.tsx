@@ -23,7 +23,14 @@ import {
   Trash2,
   Hourglass,
   Layers,
-  BookOpen
+  BookOpen,
+  Pencil,
+  ArrowUp,
+  ArrowDown,
+  Wand2,
+  Loader2,
+  RefreshCw,
+  X
 } from "lucide-react";
 import { CalendarEvent, Goal, SubTask, SessionSubStep } from "../types";
 import { 
@@ -34,10 +41,12 @@ import {
   updateActiveTimerSubSteps,
   setActiveTimerDuration,
   getActiveTimerSnapshot, 
-  ActiveTimerData 
+  ActiveTimerData,
+  playPhaseEndChime 
 } from "./FocusTimerModal";
 import { renderGoalIcon } from "../lib/goalIcons";
 import GoalStartBriefingModal from "./GoalStartBriefingModal";
+import { isDateShielded, getStreakShieldBank } from "../lib/streakProtection";
 
 interface ActiveExecutionHUDProps {
   events: CalendarEvent[];
@@ -80,6 +89,10 @@ export default function ActiveExecutionHUD({
   const [showGoalPicker, setShowGoalPicker] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [newSubtaskMinutes, setNewSubtaskMinutes] = useState<number>(15);
+  const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
+  const [editingSubtaskTitle, setEditingSubtaskTitle] = useState<string>("");
+  const [isGeneratingAiSteps, setIsGeneratingAiSteps] = useState(false);
+  const [showTemplatesMenu, setShowTemplatesMenu] = useState(false);
 
   // Compact HUD mode for minimal vertical footprint on laptop screens
   const [isCompact, setIsCompact] = useState<boolean>(() => {
@@ -402,6 +415,88 @@ export default function ActiveExecutionHUD({
     ) || null;
   }, [userSelectedGoal, events, tickerNow]);
 
+  // Daily Study Momentum & Streak Calculations
+  const dailyMomentum = useMemo(() => {
+    const today = new Date(tickerNow);
+    const todayStr = today.toDateString();
+
+    const todayEvents = events.filter(e => new Date(e.start).toDateString() === todayStr);
+    const completedTodayEvents = todayEvents.filter(e => e.completed);
+    const totalTodayCount = todayEvents.length;
+    const completedTodayCount = completedTodayEvents.length;
+    const todayProgressPct = totalTodayCount > 0 ? Math.round((completedTodayCount / totalTodayCount) * 100) : 0;
+
+    const completedTodayMinutes = completedTodayEvents.reduce((acc, e) => {
+      const dur = Math.max(15, Math.round((new Date(e.end).getTime() - new Date(e.start).getTime()) / 60000));
+      return acc + dur;
+    }, 0);
+
+    const plannedTodayMinutes = todayEvents.reduce((acc, e) => {
+      const dur = Math.max(15, Math.round((new Date(e.end).getTime() - new Date(e.start).getTime()) / 60000));
+      return acc + dur;
+    }, 0);
+
+    // Calculate streak across past 30 days
+    const streakBank = getStreakShieldBank();
+    const completedAllEvents = events.filter(e => e.completed);
+
+    const past30Days = Array.from({ length: 30 }, (_, idx) => {
+      const d = new Date(tickerNow);
+      d.setDate(d.getDate() - (29 - idx));
+      d.setHours(0, 0, 0, 0);
+
+      const dayEvents = completedAllEvents.filter(e => {
+        const eDate = new Date(e.start);
+        eDate.setHours(0, 0, 0, 0);
+        return eDate.getTime() === d.getTime();
+      });
+
+      const isShielded = isDateShielded(d, streakBank);
+      const dayEffectiveCount = dayEvents.length + (isShielded ? 1 : 0);
+
+      return {
+        date: d,
+        count: dayEffectiveCount,
+        realCount: dayEvents.length
+      };
+    });
+
+    let currentStreak = 0;
+    for (let i = 29; i >= 0; i--) {
+      if (past30Days[i].count > 0) {
+        currentStreak++;
+      } else {
+        if (i === 29) {
+          // Today hasn't finished yet; don't break streak if yesterday was completed
+          continue;
+        }
+        break;
+      }
+    }
+
+    // Determine streak milestone
+    let nextMilestone = 3;
+    if (currentStreak >= 30) nextMilestone = 60;
+    else if (currentStreak >= 14) nextMilestone = 30;
+    else if (currentStreak >= 7) nextMilestone = 14;
+    else if (currentStreak >= 3) nextMilestone = 7;
+
+    const daysToMilestone = Math.max(0, nextMilestone - currentStreak);
+
+    return {
+      totalTodayCount,
+      completedTodayCount,
+      remainingCount: Math.max(0, totalTodayCount - completedTodayCount),
+      todayProgressPct,
+      completedTodayMinutes,
+      plannedTodayMinutes,
+      currentStreak,
+      nextMilestone,
+      daysToMilestone,
+      hasStudiedToday: completedTodayCount > 0
+    };
+  }, [events, tickerNow]);
+
   // Study Ahead mode triggers when user has no active timer and no remaining uncompleted events today, but has tomorrow events!
   const isStudyAheadMode = Boolean(!activeTimer && !currentEvent && activeTomorrowEvent);
 
@@ -460,11 +555,16 @@ export default function ActiveExecutionHUD({
         completed: s.completed || false
       }));
     }
+    if (effectiveEvent?.subSteps && effectiveEvent.subSteps.length > 0) {
+      return effectiveEvent.subSteps.map(s => ({
+        id: s.id,
+        title: s.title,
+        durationMinutes: s.durationMinutes,
+        completed: s.completed || false
+      }));
+    }
     if (effectiveEvent?.subtasks && effectiveEvent.subtasks.length > 0) {
       return effectiveEvent.subtasks;
-    }
-    if (effectiveGoal?.subtasks && effectiveGoal.subtasks.length > 0) {
-      return effectiveGoal.subtasks;
     }
     if (effectiveGoal?.subSteps && effectiveGoal.subSteps.length > 0) {
       return effectiveGoal.subSteps.map(s => ({
@@ -473,6 +573,9 @@ export default function ActiveExecutionHUD({
         durationMinutes: s.durationMinutes,
         completed: s.completed || false
       }));
+    }
+    if (effectiveGoal?.subtasks && effectiveGoal.subtasks.length > 0) {
+      return effectiveGoal.subtasks;
     }
     return [];
   }, [activeTimer, effectiveEvent, effectiveGoal]);
@@ -508,8 +611,23 @@ export default function ActiveExecutionHUD({
   };
 
   const handleToggleSubtask = (taskId: string) => {
+    const target = activeSubtasks.find(t => t.id === taskId);
+    const willBeCompleted = target ? !target.completed : false;
     const updated = activeSubtasks.map(t => t.id === taskId ? { ...t, completed: !t.completed } : t);
     persistSubtasks(updated);
+    if (willBeCompleted) {
+      try {
+        const soundPref = localStorage.getItem("focus_timer_sound_enabled_v2");
+        const phasePref = localStorage.getItem("focus_timer_phase_sound_enabled_v2");
+        const volPref = localStorage.getItem("focus_timer_volume_v2");
+        const soundEnabled = soundPref !== "false";
+        const phaseEnabled = phasePref !== "false";
+        const vol = volPref ? Number(volPref) : 90;
+        if (soundEnabled && phaseEnabled) {
+          playPhaseEndChime(vol);
+        }
+      } catch {}
+    }
   };
 
   const handleAdjustSubtaskDuration = (taskId: string, deltaMinutes: number) => {
@@ -540,6 +658,129 @@ export default function ActiveExecutionHUD({
     const nextList = [...activeSubtasks, newTask];
     setNewSubtaskTitle("");
     persistSubtasks(nextList);
+  };
+
+  const handleRenameSubtask = (taskId: string, newTitle: string) => {
+    if (!newTitle.trim()) return;
+    const updated = activeSubtasks.map(t => t.id === taskId ? { ...t, title: newTitle.trim() } : t);
+    persistSubtasks(updated);
+    setEditingSubtaskId(null);
+  };
+
+  const handleMoveSubtask = (taskId: string, direction: "up" | "down") => {
+    const idx = activeSubtasks.findIndex(t => t.id === taskId);
+    if (idx === -1) return;
+    if (direction === "up" && idx === 0) return;
+    if (direction === "down" && idx === activeSubtasks.length - 1) return;
+    const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+    const nextList = [...activeSubtasks];
+    const temp = nextList[idx];
+    nextList[idx] = nextList[targetIdx];
+    nextList[targetIdx] = temp;
+    persistSubtasks(nextList);
+  };
+
+  const handleResetAllSubtasks = () => {
+    const updated = activeSubtasks.map(t => ({ ...t, completed: false }));
+    persistSubtasks(updated);
+  };
+
+  const handleClearCompletedSubtasks = () => {
+    const updated = activeSubtasks.filter(t => !t.completed);
+    persistSubtasks(updated);
+  };
+
+  const handleApplyStudyTemplate = (templateType: "three_phase" | "pomodoro" | "problem_solving" | "flashcard") => {
+    const total = totalSessionMinutes || 45;
+    let newSteps: SubTask[] = [];
+    const timestamp = Date.now();
+
+    if (templateType === "pomodoro") {
+      if (total >= 50) {
+        newSteps = [
+          { id: `step_${timestamp}_1`, title: "Block 1: Deep Focus Sprint", durationMinutes: 25, completed: false },
+          { id: `step_${timestamp}_2`, title: "Short Rest & Active Recall", durationMinutes: 5, completed: false },
+          { id: `step_${timestamp}_3`, title: "Block 2: Applied Practice", durationMinutes: 25, completed: false },
+          { id: `step_${timestamp}_4`, title: "Wrap-up & Key Findings", durationMinutes: Math.max(5, total - 55), completed: false },
+        ];
+      } else {
+        const focusM = Math.max(15, total - 5);
+        newSteps = [
+          { id: `step_${timestamp}_1`, title: "Focused Pomodoro Sprint", durationMinutes: focusM, completed: false },
+          { id: `step_${timestamp}_2`, title: "Reflection & Quick Break", durationMinutes: Math.max(3, total - focusM), completed: false },
+        ];
+      }
+    } else if (templateType === "problem_solving") {
+      const warm = Math.max(5, Math.round(total * 0.2));
+      const challenge = Math.max(15, Math.round(total * 0.6));
+      const debrief = Math.max(5, total - (warm + challenge));
+      newSteps = [
+        { id: `step_${timestamp}_1`, title: "Warm-Up Drills & Core Formulas", durationMinutes: warm, completed: false },
+        { id: `step_${timestamp}_2`, title: "Complex Challenge Problems", durationMinutes: challenge, completed: false },
+        { id: `step_${timestamp}_3`, title: "Error Analysis & Key Solutions", durationMinutes: debrief, completed: false },
+      ];
+    } else if (templateType === "flashcard") {
+      const part1 = Math.max(10, Math.round(total * 0.45));
+      const part2 = Math.max(10, Math.round(total * 0.4));
+      const recap = Math.max(5, total - (part1 + part2));
+      newSteps = [
+        { id: `step_${timestamp}_1`, title: "Flashcard Spaced Repetition", durationMinutes: part1, completed: false },
+        { id: `step_${timestamp}_2`, title: "Speed Drill & Blind Testing", durationMinutes: part2, completed: false },
+        { id: `step_${timestamp}_3`, title: "Tough Terms Review & Notes", durationMinutes: recap, completed: false },
+      ];
+    } else {
+      // three_phase default
+      const p1 = Math.max(5, Math.round(total * 0.2));
+      const p2 = Math.max(15, Math.round(total * 0.65));
+      const p3 = Math.max(5, total - (p1 + p2));
+      newSteps = [
+        { id: `step_${timestamp}_1`, title: "Review Past Notes & Outline", durationMinutes: p1, completed: false },
+        { id: `step_${timestamp}_2`, title: "Core Learning & Exercise Work", durationMinutes: p2, completed: false },
+        { id: `step_${timestamp}_3`, title: "Synthesis, Summary & Prep Note", durationMinutes: p3, completed: false },
+      ];
+    }
+
+    persistSubtasks(newSteps);
+    setShowTemplatesMenu(false);
+  };
+
+  const handleGenerateAiSubtasks = async () => {
+    setIsGeneratingAiSteps(true);
+    try {
+      const res = await fetch("/api/coach/suggest-substeps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalName: primaryTitle || "Deep Study Session",
+          goalType: effectiveGoal?.type || "study",
+          category: primaryCategory || "Study",
+          durationMinutes: totalSessionMinutes || 45,
+          difficulty: "intermediate",
+          focusStyle: "balanced"
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.subSteps && Array.isArray(data.subSteps) && data.subSteps.length > 0) {
+          const generated: SubTask[] = data.subSteps.map((s: any, idx: number) => ({
+            id: s.id || `ai_step_${Date.now()}_${idx}`,
+            title: s.title || `Phase ${idx + 1}`,
+            durationMinutes: Number(s.durationMinutes) || 15,
+            completed: false
+          }));
+          persistSubtasks(generated);
+          return;
+        }
+      }
+      // Heuristic fallback if offline or error
+      handleApplyStudyTemplate("three_phase");
+    } catch (err) {
+      console.error("AI sub-steps generation failed, falling back to smart template:", err);
+      handleApplyStudyTemplate("three_phase");
+    } finally {
+      setIsGeneratingAiSteps(false);
+    }
   };
 
   // Quick Action: Distribute total session minutes evenly across all subtasks
@@ -608,6 +849,9 @@ export default function ActiveExecutionHUD({
       : (g?.durationMinutes || 45);
 
     // Convert active subtasks to sessionSubSteps with their duration
+    const rawGoalSubtasks = g?.subtasks || matchedEvt?.subtasks || (effectiveGoal?.id === g?.id ? effectiveGoal?.subtasks : undefined);
+    const rawGoalSubSteps = g?.subSteps || matchedEvt?.subSteps;
+
     const subStepsToPass: SessionSubStep[] | undefined = activeSubtasks.length > 0 
       ? activeSubtasks.map((t) => ({
           id: t.id,
@@ -615,7 +859,16 @@ export default function ActiveExecutionHUD({
           durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
           completed: t.completed
         }))
-      : (matchedEvt?.subSteps || g?.subSteps);
+      : (rawGoalSubSteps && rawGoalSubSteps.length > 0
+          ? rawGoalSubSteps
+          : (rawGoalSubtasks && rawGoalSubtasks.length > 0
+              ? rawGoalSubtasks.map(t => ({
+                  id: t.id,
+                  title: t.title,
+                  durationMinutes: t.durationMinutes || 15,
+                  completed: t.completed || false
+                }))
+              : undefined));
 
     // Suppress upcoming pre-session alerts because user is studying now
     try {
@@ -753,6 +1006,10 @@ export default function ActiveExecutionHUD({
         openModal: true
       });
     } else if (effectiveGoal || effectiveEvent) {
+      const stepsToPass = activeSubtasks.length > 0
+        ? activeSubtasks.map(t => ({ id: t.id, title: t.title, durationMinutes: t.durationMinutes || 15, completed: t.completed }))
+        : (effectiveGoal?.subSteps || (effectiveGoal?.subtasks ? effectiveGoal.subtasks.map(s => ({ id: s.id, title: s.title, durationMinutes: s.durationMinutes || 15, completed: s.completed })) : undefined));
+
       triggerFocusTimer({
         title: primaryTitle,
         duration: totalSessionMinutes,
@@ -760,6 +1017,7 @@ export default function ActiveExecutionHUD({
         goalId: effectiveGoal?.id,
         category: primaryCategory,
         color: primaryColor,
+        subSteps: stepsToPass,
         openModal: true
       });
     }
@@ -849,17 +1107,17 @@ export default function ActiveExecutionHUD({
     };
   }, [hasActiveSession, subtasksTimeline, realElapsedSec]);
 
-  // If no timer active and no scheduled event today and no tomorrow event, and no goals, show nothing
-  if (!hasActiveSession && !effectiveEvent && goals.length === 0) {
-    return null;
-  }
-
   // Find the most recently completed session
   const latestCompletedSession = useMemo(() => {
     const completedList = events.filter(e => e.completed);
     if (completedList.length === 0) return null;
     return [...completedList].sort((a, b) => new Date(b.end).getTime() - new Date(a.end).getTime())[0];
   }, [events]);
+
+  // If no timer active and no scheduled event today and no tomorrow event, and no goals, show nothing
+  if (!hasActiveSession && !effectiveEvent && goals.length === 0) {
+    return null;
+  }
 
   const primaryTitle = activeTimer 
     ? activeTimer.title 
@@ -960,6 +1218,22 @@ export default function ActiveExecutionHUD({
                 </span>
               )}
             </div>
+          </div>
+
+          {/* Compact Daily Momentum & Streak Pill */}
+          <div 
+            id="hud_compact_momentum_pill"
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] font-mono shrink-0"
+            title={`${dailyMomentum.currentStreak}-day streak • ${dailyMomentum.completedTodayCount} of ${dailyMomentum.totalTodayCount} sessions completed today`}
+          >
+            <span className="flex items-center gap-1 text-amber-500 font-bold">
+              <Flame className={`w-3.5 h-3.5 ${dailyMomentum.currentStreak > 0 ? "fill-amber-500" : ""}`} />
+              {dailyMomentum.currentStreak}d
+            </span>
+            <span className="text-slate-300 dark:text-white/20">•</span>
+            <span className="font-bold text-slate-700 dark:text-slate-200">
+              {dailyMomentum.completedTodayCount}/{dailyMomentum.totalTodayCount} Done
+            </span>
           </div>
 
           {/* Right: Actions & Expand Button */}
@@ -1260,21 +1534,21 @@ export default function ActiveExecutionHUD({
           {/* RIGHT: Primary Controls for Start, Pause, Resume, and Finish */}
           <div className="flex items-center gap-2 w-full lg:w-auto justify-end flex-wrap">
             
-            {/* Toggle Micro-tasks Checklist (Only shown when active or when subtasks exist) */}
-            {(hasActiveSession || activeSubtasks.length > 0) && (
+            {/* Toggle Micro-tasks Checklist */}
+            {(hasActiveSession || Boolean(effectiveGoal) || Boolean(effectiveEvent) || activeSubtasks.length > 0) && (
               <button
                 type="button"
                 id="hud_toggle_subtasks_btn"
                 onClick={() => setShowSubtasks(!showSubtasks)}
                 className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
                   showSubtasks || activeSubtasks.length > 0
-                    ? "bg-slate-100 dark:bg-white/10 text-slate-800 dark:text-white border-slate-300 dark:border-white/10"
-                    : "bg-transparent text-slate-600 dark:text-slate-400 border-dashed border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5"
+                    ? "bg-slate-100 dark:bg-white/10 text-slate-800 dark:text-white border-slate-300 dark:border-white/10 shadow-xs"
+                    : "bg-transparent text-slate-600 dark:text-slate-400 border-dashed border-indigo-400/40 hover:bg-indigo-500/10 hover:text-indigo-300 hover:border-indigo-400"
                 }`}
-                title="Micro-task steps with time budgeting"
+                title="Micro-task steps with time budgeting & AI breakdown"
               >
                 <ListTodo className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Micro-Tasks</span>
+                <span>{activeSubtasks.length > 0 ? "Micro-Tasks" : "+ Plan Steps"}</span>
                 {activeSubtasks.length > 0 && (
                   <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
                     {completedSubtasksCount}/{activeSubtasks.length}
@@ -1598,6 +1872,96 @@ export default function ActiveExecutionHUD({
           </div>
         )}
 
+        {/* Daily Study Momentum & Consistency Streak Bar */}
+        <div 
+          id="hud_daily_momentum_bar"
+          className="mt-3.5 pt-3.5 border-t border-slate-200 dark:border-white/10"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+            
+            {/* Left: Streak Flame, Count & Milestone Status */}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-gradient-to-r from-amber-500/15 via-orange-500/15 to-rose-500/15 border border-amber-500/30 text-amber-950 dark:text-amber-200 font-extrabold text-xs shadow-2xs">
+                <Flame className={`w-3.5 h-3.5 text-amber-500 ${dailyMomentum.currentStreak > 0 ? "fill-amber-500 animate-pulse" : ""}`} />
+                <span>{dailyMomentum.currentStreak > 0 ? `${dailyMomentum.currentStreak}-Day Streak` : "Start a Daily Streak"}</span>
+              </div>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                {dailyMomentum.hasStudiedToday ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 inline" /> Extended today
+                  </span>
+                ) : (
+                  <span>
+                    {dailyMomentum.daysToMilestone > 0 
+                      ? `${dailyMomentum.daysToMilestone}d to ${dailyMomentum.nextMilestone}-day milestone` 
+                      : "Ready to study"}
+                  </span>
+                )}
+              </span>
+            </div>
+
+            {/* Right: Daily Target Pace & Time Studied */}
+            <div className="flex items-center gap-3 text-xs text-slate-600 dark:text-slate-300">
+              <div className="flex items-center gap-1.5">
+                <Target className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 shrink-0" />
+                <span className="font-bold text-slate-900 dark:text-white">
+                  {dailyMomentum.totalTodayCount > 0 
+                    ? `${dailyMomentum.completedTodayCount} of ${dailyMomentum.totalTodayCount} sessions completed`
+                    : "No sessions scheduled today"}
+                </span>
+                {dailyMomentum.totalTodayCount > 0 && (
+                  <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                    ({dailyMomentum.todayProgressPct}%)
+                  </span>
+                )}
+              </div>
+
+              {dailyMomentum.completedTodayMinutes > 0 && (
+                <span className="hidden md:inline-flex items-center gap-1 text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-md">
+                  <Clock className="w-3 h-3" />
+                  {Math.floor(dailyMomentum.completedTodayMinutes / 60) > 0 
+                    ? `${Math.floor(dailyMomentum.completedTodayMinutes / 60)}h ${dailyMomentum.completedTodayMinutes % 60}m` 
+                    : `${dailyMomentum.completedTodayMinutes}m`} studied today
+                </span>
+              )}
+            </div>
+
+          </div>
+
+          {/* Progress Bar Container */}
+          {dailyMomentum.totalTodayCount > 0 ? (
+            <div className="space-y-1">
+              <div className="h-2 w-full bg-slate-100 dark:bg-white/10 rounded-full overflow-hidden p-0.5 border border-slate-200/50 dark:border-white/5">
+                <div 
+                  className={`h-full rounded-full transition-all duration-700 ease-out ${
+                    dailyMomentum.todayProgressPct === 100 
+                      ? "bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 shadow-xs shadow-emerald-500/50" 
+                      : "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"
+                  }`}
+                  style={{ width: `${Math.max(dailyMomentum.todayProgressPct > 0 ? 4 : 0, dailyMomentum.todayProgressPct)}%` }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 px-0.5">
+                <span>
+                  {dailyMomentum.remainingCount === 0 && dailyMomentum.totalTodayCount > 0
+                    ? "🎉 All daily scheduled study sessions completed! Fantastic consistency."
+                    : `${dailyMomentum.remainingCount} session${dailyMomentum.remainingCount === 1 ? "" : "s"} remaining today`}
+                </span>
+                {dailyMomentum.plannedTodayMinutes > 0 && (
+                  <span className="font-mono">
+                    Planned: {Math.floor(dailyMomentum.plannedTodayMinutes / 60) > 0 
+                      ? `${Math.floor(dailyMomentum.plannedTodayMinutes / 60)}h ${dailyMomentum.plannedTodayMinutes % 60}m` 
+                      : `${dailyMomentum.plannedTodayMinutes}m`} total
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="h-1.5 w-full bg-slate-100 dark:bg-white/5 rounded-full overflow-hidden" />
+          )}
+        </div>
+
         {/* Collapsible Micro-Tasks Drawer with Time Budgeting */}
         {showSubtasks && (
           <div className="mt-4 pt-3.5 border-t border-slate-100 dark:border-white/5 space-y-3.5">
@@ -1640,17 +2004,128 @@ export default function ActiveExecutionHUD({
               </div>
             )}
 
-            {/* Header with Total Allocation & Budgeting Status */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <ListTodo className="w-4 h-4 text-indigo-400" />
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                  Micro-Tasks & Time Budgeting
-                </h4>
+            {/* Header with Total Allocation, AI Breakdown, Templates & Budgeting Status */}
+            <div className="flex flex-col gap-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <ListTodo className="w-4 h-4 text-indigo-400" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                      Micro-Tasks & Step Budgeting
+                    </h4>
+                  </div>
+                  {activeSubtasks.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
+                      {completedSubtasksCount} of {activeSubtasks.length} Done
+                    </span>
+                  )}
+                </div>
+
+                {/* Top Action Buttons: AI Breakdown, Templates, Reset & Helpers */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {/* AI Smart Breakdown Button */}
+                  <button
+                    type="button"
+                    onClick={handleGenerateAiSubtasks}
+                    disabled={isGeneratingAiSteps}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-400/40 text-[11px] font-bold transition cursor-pointer disabled:opacity-50 shadow-xs"
+                    title="Use AI to automatically break down this session into timed study phases"
+                  >
+                    {isGeneratingAiSteps ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin text-indigo-300" />
+                        <span>Generating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 className="w-3 h-3 text-amber-300" />
+                        <span>AI Breakdown</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Study Templates Dropdown Menu */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplatesMenu(!showTemplatesMenu)}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 text-[11px] font-semibold transition cursor-pointer"
+                      title="Load standard study method step templates"
+                    >
+                      <Sparkles className="w-3 h-3 text-indigo-400" />
+                      <span>Templates</span>
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+
+                    {showTemplatesMenu && (
+                      <div className="absolute right-0 top-full mt-1.5 w-64 p-1.5 bg-[#0e1220] border border-white/15 rounded-xl shadow-xl z-50 space-y-1">
+                        <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Study Method Templates
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyStudyTemplate("three_phase")}
+                          className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-white/10 text-slate-200 transition cursor-pointer flex flex-col"
+                        >
+                          <span className="text-xs font-bold text-indigo-300">🎓 3-Phase Master</span>
+                          <span className="text-[10px] text-slate-400">Review (20%) • Deep Practice (65%) • Recap (15%)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyStudyTemplate("pomodoro")}
+                          className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-white/10 text-slate-200 transition cursor-pointer flex flex-col"
+                        >
+                          <span className="text-xs font-bold text-amber-300">🍅 Pomodoro Sprint</span>
+                          <span className="text-[10px] text-slate-400">25m Focused Blocks + 5m Active Recall</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyStudyTemplate("problem_solving")}
+                          className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-white/10 text-slate-200 transition cursor-pointer flex flex-col"
+                        >
+                          <span className="text-xs font-bold text-emerald-300">💡 Problem Solving</span>
+                          <span className="text-[10px] text-slate-400">Warm-up (20%) • Challenge Drills (60%) • Debrief</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyStudyTemplate("flashcard")}
+                          className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-white/10 text-slate-200 transition cursor-pointer flex flex-col"
+                        >
+                          <span className="text-xs font-bold text-cyan-300">⚡ Flashcards & Recall</span>
+                          <span className="text-[10px] text-slate-400">Spaced Review • Speed Testing • Tough Concepts</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Reset & Clear Helpers if tasks are completed */}
+                  {completedSubtasksCount > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleResetAllSubtasks}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 text-[10px] font-bold transition cursor-pointer"
+                        title="Uncheck all completed steps to re-run this session"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        <span>Reset</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearCompletedSubtasks}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-white/10 text-[10px] font-bold transition cursor-pointer"
+                        title="Remove finished steps"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                        <span>Clear Done</span>
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
-              {/* Time Budget Status */}
-              <div className="flex items-center gap-2 flex-wrap">
+              {/* Time Budget Status & Auto-Budgeting Helpers */}
+              <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5 border-t border-white/5">
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs font-mono">
                   <Hourglass className="w-3.5 h-3.5 text-indigo-400" />
                   <span className="text-slate-300 font-bold">
@@ -1666,7 +2141,6 @@ export default function ActiveExecutionHUD({
                   )}
                 </div>
 
-                {/* Quick Auto-Budgeting Helpers */}
                 {activeSubtasks.length > 0 && (
                   <div className="flex items-center gap-1">
                     <button
@@ -1702,11 +2176,13 @@ export default function ActiveExecutionHUD({
               </div>
             </div>
 
-            {/* List of subtasks with step duration indicators */}
+            {/* List of subtasks with step duration indicators, inline editing & reordering */}
             {activeSubtasks.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {subtasksTimeline.map((task) => {
+                {subtasksTimeline.map((task, idx) => {
                   const isCurrentPaced = isTimerRunning && currentPacedStep?.step?.id === task.id;
+                  const isEditingThis = editingSubtaskId === task.id;
+
                   return (
                     <div
                       key={task.id}
@@ -1718,42 +2194,133 @@ export default function ActiveExecutionHUD({
                             : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 hover:border-indigo-400/50"
                       }`}
                     >
-                      {/* Checkbox & Title */}
-                      <div 
-                        onClick={() => handleToggleSubtask(task.id)}
-                        className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer select-none"
-                      >
-                        <div className={`w-4 h-4 rounded-md flex items-center justify-center border transition shrink-0 ${
-                          task.completed
-                            ? "bg-emerald-500 border-emerald-500 text-white"
-                            : "border-slate-300 dark:border-white/20"
-                        }`}>
+                      {/* Checkbox, Step Number & Title */}
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        {/* Step Sequence Badge */}
+                        <span className="w-4 text-center font-mono text-[10px] font-bold text-slate-400 shrink-0">
+                          {idx + 1}
+                        </span>
+
+                        {/* Completion Checkbox */}
+                        <div 
+                          onClick={() => handleToggleSubtask(task.id)}
+                          className={`w-4 h-4 rounded-md flex items-center justify-center border transition shrink-0 cursor-pointer ${
+                            task.completed
+                              ? "bg-emerald-500 border-emerald-500 text-white"
+                              : "border-slate-300 dark:border-white/20 hover:border-indigo-400"
+                          }`}
+                        >
                           {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
                         </div>
 
+                        {/* Title Display or Inline Editing */}
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`text-xs font-semibold truncate ${task.completed ? "line-through text-slate-400" : ""}`}>
-                              {task.title}
-                            </span>
-                            {isCurrentPaced && (
-                              <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse shrink-0">
-                                ACTIVE NOW
-                              </span>
-                            )}
-                          </div>
-                          
-                          {/* If current paced step, display time remaining on this specific step */}
-                          {isCurrentPaced && (
-                            <div className="text-[10px] font-mono text-indigo-300 mt-0.5">
-                              {formatCountdown(currentPacedStep.remainingSec)} remaining on this step
+                          {isEditingThis ? (
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                handleRenameSubtask(task.id, editingSubtaskTitle);
+                              }}
+                              className="flex items-center gap-1"
+                            >
+                              <input
+                                type="text"
+                                autoFocus
+                                value={editingSubtaskTitle}
+                                onChange={(e) => setEditingSubtaskTitle(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Escape") setEditingSubtaskId(null);
+                                }}
+                                className="w-full text-xs bg-slate-900 border border-indigo-500 rounded px-1.5 py-0.5 text-white focus:outline-none font-semibold"
+                              />
+                              <button
+                                type="submit"
+                                className="p-1 rounded bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer shrink-0"
+                                title="Save"
+                              >
+                                <Check className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingSubtaskId(null)}
+                                className="p-1 rounded bg-white/10 text-slate-400 hover:text-white cursor-pointer shrink-0"
+                                title="Cancel"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </form>
+                          ) : (
+                            <div 
+                              onDoubleClick={() => {
+                                setEditingSubtaskId(task.id);
+                                setEditingSubtaskTitle(task.title);
+                              }}
+                              className="cursor-pointer select-none"
+                              title="Double click to edit title"
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-xs font-semibold truncate ${task.completed ? "line-through text-slate-400" : ""}`}>
+                                  {task.title}
+                                </span>
+                                {isCurrentPaced && (
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse shrink-0">
+                                    ACTIVE NOW
+                                  </span>
+                                )}
+                              </div>
+                              
+                              {/* If current paced step, display time remaining on this specific step */}
+                              {isCurrentPaced && (
+                                <div className="text-[10px] font-mono text-indigo-300 mt-0.5">
+                                  {formatCountdown(currentPacedStep.remainingSec)} remaining on this step
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
                       </div>
 
-                      {/* Right: Step Time Badge & Adjust Controls */}
+                      {/* Right: Reorder, Edit, Time Badge & Delete */}
                       <div className="flex items-center gap-1 shrink-0">
+                        {/* Move Up */}
+                        {idx > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleMoveSubtask(task.id, "up")}
+                            className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 opacity-60 group-hover:opacity-100 transition cursor-pointer"
+                            title="Move step up"
+                          >
+                            <ArrowUp className="w-3 h-3" />
+                          </button>
+                        )}
+
+                        {/* Move Down */}
+                        {idx < activeSubtasks.length - 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleMoveSubtask(task.id, "down")}
+                            className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 opacity-60 group-hover:opacity-100 transition cursor-pointer"
+                            title="Move step down"
+                          >
+                            <ArrowDown className="w-3 h-3" />
+                          </button>
+                        )}
+
+                        {/* Edit Title Button */}
+                        {!isEditingThis && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingSubtaskId(task.id);
+                              setEditingSubtaskTitle(task.title);
+                            }}
+                            className="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-white/10 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                            title="Edit step title"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        )}
+
                         {/* -5 min */}
                         <button
                           type="button"
@@ -1808,18 +2375,82 @@ export default function ActiveExecutionHUD({
                 })}
               </div>
             ) : (
-              <p className="text-xs text-slate-400 italic">
-                No micro-tasks added yet. Break down your {totalSessionMinutes}-minute session into timed steps below to stay on track!
-              </p>
+              <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
+                <p className="text-xs text-slate-300">
+                  No micro-tasks added yet for this {totalSessionMinutes}-minute session. Choose a template or click AI Breakdown to start:
+                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleGenerateAiSubtasks}
+                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-400/40 text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                  >
+                    <Wand2 className="w-3.5 h-3.5 text-amber-300" />
+                    <span>✨ AI Breakdown</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyStudyTemplate("three_phase")}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                  >
+                    🎓 3-Phase Review
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyStudyTemplate("pomodoro")}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                  >
+                    🍅 Pomodoro 25/5
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyStudyTemplate("problem_solving")}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                  >
+                    💡 Problem Solving
+                  </button>
+                </div>
+              </div>
             )}
 
-            {/* Quick add subtask form with minute allocation */}
+            {/* Quick 1-Click Preset Step Chips */}
+            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-0.5">Quick Add:</span>
+              {[
+                { title: "Review Prior Notes", mins: 10 },
+                { title: "Practice Problems", mins: 20 },
+                { title: "Active Recall / Flashcards", mins: 15 },
+                { title: "Self-Quiz & Testing", mins: 15 },
+                { title: "Summary Notes & Recap", mins: 5 }
+              ].map((chip, cIdx) => (
+                <button
+                  key={cIdx}
+                  type="button"
+                  onClick={() => {
+                    const newTask: SubTask = {
+                      id: `task_${Date.now()}_${cIdx}`,
+                      title: chip.title,
+                      durationMinutes: chip.mins,
+                      completed: false
+                    };
+                    persistSubtasks([...activeSubtasks, newTask]);
+                  }}
+                  className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-white/5 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/30 transition cursor-pointer flex items-center gap-1"
+                  title={`Add "${chip.title}" (${chip.mins}m)`}
+                >
+                  <Plus className="w-2.5 h-2.5" />
+                  <span>{chip.title} ({chip.mins}m)</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Quick add custom subtask form with minute allocation */}
             <form onSubmit={handleAddSubtask} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
               <input
                 type="text"
                 value={newSubtaskTitle}
                 onChange={e => setNewSubtaskTitle(e.target.value)}
-                placeholder="Add a step (e.g. 'Review notes', 'Solve practice problem #3')..."
+                placeholder="Add custom step (e.g. 'Read Chapter 4', 'Solve LeetCode #206')..."
                 className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
 

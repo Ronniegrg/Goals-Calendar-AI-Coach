@@ -205,6 +205,10 @@ export default function CalendarSyncModal({
         body: JSON.stringify({ url: importIcsUrl.trim() })
       });
 
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Calendar sync service returned unexpected non-JSON response.");
+      }
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || `Server responded with ${res.status}`);
@@ -785,13 +789,11 @@ export default function CalendarSyncModal({
                       type="button"
                       id="btn_clear_external_blocks"
                       onClick={() => {
-                        if (confirm(`Remove all ${externalEvents.length} imported external calendar blocks?`)) {
-                          onClearExternalEvents();
-                          setImportStatusMessage({
-                            text: "Cleared all imported external calendar blocks.",
-                            type: "info"
-                          });
-                        }
+                        onClearExternalEvents();
+                        setImportStatusMessage({
+                          text: `Cleared all ${externalEvents.length} imported external calendar blocks.`,
+                          type: "info"
+                        });
                       }}
                       className="px-2.5 py-2 rounded-lg bg-white/5 hover:bg-red-500/10 text-slate-300 hover:text-red-400 border border-white/10 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
                       title="Clear imported busy events"

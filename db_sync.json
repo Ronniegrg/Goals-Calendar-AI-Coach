@@ -1,11 +1,387 @@
 {
   "rounigorgees@gmail.com": {
-    "goals": [],
-    "events": [],
-    "availability": [],
-    "notifications": [],
+    "goals": [
+      {
+        "id": "g_python_ai_mastery",
+        "name": "Python & AI Engineering",
+        "type": "study",
+        "category": "Software Dev",
+        "weeklyTarget": 4,
+        "completedCount": 1,
+        "durationMinutes": 60,
+        "timePreference": "evening",
+        "color": "#3b82f6",
+        "priority": "critical",
+        "energyLevel": "deep_focus",
+        "icon": "laptop",
+        "description": "Master async Python, algorithm design, and AI model workflows",
+        "createdAt": "2026-11-01T08:00:00.000Z"
+      },
+      {
+        "id": "g_cybersecurity_prep",
+        "name": "Cybersecurity & Security+ Prep",
+        "type": "study",
+        "category": "Cybersecurity",
+        "weeklyTarget": 4,
+        "completedCount": 1,
+        "durationMinutes": 60,
+        "timePreference": "evening",
+        "color": "#eab308",
+        "priority": "important",
+        "energyLevel": "deep_focus",
+        "icon": "shield",
+        "description": "Threat analysis, SIEM labs, and certification drills",
+        "createdAt": "2026-11-01T08:00:00.000Z"
+      },
+      {
+        "id": "g_job_applications",
+        "name": "Job Applications & Outreach",
+        "type": "job_search",
+        "category": "Career",
+        "weeklyTarget": 5,
+        "completedCount": 2,
+        "durationMinutes": 60,
+        "timePreference": "morning",
+        "color": "#10b981",
+        "priority": "critical",
+        "energyLevel": "deep_focus",
+        "icon": "briefcase",
+        "description": "Targeted job applications, resume tailoring, and recruiter outreach",
+        "createdAt": "2026-11-01T08:00:00.000Z"
+      }
+    ],
+    "events": [
+      {
+        "id": "evt_job_nov2",
+        "title": "Job Applications & Outreach",
+        "type": "job_search",
+        "start": "2026-11-02T09:00:00.000Z",
+        "end": "2026-11-02T10:00:00.000Z",
+        "goalId": "g_job_applications",
+        "completed": true,
+        "icon": "briefcase",
+        "notes": "Sent 3 tailored applications for Full Stack positions"
+      },
+      {
+        "id": "evt_py_nov2",
+        "title": "Python & AI Engineering",
+        "type": "study",
+        "start": "2026-11-02T18:00:00.000Z",
+        "end": "2026-11-02T19:00:00.000Z",
+        "goalId": "g_python_ai_mastery",
+        "completed": true,
+        "icon": "laptop",
+        "notes": "Completed async asyncio event loop lab"
+      },
+      {
+        "id": "evt_job_nov3",
+        "title": "Job Applications & Outreach",
+        "type": "job_search",
+        "start": "2026-11-03T09:00:00.000Z",
+        "end": "2026-11-03T10:00:00.000Z",
+        "goalId": "g_job_applications",
+        "completed": true,
+        "icon": "briefcase",
+        "notes": "Followed up with engineering recruiters on LinkedIn"
+      },
+      {
+        "id": "evt_py_nov3",
+        "title": "Python & AI Engineering",
+        "type": "study",
+        "start": "2026-11-03T18:00:00.000Z",
+        "end": "2026-11-03T19:00:00.000Z",
+        "goalId": "g_python_ai_mastery",
+        "completed": false,
+        "icon": "laptop",
+        "notes": "Deep Dive: Pydantic v2 schemas and model validation"
+      },
+      {
+        "id": "evt_sec_nov3",
+        "title": "Cybersecurity & Security+ Prep",
+        "type": "study",
+        "start": "2026-11-03T19:30:00.000Z",
+        "end": "2026-11-03T20:30:00.000Z",
+        "goalId": "g_cybersecurity_prep",
+        "completed": false,
+        "icon": "shield",
+        "notes": "Network reconnaissance: Wireshark packet analysis lab"
+      },
+      {
+        "id": "evt_job_nov4",
+        "title": "Job Applications & Outreach",
+        "type": "job_search",
+        "start": "2026-11-04T09:00:00.000Z",
+        "end": "2026-11-04T10:00:00.000Z",
+        "goalId": "g_job_applications",
+        "completed": false,
+        "icon": "briefcase",
+        "notes": "Morning application sprint (3 targeted tech roles)"
+      },
+      {
+        "id": "evt_py_nov4",
+        "title": "Python & AI Engineering",
+        "type": "study",
+        "start": "2026-11-04T18:00:00.000Z",
+        "end": "2026-11-04T19:00:00.000Z",
+        "goalId": "g_python_ai_mastery",
+        "completed": false,
+        "icon": "laptop",
+        "notes": "FastAPI async endpoints & token authentication"
+      },
+      {
+        "id": "evt_sec_nov4",
+        "title": "Cybersecurity & Security+ Prep",
+        "type": "study",
+        "start": "2026-11-04T19:30:00.000Z",
+        "end": "2026-11-04T20:30:00.000Z",
+        "goalId": "g_cybersecurity_prep",
+        "completed": false,
+        "icon": "shield",
+        "notes": "Cryptography & public key infrastructure (PKI)"
+      },
+      {
+        "id": "evt_job_nov5",
+        "title": "Job Applications & Outreach",
+        "type": "job_search",
+        "start": "2026-11-05T09:00:00.000Z",
+        "end": "2026-11-05T10:00:00.000Z",
+        "goalId": "g_job_applications",
+        "completed": false,
+        "icon": "briefcase",
+        "notes": "Interview preparation & technical question drills"
+      },
+      {
+        "id": "evt_py_nov5",
+        "title": "Python & AI Engineering",
+        "type": "study",
+        "start": "2026-11-05T18:00:00.000Z",
+        "end": "2026-11-05T19:00:00.000Z",
+        "goalId": "g_python_ai_mastery",
+        "completed": false,
+        "icon": "laptop",
+        "notes": "LangChain & Vector embedding search implementation"
+      },
+      {
+        "id": "evt_sec_nov5",
+        "title": "Cybersecurity & Security+ Prep",
+        "type": "study",
+        "start": "2026-11-05T19:30:00.000Z",
+        "end": "2026-11-05T20:30:00.000Z",
+        "goalId": "g_cybersecurity_prep",
+        "completed": false,
+        "icon": "shield",
+        "notes": "SIEM log analysis & incident response workflow"
+      },
+      {
+        "id": "evt_job_nov6",
+        "title": "Job Applications & Outreach",
+        "type": "job_search",
+        "start": "2026-11-06T09:00:00.000Z",
+        "end": "2026-11-06T10:00:00.000Z",
+        "goalId": "g_job_applications",
+        "completed": false,
+        "icon": "briefcase",
+        "notes": "Weekly pipeline review & company outreach follow-ups"
+      },
+      {
+        "id": "evt_sec_nov6",
+        "title": "Cybersecurity & Security+ Prep",
+        "type": "study",
+        "start": "2026-11-06T17:00:00.000Z",
+        "end": "2026-11-06T18:00:00.000Z",
+        "goalId": "g_cybersecurity_prep",
+        "completed": false,
+        "icon": "shield",
+        "notes": "Practice exam mock questions & review"
+      }
+    ],
+    "availability": [
+      {
+        "dayOfWeek": 0,
+        "startTime": "09:00",
+        "endTime": "21:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 1,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 2,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 3,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 4,
+        "startTime": "08:00",
+        "endTime": "22:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 5,
+        "startTime": "08:00",
+        "endTime": "18:00",
+        "active": true
+      },
+      {
+        "dayOfWeek": 6,
+        "startTime": "09:00",
+        "endTime": "19:00",
+        "active": true
+      }
+    ],
+    "notifications": [
+      {
+        "id": "n_1793748518557_37i96",
+        "title": "Calendar Regenerated",
+        "message": "⚡ Calendar schedule was cleanly reset and regenerated based on your active goals & availability!",
+        "timestamp": "2026-11-03T23:28:38.557Z",
+        "read": false,
+        "type": "success"
+      },
+      {
+        "id": "n_1793747502405_0pvn1",
+        "title": "Calendar Regenerated",
+        "message": "⚡ Calendar schedule was cleanly reset and regenerated based on your active goals & availability!",
+        "timestamp": "2026-11-03T23:11:42.405Z",
+        "read": false,
+        "type": "success"
+      },
+      {
+        "id": "n_1793666340101_lnywx",
+        "title": "Calendar Regenerated",
+        "message": "⚡ Calendar schedule was cleanly reset and regenerated based on your active goals & availability!",
+        "timestamp": "2026-11-03T00:39:00.101Z",
+        "read": false,
+        "type": "success"
+      },
+      {
+        "id": "n_1793661365180_v5kif",
+        "title": "Calendar Regenerated",
+        "message": "⚡ Calendar schedule was cleanly reset and regenerated based on your active goals & availability!",
+        "timestamp": "2026-11-02T23:16:05.180Z",
+        "read": false,
+        "type": "success"
+      },
+      {
+        "id": "n_1793661353396_0070v",
+        "title": "Calendar Regenerated",
+        "message": "⚡ Calendar schedule was cleanly reset and regenerated based on your active goals & availability!",
+        "timestamp": "2026-11-02T23:15:53.396Z",
+        "read": false,
+        "type": "success"
+      }
+    ],
     "coachMessages": [],
     "coachPersona": "mentor",
-    "lastSyncedAt": "2026-09-15T01:39:26.852Z"
+    "lastSyncedAt": "2026-11-03T23:55:00.000Z",
+    "userEmail": "rounigorgees@gmail.com",
+    "customTemplates": [
+      {
+        "id": "tmpl_1788801664729_3rcf",
+        "name": "Cybersecurity Routine",
+        "icon": "🛡️",
+        "description": "2 phases • 60m total",
+        "steps": [
+          {
+            "id": "tstep_1788801656458_0",
+            "title": "Phase 1: Deep Focus",
+            "durationMinutes": 15,
+            "description": "Active uninterrupted work"
+          },
+          {
+            "id": "tstep_1788801656458_1",
+            "title": "Phase 2: Review & Wrap-up",
+            "durationMinutes": 45,
+            "description": "Summary and action items"
+          }
+        ],
+        "createdAt": 1788801664729
+      },
+      {
+        "id": "tmpl_1788801632597_dtzt",
+        "name": "New Focus Routine",
+        "icon": "🎯",
+        "description": "Custom session breakdown",
+        "steps": [
+          {
+            "id": "tstep_1788801596784_1",
+            "title": "Phase 1: Deep Focus",
+            "durationMinutes": 15,
+            "description": "Active uninterrupted work"
+          },
+          {
+            "id": "tstep_1788801596784_2",
+            "title": "Phase 2: Review & Wrap-up",
+            "durationMinutes": 45,
+            "description": "Summary and action items"
+          }
+        ],
+        "createdAt": 1788801632597
+      },
+      {
+        "id": "tmpl_study_trio_custom",
+        "name": "Study Trio",
+        "icon": "🎓",
+        "description": "Review • Core Practice • Quiz & Notes",
+        "steps": [
+          {
+            "id": "step_st_1",
+            "title": "Concept & Notes Review",
+            "durationMinutes": 10,
+            "description": "Review foundations"
+          },
+          {
+            "id": "step_st_2",
+            "title": "Core Deep Practice",
+            "durationMinutes": 25,
+            "description": "Active problem solving"
+          },
+          {
+            "id": "step_st_3",
+            "title": "Self-Quiz & Key Takeaways",
+            "durationMinutes": 10,
+            "description": "Quiz & summarize"
+          }
+        ],
+        "createdAt": 1788715185906
+      },
+      {
+        "id": "tmpl_cyber_custom",
+        "name": "Cyber Drill",
+        "icon": "🛡️",
+        "description": "Scope & Recon • Exploit / Patch • Report",
+        "steps": [
+          {
+            "id": "step_cb_1",
+            "title": "Lab Setup & Scope",
+            "durationMinutes": 10,
+            "description": "Verify environment and targets"
+          },
+          {
+            "id": "step_cb_2",
+            "title": "Active Hands-on Drill",
+            "durationMinutes": 25,
+            "description": "Execute drill or labs"
+          },
+          {
+            "id": "step_cb_3",
+            "title": "Log Findings & Takeaways",
+            "durationMinutes": 10,
+            "description": "Document lessons & fixes"
+          }
+        ],
+        "createdAt": 1788758385906
+      }
+    ]
   }
 }

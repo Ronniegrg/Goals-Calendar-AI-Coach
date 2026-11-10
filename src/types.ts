@@ -73,6 +73,7 @@ export interface Goal {
   icon?: string;
   lastSessionNote?: string;
   lastSessionNoteDate?: string;
+  description?: string;
   priority?: GoalPriority;
   energyLevel?: EnergyLevel; // deep_focus | moderate | light_recharge
   isPaused?: boolean;
@@ -86,6 +87,59 @@ export interface Goal {
   targetExamDate?: string; // e.g. "2026-11-20"
   targetExamTitle?: string; // e.g. "CompTIA Security+ Exam"
   chapters?: { id: string; title: string; completed: boolean }[];
+  enableKnowledgeHub?: boolean; // Toggle option when goal is created or edited
+  knowledgeHub?: GoalKnowledgeHub; // Stored study notes, tests, and flashcards
+}
+
+export interface StudyArtifactNote {
+  id: string;
+  title: string;
+  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula";
+  content: string; // Markdown or formatted text
+  chapterId?: string;
+  chapterTitle?: string;
+  keyTerms?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+  userSelectedIndex?: number;
+  difficulty?: "easy" | "medium" | "hard";
+}
+
+export interface KnowledgeTestArtifact {
+  id: string;
+  title: string;
+  chapterTitle?: string;
+  createdAt: string;
+  questions: KnowledgeQuestion[];
+  completedAt?: string;
+  lastScore?: number; // e.g. 80 (%)
+  lastScoreFraction?: string; // e.g. "4/5"
+  attemptsCount?: number;
+}
+
+export interface FlashcardItem {
+  id: string;
+  front: string; // Term or question
+  back: string; // Definition or answer
+  chapterTitle?: string;
+  mastered: boolean;
+  lastReviewedAt?: string;
+}
+
+export interface GoalKnowledgeHub {
+  notes: StudyArtifactNote[];
+  tests: KnowledgeTestArtifact[];
+  flashcards: FlashcardItem[];
+  lastTestedAt?: string;
+  overallMasteryScore?: number; // 0 - 100%
 }
 
 export interface CalendarEvent {

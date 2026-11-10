@@ -58,7 +58,6 @@ import { CalendarEvent, Goal, GoalType, TimePreference, AvailabilityWindow, Sess
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getActiveTimerSnapshot, ActiveTimerData } from "./FocusTimerModal";
 import CalendarSyncModal from "./CalendarSyncModal";
-import WeeklyHabitReportModal from "./WeeklyHabitReportModal";
 import { 
   getGoogleCalendarEventUrl, 
   getOutlookCalendarEventUrl, 
@@ -106,6 +105,57 @@ const isSameDay = (d1: Date, d2: Date) => {
   );
 };
 
+export const CALENDAR_PRESET_GOALS = [
+  {
+    name: "Python & AI Engineering",
+    type: GoalType.STUDY,
+    category: "Software Dev",
+    weeklyTarget: 4,
+    durationMinutes: 60,
+    timePreference: TimePreference.EVENING,
+    color: "#3b82f6",
+    priority: "critical" as const,
+    energyLevel: "deep_focus" as const,
+    description: "Hands-on coding, algorithms, and AI models"
+  },
+  {
+    name: "Cybersecurity & Security+ Prep",
+    type: GoalType.STUDY,
+    category: "Cybersecurity",
+    weeklyTarget: 4,
+    durationMinutes: 60,
+    timePreference: TimePreference.EVENING,
+    color: "#eab308",
+    priority: "important" as const,
+    energyLevel: "deep_focus" as const,
+    description: "Threat analysis, SIEM labs, and exam drills"
+  },
+  {
+    name: "Job Applications & Outreach",
+    type: GoalType.JOB_SEARCH,
+    category: "Career",
+    weeklyTarget: 5,
+    durationMinutes: 60,
+    timePreference: TimePreference.MORNING,
+    color: "#10b981",
+    priority: "critical" as const,
+    energyLevel: "deep_focus" as const,
+    description: "Submit applications, follow up, and network"
+  },
+  {
+    name: "Daily Cardio & Strength",
+    type: GoalType.WORKOUT,
+    category: "Fitness",
+    weeklyTarget: 3,
+    durationMinutes: 45,
+    timePreference: TimePreference.MORNING,
+    color: "#f43f5e",
+    priority: "important" as const,
+    energyLevel: "moderate" as const,
+    description: "Aerobic intervals and mobility"
+  }
+];
+
 interface CalendarViewProps {
   events: CalendarEvent[];
   goals: Goal[];
@@ -138,6 +188,8 @@ interface CalendarViewProps {
   onLifeHappenedToday?: (chosenDate?: Date) => void;
   burnoutLimits?: DailyBurnoutLimits;
   onNotify?: (title: string, message: string, type: any) => void;
+  onScheduleGoal?: (goalId: string) => void;
+  onAutoScheduleAllGoals?: () => void;
 }
 
 export default function CalendarView({
@@ -171,7 +223,9 @@ export default function CalendarView({
   onUndoAutopilot,
   onLifeHappenedToday,
   burnoutLimits,
-  onNotify
+  onNotify,
+  onScheduleGoal,
+  onAutoScheduleAllGoals
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<"week" | "day" | "list">(() => {
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -271,6 +325,18 @@ export default function CalendarView({
       }
     } catch {}
     
+    const rawSubSteps = evt.subSteps || associatedGoal?.subSteps;
+    const rawSubtasks = evt.subtasks || associatedGoal?.subtasks;
+    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? rawSubSteps : undefined;
+    if (!resolvedSubSteps && rawSubtasks && rawSubtasks.length > 0) {
+      resolvedSubSteps = rawSubtasks.map(s => ({
+        id: s.id,
+        title: s.title,
+        durationMinutes: s.durationMinutes || 15,
+        completed: s.completed || false
+      }));
+    }
+
     triggerFocusTimer({
       title: evt.title,
       duration: durationMins,
@@ -279,7 +345,7 @@ export default function CalendarView({
       category: associatedGoal?.category || evt.type,
       color: associatedGoal?.color || (evt.type === "study" ? "#3b82f6" : evt.type === "workout" ? "#f43f5e" : "#10b981"),
       previousSessionNote: associatedGoal?.lastSessionNote,
-      subSteps: evt.subSteps || associatedGoal?.subSteps,
+      subSteps: resolvedSubSteps,
       autoStart: true,
       openModal: true
     });
@@ -306,6 +372,18 @@ export default function CalendarView({
       }
     } catch {}
 
+    const rawSubSteps = goal.subSteps;
+    const rawSubtasks = goal.subtasks;
+    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? rawSubSteps : undefined;
+    if (!resolvedSubSteps && rawSubtasks && rawSubtasks.length > 0) {
+      resolvedSubSteps = rawSubtasks.map(s => ({
+        id: s.id,
+        title: s.title,
+        durationMinutes: s.durationMinutes || 15,
+        completed: s.completed || false
+      }));
+    }
+
     triggerFocusTimer({
       title: goal.name,
       duration: overrideDuration || goal.durationMinutes || 60,
@@ -314,7 +392,7 @@ export default function CalendarView({
       category: goal.category || goal.type,
       color: goal.color || "#6366f1",
       previousSessionNote: goal.lastSessionNote,
-      subSteps: goal.subSteps,
+      subSteps: resolvedSubSteps,
       autoStart: true,
       openModal: true
     });
@@ -530,31 +608,6 @@ export default function CalendarView({
     startIso: string;
   } | null>(null);
 
-  // Weekly AI Habit Report Card Modal State
-  const [showWeeklyReportModal, setShowWeeklyReportModal] = useState<boolean>(false);
-
-  // Auto-prompt Sunday Weekly AI Habit Report Card
-  useEffect(() => {
-    const today = new Date();
-    if (today.getDay() === 0) { // Sunday
-      const todayDateStr = today.toDateString();
-      const lastRecapSeen = localStorage.getItem("last_sunday_report_seen");
-      if (lastRecapSeen !== todayDateStr) {
-        const timer = setTimeout(() => {
-          setShowWeeklyReportModal(true);
-          localStorage.setItem("last_sunday_report_seen", todayDateStr);
-        }, 1200);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    const handleOpenReport = () => setShowWeeklyReportModal(true);
-    window.addEventListener("open_weekly_habit_report", handleOpenReport);
-    return () => window.removeEventListener("open_weekly_habit_report", handleOpenReport);
-  }, []);
-
   // Spotlight / Start From Incomplete Goals State
   const [spotlightEventId, setSpotlightEventId] = useState<string | null>(() => {
     try {
@@ -614,29 +667,44 @@ export default function CalendarView({
 
   // Helper to determine whether an event is active in focus timer
   const isEventActiveInTimer = (evt: CalendarEvent): boolean => {
+    if (evt.completed) return false;
     if (!activeTimer || activeTimer.isCompleted) return false;
     if (!activeTimer.isRunning && (!activeTimer.timeRemaining || activeTimer.timeRemaining <= 0)) return false;
 
-    if (activeTimer.eventId && activeTimer.eventId === evt.id) return true;
-    if (activeTimer.goalId && evt.goalId && activeTimer.goalId === evt.goalId) return true;
+    // 1. Direct eventId match (most accurate)
+    if (activeTimer.eventId) {
+      return activeTimer.eventId === evt.id;
+    }
 
+    // 2. Goal ID or Title match: only match the single closest event to now for this goal
+    const tiedGoal = goals.find(g => g.id === evt.goalId);
     const clean = (s?: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
     const cleanEvtTitle = clean(evt.title);
-    const cleanTimerTitle = clean(activeTimer.title);
-    if (cleanEvtTitle && cleanTimerTitle) {
-      if (cleanEvtTitle === cleanTimerTitle || cleanEvtTitle.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanEvtTitle)) return true;
-      const evtWords = cleanEvtTitle.split(/\s+/).filter(w => w.length >= 3);
-      const timerWords = cleanTimerTitle.split(/\s+/).filter(w => w.length >= 3);
-      if (evtWords.some(w => timerWords.includes(w))) return true;
-    }
-
-    const tiedGoal = goals.find(g => g.id === evt.goalId);
     const cleanGoalName = clean(tiedGoal?.name);
-    if (cleanGoalName && cleanTimerTitle) {
-      if (cleanGoalName === cleanTimerTitle || cleanGoalName.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanGoalName)) return true;
-    }
+    const cleanTimerTitle = clean(activeTimer.title);
 
-    return false;
+    const matchesGoal = Boolean(
+      (activeTimer.goalId && evt.goalId && activeTimer.goalId === evt.goalId) ||
+      (cleanGoalName && cleanTimerTitle && (cleanGoalName === cleanTimerTitle || cleanGoalName.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanGoalName))) ||
+      (cleanEvtTitle && cleanTimerTitle && (cleanEvtTitle === cleanTimerTitle || cleanEvtTitle.includes(cleanTimerTitle) || cleanTimerTitle.includes(cleanEvtTitle)))
+    );
+
+    if (!matchesGoal) return false;
+
+    // Pick the single closest uncompleted event for this goal to avoid labeling multiple cards across the week
+    const nowTime = now.getTime();
+    const candidateEvents = events.filter(e =>
+      !e.completed &&
+      ((activeTimer.goalId && e.goalId === activeTimer.goalId) ||
+       (tiedGoal && e.goalId === tiedGoal.id) ||
+       (clean(e.title) === cleanTimerTitle || clean(e.title) === cleanEvtTitle))
+    ).sort((a, b) => {
+      const aDist = Math.abs(new Date(a.start).getTime() - nowTime);
+      const bDist = Math.abs(new Date(b.start).getTime() - nowTime);
+      return aDist - bDist;
+    });
+
+    return candidateEvents[0]?.id === evt.id;
   };
 
   // Helper to determine if an event is currently happening right now
@@ -902,6 +970,55 @@ export default function CalendarView({
   const handleDropEvent = (e: React.DragEvent, targetHour: number, targetDayIdx?: number) => {
     e.preventDefault();
     setDragOverCell(null);
+
+    // 1. Check if a Goal chip was dragged onto this calendar cell
+    const draggedGoalId = e.dataTransfer.getData("text/goal-id");
+    if (draggedGoalId) {
+      const targetGoal = goals.find(g => g.id === draggedGoalId);
+      if (targetGoal) {
+        let slotDate: Date;
+        if (targetDayIdx !== undefined && viewMode === "week") {
+          slotDate = new Date(weekDates[targetDayIdx]);
+          slotDate.setHours(targetHour, 0, 0, 0);
+        } else if (viewMode === "day") {
+          slotDate = new Date(currentDate);
+          slotDate.setHours(targetHour, 0, 0, 0);
+        } else {
+          return;
+        }
+
+        const durMinutes = targetGoal.durationMinutes || 60;
+        const slotEnd = new Date(slotDate.getTime() + durMinutes * 60 * 1000);
+        const mappedType =
+          targetGoal.type === GoalType.WORKOUT ? "workout" :
+          targetGoal.type === GoalType.STUDY ? "study" :
+          targetGoal.type === GoalType.JOB_SEARCH ? "job_search" :
+          targetGoal.type === GoalType.SIDE_PROJECT ? "side_project" :
+          targetGoal.type === GoalType.ROUTINE ? "routine" :
+          "personal";
+
+        onAddEvent({
+          title: targetGoal.name,
+          type: mappedType,
+          start: slotDate.toISOString(),
+          end: slotEnd.toISOString(),
+          goalId: targetGoal.id,
+          completed: false,
+          icon: targetGoal.icon,
+          notes: `Scheduled session for ${targetGoal.name}`
+        });
+
+        const dayLabel = slotDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+        onNotify?.(
+          "Session Placed",
+          `Scheduled "${targetGoal.name}" on ${dayLabel} at ${targetHour}:00!`,
+          "success"
+        );
+        return;
+      }
+    }
+
+    // 2. Existing Event drag-and-drop repositioning
     const eventId = draggedEventId || e.dataTransfer.getData("text/plain");
     if (!eventId || !onEditEvent) return;
 
@@ -2723,6 +2840,36 @@ export default function CalendarView({
 
   const weekDates = getWeekDates();
 
+  // Track how many sessions each goal has scheduled in the currently displayed week vs its weeklyTarget
+  const goalScheduleStats = useMemo(() => {
+    const map = new Map<string, { scheduledThisWeek: number; completedThisWeek: number; pendingThisWeek: number; deficit: number }>();
+    if (!weekDates || weekDates.length === 0) return map;
+
+    const viewStartMs = new Date(weekDates[0].getFullYear(), weekDates[0].getMonth(), weekDates[0].getDate()).getTime();
+    const viewEndMs = new Date(weekDates[6].getFullYear(), weekDates[6].getMonth(), weekDates[6].getDate(), 23, 59, 59, 999).getTime();
+
+    goals.forEach(g => {
+      const goalClean = (g.name || "").trim().toLowerCase();
+      const inWeek = events.filter(e => {
+        if (e.type === "external") return false;
+        const isMatch = (e.goalId === g.id) || (e.title && e.title.trim().toLowerCase().includes(goalClean));
+        if (!isMatch) return false;
+        const s = new Date(e.start).getTime();
+        return s >= viewStartMs && s <= viewEndMs;
+      });
+
+      const scheduledThisWeek = inWeek.length;
+      const completedThisWeek = inWeek.filter(e => e.completed).length;
+      const pendingThisWeek = inWeek.filter(e => !e.completed).length;
+      const deficit = Math.max(0, g.weeklyTarget - scheduledThisWeek);
+
+      map.set(g.id, { scheduledThisWeek, completedThisWeek, pendingThisWeek, deficit });
+    });
+
+    return map;
+  }, [goals, events, weekDates]);
+
+
   // Navigation handlers
   const handlePrev = () => {
     const nextDate = new Date(currentDate);
@@ -3480,65 +3627,38 @@ export default function CalendarView({
               )}
             </div>
 
-            {/* Focus Today's First Goal Button */}
+            {/* Focus Target Goal Button */}
             <button
               id="focus_today_first_goal_btn"
               type="button"
               onClick={() => handleFocusTodayFirstGoal()}
               className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 ${
                 todayFirstGoal
-                  ? "bg-emerald-100 dark:bg-emerald-500/20 hover:bg-emerald-200 dark:hover:bg-emerald-500/30 text-emerald-950 dark:text-emerald-200 border-emerald-400/80 dark:border-emerald-500/50 shadow-xs active:scale-95"
+                  ? "bg-emerald-100 dark:bg-emerald-500/20 hover:bg-emerald-200 dark:hover:bg-emerald-500/30 text-emerald-950 dark:text-emerald-200 border-emerald-400/80 dark:border-emerald-500/50 shadow-xs active:scale-95 ring-1 ring-emerald-400/30"
                   : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-white/10"
               }`}
               title={
                 todayFirstGoal
-                  ? `Jump directly to today's first goal: "${todayFirstGoal.title}" (${new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})`
-                  : "Focus today's first scheduled goal session"
+                  ? `Jump directly to target goal: "${todayFirstGoal.title}" (${new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})`
+                  : "Focus today's target scheduled goal session"
               }
             >
-              <Target className={`w-3.5 h-3.5 ${todayFirstGoal ? "text-emerald-600 dark:text-emerald-400" : "text-slate-500"}`} />
-              <span>Focus Today's First Goal</span>
+              <Target className={`w-3.5 h-3.5 ${todayFirstGoal ? "text-emerald-600 dark:text-emerald-400 animate-pulse" : "text-slate-500"}`} />
+              {todayFirstGoal ? (
+                <span className="flex items-center gap-1">
+                  <span>Target:</span>
+                  <span className="font-extrabold text-emerald-800 dark:text-emerald-200 underline underline-offset-2">{todayFirstGoal.title}</span>
+                </span>
+              ) : (
+                <span>Focus Target Goal</span>
+              )}
               {todayFirstGoal && (
-                <span className="bg-emerald-600 text-white text-[9.5px] font-mono font-black px-1.5 py-0.2 rounded-md shadow-xs" title={`Scheduled at ${new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}>
+                <span className="bg-emerald-600 text-white text-[9.5px] font-mono font-black px-1.5 py-0.2 rounded-md shadow-xs ml-0.5" title={`Scheduled at ${new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}>
                   {new Date(todayFirstGoal.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
                 </span>
               )}
             </button>
 
-            {/* Calendar Sync Hub (Apple, Google, Outlook) */}
-            <button
-              id="open_sync_sidebar_btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowSyncPanel(true);
-              }}
-              className="p-1.5 sm:px-3 sm:py-1.5 border border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 shadow-2xs active:scale-95"
-              title="Direct Sync with Apple Calendar, Google Calendar, and Microsoft Outlook"
-            >
-              <CalendarIcon className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>Sync Calendars</span>
-              <span className="hidden md:inline-flex text-[9px] bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                Apple • Google • Outlook
-              </span>
-            </button>
-
-            {/* Weekly AI Habit Report Card Trigger */}
-            <button
-              id="open_weekly_report_card_btn"
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowWeeklyReportModal(true);
-              }}
-              className="p-1.5 sm:px-3 sm:py-1.5 border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-purple-500/15 to-indigo-500/15 hover:from-amber-500/25 hover:to-indigo-500/25 text-amber-950 dark:text-amber-200 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold min-h-[32px] whitespace-nowrap shrink-0 shadow-2xs active:scale-95"
-              title="Open Weekly AI Habit Report Card & Sunday Recap"
-            >
-              <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-              <span>Report Card</span>
-              <span className="hidden sm:inline-flex text-[9px] bg-amber-500/25 text-amber-900 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                Weekly
-              </span>
-            </button>
 
             {/* Focus Incomplete Goal (Split Button with Priority & Ordering Menu) */}
             {/* Options & Routines Consolidated Popover */}
@@ -3831,6 +3951,46 @@ export default function CalendarView({
                         </div>
                       </button>
                     )}
+
+                    {/* Sync Calendars (Apple, Google, Outlook) shortcut */}
+                    <button
+                      type="button"
+                      id="options_sync_calendars_btn"
+                      onClick={() => {
+                        setShowViewOptions(false);
+                        setShowSyncPanel(true);
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-blue-500/10 hover:border-blue-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <CalendarIcon className="w-3.5 h-3.5 text-blue-500" />
+                        <div>
+                          <span className="text-slate-900 dark:text-white block">Sync Calendars</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Apple • Google • Outlook integration</span>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                    </button>
+
+                    {/* Weekly Habit Report Card shortcut */}
+                    <button
+                      type="button"
+                      id="options_weekly_report_card_btn"
+                      onClick={() => {
+                        setShowViewOptions(false);
+                        window.dispatchEvent(new CustomEvent("open_weekly_habit_report"));
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-amber-500/10 hover:border-amber-500/30 border border-slate-200 dark:border-white/10 text-xs font-bold flex items-center justify-between transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Trophy className="w-3.5 h-3.5 text-amber-500" />
+                        <div>
+                          <span className="text-slate-900 dark:text-white block">Weekly Habit Report Card</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Review weekly grades & AI schedule tuning</span>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                    </button>
                   </div>
                 </div>
               )}
@@ -3963,24 +4123,6 @@ export default function CalendarView({
         }}
       />
 
-      {/* Weekly AI Habit Report Card & Sunday Recap Modal */}
-      <WeeklyHabitReportModal
-        isOpen={showWeeklyReportModal}
-        onClose={() => setShowWeeklyReportModal(false)}
-        goals={goals}
-        events={events}
-        availability={availability || []}
-        energyProfile={energyProfile || DEFAULT_USER_ENERGY_PROFILE}
-        onApplyScheduleAdjustment={(updatedEvents, message) => {
-          if (onBulkEditEvents) {
-            const updates = updatedEvents.map(e => ({ id: e.id, fields: { start: e.start, end: e.end } }));
-            onBulkEditEvents(updates);
-          }
-          onNotify?.("AI Schedule Applied ✨", message, "success");
-        }}
-        onNotify={onNotify}
-      />
-
       {/* Quick Single-Event Sync & Push Popover Modal */}
       {eventSyncMenuEvt && (
         <div 
@@ -4073,53 +4215,152 @@ export default function CalendarView({
         </div>
       )}
 
-      {/* Goal Colors Quick Legend Strip */}
-      {goals.length > 0 && (
-        <div className="bg-slate-50 dark:bg-[#0c0d18] border-b border-slate-200 dark:border-white/10 px-4 py-2.5 flex items-center gap-3 overflow-x-auto no-scrollbar text-xs shadow-2xs">
-          <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
-            <Target className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" /> Goal Color Legend:
-          </span>
-          <div className="flex items-center gap-2 min-w-0 flex-1 overflow-x-auto no-scrollbar">
-            {goals.map(g => (
-              <div
-                key={g.id}
-                onClick={(e) => handleOpenTimerForGoal(g, e)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-extrabold shrink-0 shadow-2xs transition-all hover:scale-105 cursor-pointer select-none"
+      {/* Empty Goals Onboarding Quick-Add Banner */}
+      {goals.length === 0 && (
+        <div id="cal_empty_goals_banner" className="bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-indigo-500/10 border-b border-indigo-200 dark:border-indigo-500/20 px-4 py-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-indigo-500 shrink-0" />
+            <span className="font-semibold text-slate-800 dark:text-slate-200">
+              No active goals created yet. Quick-add a goal to automatically schedule focus sessions across your calendar:
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {CALENDAR_PRESET_GOALS.map((preset, pIdx) => (
+              <button
+                key={pIdx}
+                type="button"
+                id={`cal_quick_add_preset_${pIdx}`}
+                onClick={() => {
+                  onAddGoal?.({
+                    name: preset.name,
+                    type: preset.type,
+                    category: preset.category,
+                    weeklyTarget: preset.weeklyTarget,
+                    durationMinutes: preset.durationMinutes,
+                    timePreference: preset.timePreference,
+                    color: preset.color,
+                    priority: preset.priority,
+                    energyLevel: preset.energyLevel,
+                    description: preset.description
+                  });
+                }}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer shadow-2xs hover:scale-105 active:scale-95 flex items-center gap-1"
                 style={{
-                  backgroundColor: getSolidBgFromColor(g.color, isLightMode ? 0.12 : 0.35, isLightMode),
-                  borderColor: getSolidBgFromColor(g.color, isLightMode ? 0.35 : 0.6, isLightMode),
+                  backgroundColor: isLightMode ? `${preset.color}18` : `${preset.color}25`,
+                  borderColor: isLightMode ? `${preset.color}50` : `${preset.color}60`,
                   color: isLightMode ? "#0f172a" : "#ffffff"
                 }}
-                title={`${g.name} (${g.completedCount}/${g.weeklyTarget} completed this week) - Click to start focus timer`}
+                title={`Click to add "${preset.name}" and auto-schedule ${preset.weeklyTarget} sessions across your calendar`}
               >
-                <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-1 ring-black/10 dark:ring-white/30" style={{ backgroundColor: g.color }} />
-                <span className="truncate max-w-[140px] font-semibold">{g.name}</span>
-                <span className="goal-target-counter text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shadow-2xs shrink-0 tracking-tight bg-white/80 dark:bg-black/40 border border-black/5 dark:border-white/10 text-slate-700 dark:text-slate-300">
-                  {g.completedCount}/{g.weeklyTarget}
-                </span>
-                <div className="flex items-center gap-1 ml-1 pl-1 border-l border-black/10 dark:border-white/20" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    id={`cal_shift_goal_1d_${g.id}`}
-                    onClick={() => handleShiftGoalAgenda(g, 1)}
-                    className="px-1.5 py-0.5 rounded bg-white dark:bg-black/40 hover:bg-amber-500 hover:text-white dark:hover:text-black text-amber-700 dark:text-amber-300 border border-amber-500/20 dark:border-amber-400/30 text-[9px] font-mono font-extrabold transition cursor-pointer active:scale-95 shadow-2xs"
-                    title={`Shift all upcoming "${g.name}" sessions forward by 1 day`}
-                  >
-                    +1d
-                  </button>
-                  <button
-                    type="button"
-                    id={`cal_shift_goal_1w_${g.id}`}
-                    onClick={() => handleShiftGoalAgenda(g, 7)}
-                    className="px-1.5 py-0.5 rounded bg-white dark:bg-black/40 hover:bg-amber-500 hover:text-white dark:hover:text-black text-amber-700 dark:text-amber-300 border border-amber-500/20 dark:border-amber-400/30 text-[9px] font-mono font-extrabold transition cursor-pointer active:scale-95 shadow-2xs"
-                    title={`Shift all upcoming "${g.name}" sessions forward by 1 week`}
-                  >
-                    +1w
-                  </button>
-                </div>
-              </div>
+                <span>+ {preset.name} ({preset.weeklyTarget}x/wk)</span>
+              </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Active Goals & Schedule Command Bar */}
+      {goals.length > 0 && (
+        <div id="cal_active_goals_command_bar" className="bg-slate-50 dark:bg-[#0c0d18] border-b border-slate-200 dark:border-white/10 px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2.5 text-xs shadow-2xs">
+          <div className="flex items-center gap-2 min-w-0 flex-1 overflow-x-auto no-scrollbar">
+            <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
+              <Target className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" /> Active Goals:
+            </span>
+
+            {goals.map(g => {
+              const stats = goalScheduleStats.get(g.id) || { scheduledThisWeek: 0, completedThisWeek: 0, pendingThisWeek: 0, deficit: g.weeklyTarget };
+              const isFullyScheduled = stats.scheduledThisWeek >= g.weeklyTarget;
+              const hasDeficit = stats.deficit > 0;
+              const isCurrentTarget = Boolean(
+                activeTimer && !activeTimer.isCompleted && (activeTimer.isRunning || (activeTimer.timeRemaining ?? 0) > 0) &&
+                ((activeTimer.goalId && activeTimer.goalId === g.id) ||
+                 (activeTimer.title && (g.name.toLowerCase().includes(activeTimer.title.toLowerCase()) || activeTimer.title.toLowerCase().includes(g.name.toLowerCase()))))
+              );
+
+              return (
+                <div
+                  key={g.id}
+                  id={`cal_goal_chip_${g.id}`}
+                  draggable={true}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("text/goal-id", g.id);
+                    e.dataTransfer.setData("text/goal-name", g.name);
+                    e.dataTransfer.effectAllowed = "copyMove";
+                  }}
+                  onClick={(e) => handleOpenTimerForGoal(g, e)}
+                  className={`flex items-center gap-2 px-2.5 py-1 rounded-xl border text-[11px] font-extrabold shrink-0 shadow-2xs transition-all hover:shadow-md cursor-grab active:cursor-grabbing select-none ${
+                    isCurrentTarget ? "ring-2 ring-amber-400 dark:ring-amber-300 shadow-md scale-[1.02]" : ""
+                  }`}
+                  style={{
+                    backgroundColor: getSolidBgFromColor(g.color, isLightMode ? 0.12 : 0.35, isLightMode),
+                    borderColor: isCurrentTarget ? "#f59e0b" : getSolidBgFromColor(g.color, isLightMode ? 0.35 : 0.6, isLightMode),
+                    color: isLightMode ? "#0f172a" : "#ffffff"
+                  }}
+                  title={`${g.name} • ${stats.scheduledThisWeek}/${g.weeklyTarget} scheduled this week (${stats.completedThisWeek} completed) • Drag onto calendar or click to start focus timer`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-1 ring-black/10 dark:ring-white/30" style={{ backgroundColor: g.color }} />
+                  <span className="truncate max-w-[130px] font-semibold">{g.name}</span>
+
+                  {/* Current Target Badge */}
+                  {isCurrentTarget && (
+                    <span className="text-[9px] bg-amber-400 text-black font-black px-1.5 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5 animate-pulse" title="This goal is currently being studied in Focus Timer!">
+                      <Target className="w-2.5 h-2.5" />
+                      <span>CURRENT TARGET</span>
+                    </span>
+                  )}
+
+                  {/* Scheduled vs Target Status Pill */}
+                  <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shadow-2xs shrink-0 tracking-tight flex items-center gap-1 border ${
+                    isFullyScheduled
+                      ? "bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-600/40 text-emerald-800 dark:text-emerald-300"
+                      : "bg-amber-100 dark:bg-amber-950/60 border-amber-300 dark:border-amber-600/40 text-amber-900 dark:text-amber-200"
+                  }`}>
+                    {isFullyScheduled ? <Check className="w-2.5 h-2.5" /> : null}
+                    <span>{stats.scheduledThisWeek}/{g.weeklyTarget} scheduled</span>
+                  </span>
+
+                  {/* Instant Schedule Button if Goal has deficit */}
+                  {hasDeficit && onScheduleGoal && (
+                    <button
+                      type="button"
+                      id={`cal_auto_schedule_goal_${g.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onScheduleGoal(g.id);
+                      }}
+                      className="px-2 py-0.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold shadow-xs transition cursor-pointer active:scale-95 flex items-center gap-1"
+                      title={`Schedule remaining ${stats.deficit} session(s) for "${g.name}" this week`}
+                    >
+                      <Zap className="w-2.5 h-2.5 fill-current" />
+                      <span>+ Schedule ({stats.deficit})</span>
+                    </button>
+                  )}
+
+                  <div className="flex items-center gap-1 ml-0.5 pl-1 border-l border-black/10 dark:border-white/20" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      id={`cal_shift_goal_1d_${g.id}`}
+                      onClick={() => handleShiftGoalAgenda(g, 1)}
+                      className="px-1.5 py-0.5 rounded bg-white dark:bg-black/40 hover:bg-amber-500 hover:text-white dark:hover:text-black text-amber-700 dark:text-amber-300 border border-amber-500/20 dark:border-amber-400/30 text-[9px] font-mono font-extrabold transition cursor-pointer active:scale-95 shadow-2xs"
+                      title={`Shift upcoming "${g.name}" sessions forward by +1 day`}
+                    >
+                      +1d
+                    </button>
+                    <button
+                      type="button"
+                      id={`cal_shift_goal_1w_${g.id}`}
+                      onClick={() => handleShiftGoalAgenda(g, 7)}
+                      className="px-1.5 py-0.5 rounded bg-white dark:bg-black/40 hover:bg-amber-500 hover:text-white dark:hover:text-black text-amber-700 dark:text-amber-300 border border-amber-500/20 dark:border-amber-400/30 text-[9px] font-mono font-extrabold transition cursor-pointer active:scale-95 shadow-2xs"
+                      title={`Shift upcoming "${g.name}" sessions forward by +1 week`}
+                    >
+                      +1w
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
         </div>
       )}
 
@@ -4378,11 +4619,6 @@ export default function CalendarView({
                                 <Check className="w-2 h-2 stroke-[3]" /> DONE
                               </span>
                             )}
-                            {spotlightEventId === evt.id && (
-                              <span className="text-[7.5px] bg-amber-500 text-slate-950 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5">
-                                <Compass className="w-2 h-2" /> TARGET
-                              </span>
-                            )}
                             {(evt.isBufferCatchUp || evt.title?.includes("[Buffer Catch-Up]")) && (
                               <span className="text-[7.5px] bg-indigo-500/20 text-indigo-300 border border-indigo-400/40 font-black px-1 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5" title="Rescheduled Catch-Up Session">
                                 <Shield className="w-2 h-2 text-indigo-400" /> CATCH-UP
@@ -4431,31 +4667,21 @@ export default function CalendarView({
                           </div>
                         </div>
 
-                        {/* Tied Goal Badge */}
-                        {(() => {
-                          const tiedGoal = goals.find(g => g.id === evt.goalId);
-                          if (!tiedGoal) return null;
-                          if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
-                          return (
+                        {/* Current Study Target Badge - Only shown on the event currently being studied */}
+                        {isEventActiveInTimer(evt) && (
+                          <div className="flex flex-wrap items-center gap-1 mt-0.5 max-w-full">
                             <span
-                              className={`text-[8.5px] font-extrabold px-1.5 py-0.5 rounded border border-black/10 dark:border-white/20 truncate max-w-full inline-flex items-center gap-1 mt-0.5 shadow-2xs ${
-                                evt.completed ? "line-through opacity-70 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""
-                              }`}
-                              style={{ 
-                                backgroundColor: getSolidBgFromColor(tiedGoal.color, isLightMode ? 0.2 : 0.45, isLightMode),
-                                color: isLightMode ? "#0f172a" : "#ffffff"
-                              }}
-                              title={`Goal: ${tiedGoal.name}`}
+                              className="text-[7.5px] bg-amber-400 text-black font-black px-1.5 py-0.2 rounded shadow-xs shrink-0 flex items-center gap-0.5 animate-pulse"
+                              title="Currently studying this target in Focus Timer!"
                             >
-                              <Target className="w-2.5 h-2.5 shrink-0" style={{ color: tiedGoal.color }} />
-                              <span className="truncate">{tiedGoal.name}</span>
+                              <Target className="w-2 h-2" /> CURRENT TARGET
                             </span>
-                          );
-                        })()}
+                          </div>
+                        )}
 
                         {/* Target Exam / Milestone Countdown Badge */}
                         {(() => {
-                          const tiedGoal = goals.find(g => g.id === evt.goalId);
+                          const tiedGoal = goals.find(g => g.id === evt.goalId || (evt.title && g.name.trim().toLowerCase() === evt.title.trim().toLowerCase()));
                           if (!tiedGoal?.targetExamDate) return null;
                           const examDate = new Date(tiedGoal.targetExamDate);
                           const diffDays = Math.ceil((examDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
@@ -4870,31 +5096,12 @@ export default function CalendarView({
                                         <Clock className="w-2.5 h-2.5" /> {resizingEvent?.currentDuration}m
                                       </span>
                                     )}
-                                    {spotlightEventId === evt.id && (
-                                      <span className="text-[8px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-0.5 shrink-0">
-                                        <Compass className="w-2.5 h-2.5" /> TARGET GOAL
+                                    {isEventActiveInTimer(evt) && (
+                                      <span className="text-[8.5px] bg-amber-400 text-black font-black px-2 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0 animate-pulse" title="Currently studying this target in Focus Timer!">
+                                        <Target className="w-2.5 h-2.5" /> CURRENT TARGET
                                       </span>
                                     )}
                                   </div>
-                                  {(() => {
-                                    const tiedGoal = goals.find(g => g.id === evt.goalId);
-                                    if (!tiedGoal) return null;
-                                    if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
-                                    return (
-                                      <span
-                                        className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border border-black/10 dark:border-white/20 shadow-2xs inline-flex items-center gap-1 ${
-                                          evt.completed ? "line-through opacity-70 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""
-                                        }`}
-                                        style={{ 
-                                          backgroundColor: getSolidBgFromColor(tiedGoal.color, isLightMode ? 0.2 : 0.45, isLightMode),
-                                          color: isLightMode ? "#0f172a" : "#ffffff"
-                                        }}
-                                      >
-                                        <Target className="w-3 h-3 shrink-0" style={{ color: tiedGoal.color }} />
-                                        <span>{tiedGoal.name}</span>
-                                      </span>
-                                    );
-                                  })()}
                                 </div>
                                 <div className="flex items-center gap-1.5 shrink-0">
                                   {/* Quick Action Button: Checkmark for Completed, Play for Uncompleted */}
@@ -5294,31 +5501,17 @@ export default function CalendarView({
                                     <Check className="w-2.5 h-2.5 stroke-[3]" /> DONE
                                   </span>
                                 )}
-                                {spotlightEventId === evt.id && (
-                                  <span className="text-[9px] bg-amber-500 text-slate-950 font-black px-1.5 py-0.5 rounded shadow-xs flex items-center gap-1 shrink-0">
-                                    <Compass className="w-3 h-3" /> TARGET GOAL
-                                  </span>
-                                )}
-                                {(() => {
-                                  const tiedGoal = goals.find(g => g.id === evt.goalId);
-                                  if (!tiedGoal) return null;
-                                  if (evt.title.trim().toLowerCase() === tiedGoal.name.trim().toLowerCase()) return null;
-                                  return (
+                                {/* Target Badge - ONLY show on the session currently being studied */}
+                                {isEventActiveInTimer(evt) && (
+                                  <div className="flex flex-wrap items-center gap-1.5">
                                     <span
-                                      className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-md border flex items-center gap-1 shrink-0 shadow-xs ${
-                                        evt.completed ? "line-through opacity-70 decoration-slate-900/80 dark:decoration-white/80 decoration-[1.5px]" : ""
-                                      }`}
-                                      style={{
-                                        backgroundColor: getSolidBgFromColor(tiedGoal.color, 0.35),
-                                        borderColor: getSolidBgFromColor(tiedGoal.color, 0.6),
-                                        color: "#ffffff"
-                                      }}
+                                      className="text-[9px] bg-amber-400 text-black font-black px-2 py-0.5 rounded shadow-xs flex items-center gap-1 animate-pulse"
+                                      title="Currently studying this target in Focus Timer!"
                                     >
-                                      <Target className="w-3 h-3 text-white" />
-                                      <span>{tiedGoal.name}</span>
+                                      <Target className="w-2.5 h-2.5" /> CURRENT TARGET
                                     </span>
-                                  );
-                                })()}
+                                  </div>
+                                )}
                                 {(() => {
                                   const tiedGoal = goals.find(g => g.id === evt.goalId);
                                   if (tiedGoal?.priority === "critical") {
@@ -6314,23 +6507,6 @@ export default function CalendarView({
           </div>
         </div>
       )}
-
-      {/* Weekly AI Habit Report Card Modal */}
-      <WeeklyHabitReportModal
-        isOpen={showWeeklyReportModal}
-        onClose={() => setShowWeeklyReportModal(false)}
-        goals={goals}
-        events={events}
-        availability={availability || DEFAULT_AVAILABILITY}
-        energyProfile={energyProfile}
-        onApplyScheduleAdjustment={(updatedEvents, message) => {
-          if (onBulkEditEvents) {
-            onBulkEditEvents(updatedEvents.map(e => ({ id: e.id, fields: e })));
-          }
-          onNotify?.("✨ Schedule Optimized", message, "success");
-        }}
-        onNotify={onNotify}
-      />
 
     </div>
   );

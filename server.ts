@@ -64,11 +64,10 @@ async function generateWithFallback(params: {
   if (!key) return null;
 
   const ai = getAi();
-  const requestTimeout = params.timeoutMs || 18000;
+  const requestTimeout = params.timeoutMs || 4000;
   
   const modelChain = [
     params.primaryModel || "gemini-3.8-flash",
-    "gemini-flash-latest",
     params.fallbackModel || "gemini-3.1-flash-lite"
   ];
   const uniqueModels = Array.from(new Set(modelChain));
@@ -1044,6 +1043,406 @@ Return ONLY valid JSON. No markdown ticks.`;
   }
 });
 
+// 5b. GOAL KNOWLEDGE HUB - STUDY NOTES GENERATOR
+app.post("/api/coach/generate-study-notes", async (req, res) => {
+  const {
+    goalTitle = "Study Session",
+    goalCategory = "General",
+    chapterTitle = "",
+    examTitle = ""
+  } = req.body;
+
+  function generateFallbackNotes(title: string, category: string, chapter: string, exam: string) {
+    const topic = chapter || title;
+    const isSecurity = /cyber|security|soc|pen|threat|firewall/i.test(title + " " + topic);
+    const isIT = /it|support|network|hardware|helpdesk|dns|ip/i.test(title + " " + topic);
+    const isCoding = /code|react|typescript|python|web|program|dev/i.test(title + " " + topic);
+
+    let summaryText = "";
+    let terms: string[] = [];
+    let flashcards: any[] = [];
+
+    if (isSecurity) {
+      summaryText = `### Core Concepts & Defense-in-Depth\n- **CIA Triad**: Confidentiality (encryption, ACLs), Integrity (hashing, checksums), Availability (redundancy, DDoS defense).\n- **Threat Vectors**: Phishing, social engineering, zero-day vulnerabilities, unpatched services.\n- **Zero Trust Principle**: Never trust, always verify. Enforce continuous identity inspection and least-privilege access controls.\n\n### Practical Safeguards\n- Multi-factor Authentication (MFA/FIDO2) prevents >99% of bulk credential attacks.\n- Automated audit logging and SIEM ingestion for real-time anomalous lateral movement detection.\n- Regular penetration testing and vulnerability scans with CVSS prioritization.`;
+      terms = ["CIA Triad", "Zero Trust", "Least Privilege", "SIEM", "MFA", "Phishing Vector"];
+      flashcards = [
+        { id: "fc_1", front: "What are the three pillars of the CIA Triad?", back: "Confidentiality (protect data from unauthorized access), Integrity (ensure data isn't altered), and Availability (ensure systems are accessible).", mastered: false },
+        { id: "fc_2", front: "What does the principle of Least Privilege dictate?", back: "Users and processes should only receive the minimum permissions necessary to perform their legitimate job functions.", mastered: false },
+        { id: "fc_3", front: "What is the primary role of a SIEM system?", back: "Aggregating, correlating, and analyzing log data across an enterprise in real-time to alert on security events.", mastered: false }
+      ];
+    } else if (isIT) {
+      summaryText = `### Foundational Troubleshooting Methodology\n- **Step 1**: Identify the problem (gather user reports, question changes, inspect symptoms).\n- **Step 2**: Establish a theory of probable cause (test simplest explanations first like cables and DHCP).\n- **Step 3**: Test theory to determine cause, then plan and implement resolution.\n- **Step 4**: Verify full system functionality and implement preventive countermeasures.\n- **Step 5**: Document findings, actions, and outcomes in ticketing system.\n\n### Essential Networking & Protocols\n- **DNS (Port 53)**: Domain name translation.\n- **DHCP (Ports 67/68)**: Automatic dynamic IP address assignment (DORA flow: Discover, Offer, Request, Acknowledge).\n- **TCP vs UDP**: TCP is connection-oriented and guaranteed delivery; UDP is low-latency connectionless.`;
+      terms = ["CompTIA Troubleshooting Model", "DORA Process", "DNS Port 53", "DHCP", "Default Gateway", "Subnet Mask"];
+      flashcards = [
+        { id: "fc_1", front: "What are the 4 stages of DHCP address allocation?", back: "DORA: Discover (client broadcast), Offer (server response), Request (client selection), Acknowledge (server lease confirmation).", mastered: false },
+        { id: "fc_2", front: "What command verifies end-to-end IP connectivity and round-trip latency?", back: "ping (uses ICMP Echo Request / Echo Reply packets).", mastered: false },
+        { id: "fc_3", front: "What is the first step in the CompTIA 6-step troubleshooting methodology?", back: "Identify the problem (question the user, identify changes, review system logs).", mastered: false }
+      ];
+    } else if (isCoding) {
+      summaryText = `### Key Architectural Paradigms\n- **Declarative vs Imperative**: Declarative programming defines *what* state should look like; the runtime manages DOM reconciliation.\n- **Pure Functions**: Deterministic outputs given same inputs, zero side effects outside scope.\n- **State Management**: Keep single source of truth; lift state up to common ancestors or leverage lightweight stores.\n\n### Optimization & Best Practices\n- Avoid premature optimization; profile render lifecycles before memoizing.\n- Clean async error boundaries with robust retry and optimistic update fallbacks.\n- Defensive input sanitization and TypeScript type narrowing.`;
+      terms = ["Pure Functions", "Immutability", "State Lifting", "Async/Await", "Reconciliation", "Memoization"];
+      flashcards = [
+        { id: "fc_1", front: "What defines an idempotent or pure function?", back: "It always produces the identical output given the same input arguments and causes zero observable side effects.", mastered: false },
+        { id: "fc_2", front: "Why should state updates in React be treated as immutable?", back: "React relies on reference equality checks (Object.is) to detect changes and trigger optimal component re-renders.", mastered: false },
+        { id: "fc_3", front: "What is the key difference between optimistic and pessimistic updates?", back: "Optimistic updates immediately reflect UI changes before server confirmation, rolling back on failure; pessimistic waits for server 200 OK.", mastered: false }
+      ];
+    } else {
+      summaryText = `### Mastery Overview for ${topic}\n- **Core Objective**: Build systematic, deep retention through spaced repetition and active conceptual mapping.\n- **Primary Principles**: Break down complex structures into atomic foundational concepts before tackling edge cases.\n- **Practical Application**: Relate theoretical constructs to real-world scenarios and hands-on lab problems.\n\n### Retention Checklist\n- Self-explain key concepts without reference notes.\n- Solve 3-5 application problems independently.\n- Summarize key takeaways in one concise sentence.`;
+      terms = ["Foundational Concepts", "Spaced Repetition", "Active Recall", "First Principles", "Hands-on Practice"];
+      flashcards = [
+        { id: "fc_1", front: `What is the core premise of ${topic}?`, back: `Understanding foundational laws, definitions, and workflows that govern ${title} applications.`, mastered: false },
+        { id: "fc_2", front: "Why is active recall more effective than passive reading?", back: "Retrieval practice actively strengthens neural pathways and reveals conceptual blind spots.", mastered: false },
+        { id: "fc_3", front: "What is the recommended review schedule for spaced repetition?", back: "Reviewing material after 1 day, 3 days, 1 week, and 2 weeks to counteract the Ebbinghaus forgetting curve.", mastered: false }
+      ];
+    }
+
+    const noteId = "note_" + Date.now();
+    return {
+      note: {
+        id: noteId,
+        title: topic ? `${topic} - Essential Study Guide` : `${title} Study Artifact`,
+        category: "concept",
+        content: summaryText,
+        chapterTitle: chapter || undefined,
+        keyTerms: terms,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
+      flashcards
+    };
+  }
+
+  try {
+    const systemPrompt = `You are an elite academic tutor and technical subject-matter expert.
+Generate a structured, high-yield study guide artifact and 3-4 active recall flashcards.
+The study material must be clear, actionable, technical, and formatted in clean markdown.
+
+Return valid JSON in this EXACT schema:
+{
+  "title": "Topic or Chapter Guide Title",
+  "category": "concept" | "cheat_sheet" | "summary",
+  "content": "Comprehensive markdown text with ## headings, bullet points, core concepts, pitfalls, and best practices",
+  "keyTerms": ["Term 1", "Term 2", "Term 3", "Term 4"],
+  "flashcards": [
+    {
+      "front": "Prompt question or technical term to test active recall",
+      "back": "Clear, concise definition or explanation"
+    }
+  ]
+}
+Return ONLY valid JSON. No markdown ticks outside the JSON.`;
+
+    const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nSpecific Chapter/Topic: "${chapterTitle || 'Core Curriculum'}"\nTarget Exam/Milestone: "${examTitle || 'Mastery'}"`;
+
+    const result = await generateWithFallback({
+      primaryModel: "gemini-3.8-flash",
+      fallbackModel: "gemini-3.1-flash-lite",
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: "application/json"
+      }
+    });
+
+    if (result && result.text) {
+      const parsed = JSON.parse(result.text.trim());
+      if (parsed && parsed.content) {
+        const noteId = "note_" + Date.now();
+        const note = {
+          id: noteId,
+          title: parsed.title || `${chapterTitle || goalTitle} Study Guide`,
+          category: parsed.category || "concept",
+          content: parsed.content,
+          chapterTitle: chapterTitle || undefined,
+          keyTerms: Array.isArray(parsed.keyTerms) ? parsed.keyTerms : [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        const flashcards = Array.isArray(parsed.flashcards)
+          ? parsed.flashcards.map((f: any, idx: number) => ({
+              id: `fc_${Date.now()}_${idx}`,
+              front: f.front || "Concept Question",
+              back: f.back || "Concept Explanation",
+              chapterTitle: chapterTitle || undefined,
+              mastered: false
+            }))
+          : [];
+        return res.json({ note, flashcards });
+      }
+    }
+
+    return res.json(generateFallbackNotes(goalTitle, goalCategory, chapterTitle, examTitle));
+  } catch (err: any) {
+    console.warn("Study notes generation notice:", err?.message || err);
+    return res.json(generateFallbackNotes(goalTitle, goalCategory, chapterTitle, examTitle));
+  }
+});
+
+// 5c. GOAL KNOWLEDGE HUB - KNOWLEDGE TEST GENERATOR
+app.post("/api/coach/generate-knowledge-test", async (req, res) => {
+  const {
+    goalTitle = "Knowledge Assessment",
+    goalCategory = "General",
+    chapterTitle = "",
+    examTitle = "",
+    difficulty = "medium"
+  } = req.body;
+
+  function generateFallbackTest(title: string, category: string, chapter: string, diff: string) {
+    const topic = chapter || title;
+    const isSecurity = /cyber|security|soc|pen|threat|firewall/i.test(title + " " + topic);
+    const isIT = /it|support|network|hardware|helpdesk|dns|ip/i.test(title + " " + topic);
+
+    let questions: any[] = [];
+    if (isSecurity) {
+      questions = [
+        {
+          id: "q_1",
+          question: "An organization wants to verify that incoming transmission packets have not been modified in transit. Which cryptographic control best satisfies this requirement?",
+          options: [
+            "Symmetric AES encryption",
+            "Cryptographic hashing (SHA-256)",
+            "Diffie-Hellman key exchange",
+            "Digital certificate revocation list"
+          ],
+          correctIndex: 1,
+          explanation: "Cryptographic hashing produces a fixed-length digest representing data state. If even one bit changes in transit, the recalculated hash will not match, guaranteeing integrity.",
+          difficulty: "medium"
+        },
+        {
+          id: "q_2",
+          question: "Which of the following describes the Zero Trust architectural framework?",
+          options: [
+            "Trusting all authenticated internal subnet requests by default",
+            "Enforcing perimeter boundary firewalls while leaving internal traffic uninspected",
+            "Continuous verification and least-privilege enforcement regardless of network location",
+            "Relying solely on complex passwords without multi-factor authentication"
+          ],
+          correctIndex: 2,
+          explanation: "Zero Trust operates on the principle of 'never trust, always verify'. Every transaction, asset, and user identity is authenticated and authorized dynamically.",
+          difficulty: "easy"
+        },
+        {
+          id: "q_3",
+          question: "A security analyst discovers multiple failed SSH login attempts followed by a successful login from an unexpected geographical IP. What is the immediate priority action?",
+          options: [
+            "Delete the affected server log files to prevent overflow",
+            "Isolate the affected host from the network and preserve volatile memory",
+            "Wait 24 hours to monitor if the attacker executes additional commands",
+            "Reboot the host immediately without taking an image"
+          ],
+          correctIndex: 1,
+          explanation: "Isolating the endpoint stops lateral movement and command-and-control communication while preserving volatile RAM artifacts essential for incident forensics.",
+          difficulty: "hard"
+        },
+        {
+          id: "q_4",
+          question: "Which type of social engineering attack specifically targets high-ranking corporate executives with tailored fraudulent communications?",
+          options: [
+            "Vishing",
+            "Whaling",
+            "Baiting",
+            "Tailgating"
+          ],
+          correctIndex: 1,
+          explanation: "Whaling is a highly targeted form of spear-phishing aimed directly at C-suite executives and senior leaders.",
+          difficulty: "easy"
+        }
+      ];
+    } else if (isIT) {
+      questions = [
+        {
+          id: "q_1",
+          question: "A client workstation displays an IP address of 169.254.12.89 and cannot reach external web servers. What is the most probable root cause?",
+          options: [
+            "The DNS server is returning incorrect MX records",
+            "The workstation failed to obtain a lease from the DHCP server (APIPA assigned)",
+            "The default gateway has static routing disabled",
+            "The client network card is operating in full-duplex mode"
+          ],
+          correctIndex: 1,
+          explanation: "The 169.254.0.0/16 range is Automatic Private IP Addressing (APIPA), assigned by the OS when a DHCP server does not respond to DORA discovery broadcasts.",
+          difficulty: "medium"
+        },
+        {
+          id: "q_2",
+          question: "Which default TCP/UDP port is utilized by the Domain Name System (DNS) protocol for query resolution?",
+          options: [
+            "Port 22",
+            "Port 53",
+            "Port 80",
+            "Port 443"
+          ],
+          correctIndex: 1,
+          explanation: "DNS utilizes Port 53 for standard name queries (primarily over UDP, with TCP used for zone transfers and packets exceeding 512 bytes).",
+          difficulty: "easy"
+        },
+        {
+          id: "q_3",
+          question: "According to standard CompTIA troubleshooting methodology, what step should immediately follow establishing a theory of probable cause?",
+          options: [
+            "Document findings, actions, and outcomes",
+            "Test the theory to determine cause",
+            "Establish a plan of action and implement the solution",
+            "Verify full system functionality"
+          ],
+          correctIndex: 1,
+          explanation: "Once a theory of probable cause is established, you must test the theory to determine whether it is the true root cause before implementing modifications.",
+          difficulty: "medium"
+        },
+        {
+          id: "q_4",
+          question: "A user reports that web browsing is failing, but they can still successfully ping 8.8.8.8. Which network component is malfunctioning?",
+          options: [
+            "Local Physical Network Interface Card",
+            "Local Loopback Adapter (127.0.0.1)",
+            "DNS Name Resolution Service",
+            "Default Gateway Router"
+          ],
+          correctIndex: 2,
+          explanation: "Being able to ping an IP address (8.8.8.8) proves routing and gateway connectivity work; the failure to resolve URLs points directly to a DNS failure.",
+          difficulty: "easy"
+        }
+      ];
+    } else {
+      questions = [
+        {
+          id: "q_1",
+          question: `In the study of ${topic}, which technique provides the highest long-term retention according to cognitive learning science?`,
+          options: [
+            "Re-reading highlighted textbook sections multiple times",
+            "Active recall testing through practice questions and self-explanation",
+            "Listening passively to recorded lectures during sleep",
+            "Cramming all material the night before the target deadline"
+          ],
+          correctIndex: 1,
+          explanation: "Empirical studies consistently prove that active recall and retrieval practice induce stronger neural consolidation than passive recognition or re-reading.",
+          difficulty: "easy"
+        },
+        {
+          id: "q_2",
+          question: `When approaching a complex problem in ${topic}, what is the best first step?`,
+          options: [
+            "Immediately jump to the most advanced edge cases",
+            "Deconstruct the problem into foundational sub-components and identify known constraints",
+            "Rely entirely on guessing without forming a hypothesis",
+            "Skip to the solution guide to memorize the final output"
+          ],
+          correctIndex: 1,
+          explanation: "First-principles deconstruction allows you to isolate variables, understand underlying mechanics, and systematically resolve complexity.",
+          difficulty: "medium"
+        },
+        {
+          id: "q_3",
+          question: "What is the primary benefit of tracking mistake patterns in a learning journal?",
+          options: [
+            "Discouraging further practice by highlighting weaknesses",
+            "Targeting deliberate practice specifically on cognitive blind spots",
+            "Satisfying administrative compliance requirements",
+            "Resetting all previously mastered concepts to zero"
+          ],
+          correctIndex: 1,
+          explanation: "Deliberate error analysis transforms mistakes into actionable feedback loops, preventing the repetition of systematic errors.",
+          difficulty: "medium"
+        },
+        {
+          id: "q_4",
+          question: `How should spaced repetition intervals be scheduled for optimal mastery of ${title}?`,
+          options: [
+            "Equal 1-hour intervals repeated continuously for 24 hours",
+            "Gradually expanding intervals (e.g. 1 day, 3 days, 1 week, 2 weeks) as retention strengthens",
+            "A single intensive session with no subsequent follow-up",
+            "Random intervals with no tracking"
+          ],
+          correctIndex: 1,
+          explanation: "Expanding spaced intervals interrupt the forgetting curve at the optimal point when recall effort is highest, maximizing synaptic consolidation.",
+          difficulty: "easy"
+        }
+      ];
+    }
+
+    const testId = "test_" + Date.now();
+    return {
+      test: {
+        id: testId,
+        title: topic ? `${topic} Knowledge Assessment` : `${title} Mastery Test`,
+        chapterTitle: chapter || undefined,
+        createdAt: new Date().toISOString(),
+        questions,
+        attemptsCount: 0
+      }
+    };
+  }
+
+  try {
+    const systemPrompt = `You are a professional test author and technical certification exam creator.
+Create a rigorous, highly educational 4-question multiple choice diagnostic assessment for the user's study goal.
+Each question must have:
+- Exactly 4 plausible options (1 correct, 3 realistic distractors).
+- A 0-indexed 'correctIndex' (0, 1, 2, or 3).
+- A comprehensive 'explanation' clarifying why the correct option is right and what principle applies.
+- Difficulty assigned as "easy", "medium", or "hard".
+
+Return valid JSON in this EXACT schema:
+{
+  "title": "Assessment Title",
+  "questions": [
+    {
+      "id": "q_1",
+      "question": "Clear scenario or technical question",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correctIndex": 1,
+      "explanation": "Detailed explanation of why this option is correct.",
+      "difficulty": "medium"
+    }
+  ]
+}
+Return ONLY valid JSON. No markdown ticks outside the JSON.`;
+
+    const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nChapter/Topic: "${chapterTitle || 'Core Focus'}"\nTarget Exam: "${examTitle || 'Certification'}"\nTarget Difficulty: "${difficulty}"`;
+
+    const result = await generateWithFallback({
+      primaryModel: "gemini-3.8-flash",
+      fallbackModel: "gemini-3.1-flash-lite",
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.35,
+        responseMimeType: "application/json"
+      }
+    });
+
+    if (result && result.text) {
+      const parsed = JSON.parse(result.text.trim());
+      if (parsed && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+        const testId = "test_" + Date.now();
+        const test = {
+          id: testId,
+          title: parsed.title || `${chapterTitle || goalTitle} Knowledge Test`,
+          chapterTitle: chapterTitle || undefined,
+          createdAt: new Date().toISOString(),
+          questions: parsed.questions.map((q: any, idx: number) => ({
+            id: q.id || `q_${Date.now()}_${idx}`,
+            question: q.question,
+            options: Array.isArray(q.options) && q.options.length === 4 ? q.options : ["Option A", "Option B", "Option C", "Option D"],
+            correctIndex: typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex <= 3 ? q.correctIndex : 0,
+            explanation: q.explanation || "Correct answer.",
+            difficulty: q.difficulty || difficulty
+          })),
+          attemptsCount: 0
+        };
+        return res.json({ test });
+      }
+    }
+
+    return res.json(generateFallbackTest(goalTitle, goalCategory, chapterTitle, difficulty));
+  } catch (err: any) {
+    console.warn("Knowledge test generation notice:", err?.message || err);
+    return res.json(generateFallbackTest(goalTitle, goalCategory, chapterTitle, difficulty));
+  }
+});
+
 // 6. SMART ENERGY-BASED SCHEDULING ENDPOINT
 app.post("/api/coach/energy-schedule", async (req, res) => {
   const { goals = [], events = [], availability = [], energyProfile = "lark" } = req.body;
@@ -1432,6 +1831,7 @@ Custom Focus/Request: ${customPrompt || "None"}`;
     const result = await generateWithFallback({
       primaryModel: "gemini-3.8-flash",
       fallbackModel: "gemini-3.1-flash-lite",
+      timeoutMs: 3500,
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,
@@ -1676,6 +2076,13 @@ app.post("/api/coach/ai-schedule-controller", async (req, res) => {
             goalId: goal.id,
             completed: false,
             energyLevel: goal.energyLevel || "deep_focus",
+            subtasks: goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks : undefined,
+            subSteps: goal.subSteps || (goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks.map((s: any) => ({
+              id: s.id,
+              title: s.title,
+              durationMinutes: s.durationMinutes || 15,
+              completed: s.completed || false
+            })) : undefined),
             notes: `🤖 AI Autopilot: Scheduled ${goalDuration}m block aligned with ${chronotype.toUpperCase()} rhythm`
           };
           resultingEvents.push(newEvent);
@@ -1825,6 +2232,11 @@ Algorithmic Baseline Suggestion: ${JSON.stringify({ diff: baseline.diff, stats: 
   // Programmatic fallback
   const fallbackProposal = generateHeuristicSchedule();
   return res.json(fallbackProposal);
+});
+
+// Ensure any unhandled /api/* route returns clean JSON 404 instead of HTML SPA page
+app.all("/api/*", (req, res) => {
+  res.status(404).json({ error: `API route ${req.method} ${req.path} not found` });
 });
 
 // Serve frontend assets

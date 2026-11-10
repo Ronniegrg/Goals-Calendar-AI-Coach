@@ -41,6 +41,7 @@ import {
 } from "../types";
 import { renderGoalIcon } from "../lib/goalIcons";
 import { getEnergyBadgeData, DEFAULT_USER_ENERGY_PROFILE } from "../lib/energyProfile";
+import { generateLocalRecommendations } from "../lib/recommendationGenerator";
 
 interface GoalRecommendationEngineProps {
   goals: Goal[];
@@ -78,10 +79,13 @@ export default function GoalRecommendationEngine({
   const [adoptedRecIds, setAdoptedRecIds] = useState<Record<string, boolean>>({});
   const [lastGeneratedAt, setLastGeneratedAt] = useState<number | null>(null);
 
-  // Fetch or generate recommendations
+  // Fetch or generate recommendations with resilient fallback
   const fetchRecommendations = async (filter: "all" | "study" | "routine" = categoryFilter, promptText: string = customPrompt) => {
     setLoading(true);
     try {
+      const controller = new AbortController();
+      const timeoutTimer = setTimeout(() => controller.abort(), 4500);
+
       const res = await fetch("/api/coach/recommend-goals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -92,16 +96,39 @@ export default function GoalRecommendationEngine({
           energyProfile,
           categoryFilter: filter,
           customPrompt: promptText
-        })
+        }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutTimer);
 
-      if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
         const json: RecommendationEngineResponse = await res.json();
         setData(json);
         setLastGeneratedAt(Date.now());
+      } else {
+        const fallback = generateLocalRecommendations({
+          goals,
+          events,
+          availability,
+          energyProfile,
+          categoryFilter: filter,
+          customPrompt: promptText
+        });
+        setData(fallback);
+        setLastGeneratedAt(Date.now());
       }
-    } catch (err) {
-      console.error("Failed to load recommendations:", err);
+    } catch {
+      const fallback = generateLocalRecommendations({
+        goals,
+        events,
+        availability,
+        energyProfile,
+        categoryFilter: filter,
+        customPrompt: promptText
+      });
+      setData(fallback);
+      setLastGeneratedAt(Date.now());
     } finally {
       setLoading(false);
     }

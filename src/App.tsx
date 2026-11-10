@@ -33,7 +33,8 @@ import EnergyProfileModal from "./components/EnergyProfileModal";
 import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
 import { StreakShieldModal } from "./components/StreakShieldModal";
-import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference, AutopilotMode, AutopilotPacing, DailyBurnoutLimits } from "./types";
+import WeeklyHabitReportModal from "./components/WeeklyHabitReportModal";
+import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference, AutopilotMode, AutopilotPacing, DailyBurnoutLimits, GoalKnowledgeHub } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
   deduplicateDailyGoalEvents, 
@@ -230,6 +231,58 @@ export default function App() {
   });
   const [showEnergyModal, setShowEnergyModal] = useState<boolean>(false);
   const [showStreakShieldModal, setShowStreakShieldModal] = useState<boolean>(false);
+  const [showWeeklyReportModal, setShowWeeklyReportModal] = useState<boolean>(false);
+
+  // Listen for open_weekly_habit_report events (from Settings preview or Options popover)
+  useEffect(() => {
+    const handleOpen = () => setShowWeeklyReportModal(true);
+    window.addEventListener("open_weekly_habit_report", handleOpen);
+    return () => window.removeEventListener("open_weekly_habit_report", handleOpen);
+  }, []);
+
+  // Automated Weekly Habit Report Card Launch Trigger based on user settings
+  useEffect(() => {
+    try {
+      const isAutoEnabled = localStorage.getItem("weekly_report_auto_display") !== "false";
+      if (!isAutoEnabled) return;
+
+      const configuredDay = Number(localStorage.getItem("weekly_report_day") ?? "0"); // 0 = Sunday
+      const timeMode = localStorage.getItem("weekly_report_time_mode") || "anytime";
+      const customTime = localStorage.getItem("weekly_report_custom_time") || "18:00";
+
+      const now = new Date();
+      if (now.getDay() === configuredDay) {
+        let timeConditionMet = true;
+        if (timeMode === "evening") {
+          // After 6:00 PM (18:00)
+          if (now.getHours() < 18) {
+            timeConditionMet = false;
+          }
+        } else if (timeMode === "custom") {
+          const [cfgHour, cfgMin] = customTime.split(":").map(Number);
+          const currentMinutes = now.getHours() * 60 + now.getMinutes();
+          const targetMinutes = (cfgHour || 0) * 60 + (cfgMin || 0);
+          if (currentMinutes < targetMinutes) {
+            timeConditionMet = false;
+          }
+        }
+
+        if (timeConditionMet) {
+          const dateStr = now.toDateString();
+          const lastSeen = localStorage.getItem("last_weekly_report_seen_date");
+          if (lastSeen !== dateStr) {
+            const timer = setTimeout(() => {
+              setShowWeeklyReportModal(true);
+              localStorage.setItem("last_weekly_report_seen_date", dateStr);
+            }, 1200);
+            return () => clearTimeout(timer);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Auto Dark/Light Theme State Engine (Default: Auto Mode)
   const [themeMode, setThemeMode] = useState<"auto" | "dark" | "light">(() => {
@@ -796,19 +849,9 @@ export default function App() {
     // Deduplicate current uncompleted events first (ensures at most 1 session per goal per day)
     const { deduplicated: deduplicatedEvents, removedCount: dupRemoved } = deduplicateDailyGoalEvents(currentEvents, currentGoals);
 
-    // Purge any uncompleted auto-scheduled events that violate their goal's strict time preference
+    // Safeguard: Retain all valid goal sessions (never purge active uncompleted events simply because of slot placement)
     let purgedCount = dupRemoved;
-    const validEvents = deduplicatedEvents.filter(evt => {
-      if (evt.completed || evt.type === "external") return true;
-      // Do not purge events that were shifted or delayed by the user
-      const isShiftedOrDelayed = evt.notes && (evt.notes.includes("Shifted") || evt.notes.includes("Delayed") || evt.notes.includes("Manual"));
-      if (isShiftedOrDelayed) return true;
-      const parentGoal = findGoalForEvent(evt, currentGoals);
-      if (!parentGoal) return true;
-      const isValid = isEventInGoalTimePrefWindow(evt, parentGoal);
-      if (!isValid) purgedCount++;
-      return isValid;
-    });
+    const validEvents = deduplicatedEvents;
 
     const newScheduledEvents: CalendarEvent[] = [];
     let scheduledCount = 0;
@@ -964,7 +1007,9 @@ export default function App() {
           ];
         } else {
           windowsToTry = [
-            { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd }
+            { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
+            { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
+            { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
           ];
         }
 
@@ -1005,7 +1050,14 @@ export default function App() {
                 goalId: goal.id,
                 completed: false,
                 icon: goal.icon,
-                notes: `Auto-scheduled session for ${goal.name} (${goal.timePreference || "preferred"} time window)`
+                notes: `Auto-scheduled session for ${goal.name} (${goal.timePreference || "preferred"} time window)`,
+                subtasks: goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks : undefined,
+                subSteps: goal.subSteps || (goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks.map(s => ({
+                  id: s.id,
+                  title: s.title,
+                  durationMinutes: s.durationMinutes || 15,
+                  completed: s.completed || false
+                })) : undefined)
               });
               scheduledCount++;
               slotBooked = true;
@@ -2230,7 +2282,9 @@ export default function App() {
         ];
       } else {
         windowsToTry = [
-          { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd }
+          { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
+          { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
+          { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
         ];
       }
 
@@ -2284,7 +2338,14 @@ export default function App() {
               goalId: goal.id,
               completed: false,
               notes: `Auto-scheduled session for ${goal.name}`,
-              icon: goal.icon
+              icon: goal.icon,
+              subtasks: goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks : undefined,
+              subSteps: goal.subSteps || (goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks.map(s => ({
+                id: s.id,
+                title: s.title,
+                durationMinutes: s.durationMinutes || 15,
+                completed: s.completed || false
+              })) : undefined)
             });
 
             successBooked++;
@@ -2356,7 +2417,23 @@ export default function App() {
       updatedFields.durationMinutes !== undefined ||
       (updatedFields.weeklyTarget !== undefined && updatedFields.weeklyTarget !== targetGoal.weeklyTarget);
 
+    const hasPhaseChanges = updatedFields.subSteps !== undefined || updatedFields.subtasks !== undefined;
+
     if (!hasStructuralChanges) {
+      let nextEvents = events;
+      if (hasPhaseChanges) {
+        nextEvents = events.map(evt => {
+          if (evt.goalId === goalId && !evt.completed) {
+            return {
+              ...evt,
+              subSteps: updatedFields.subSteps !== undefined ? updatedFields.subSteps : evt.subSteps,
+              subtasks: updatedFields.subtasks !== undefined ? updatedFields.subtasks : evt.subtasks
+            };
+          }
+          return evt;
+        });
+        setEvents(nextEvents);
+      }
       setGoals(nextGoals);
       if (updatedFields.lastSessionNote && updatedFields.lastSessionNote !== targetGoal.lastSessionNote) {
         triggerSystemNotification(
@@ -2365,7 +2442,7 @@ export default function App() {
           "motivation"
         );
       }
-      syncToCloud(nextGoals, events, availability, notifications, coachMessages);
+      syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
       return;
     }
 
@@ -2509,6 +2586,8 @@ export default function App() {
           icon: newIcon,
           start: newStart,
           end: newEnd,
+          subSteps: !evt.completed && updatedFields.subSteps !== undefined ? updatedFields.subSteps : evt.subSteps,
+          subtasks: !evt.completed && updatedFields.subtasks !== undefined ? updatedFields.subtasks : evt.subtasks,
           notes: updatedFields.timePreference
             ? `Rescheduled to align with ${updatedFields.timePreference} preference`
             : evt.notes
@@ -2559,6 +2638,69 @@ export default function App() {
     setGoals(nextGoals);
     setEvents(nextEvents);
     syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+  };
+
+  const handleUpdateGoalKnowledgeHub = (goalId: string, updatedHub: GoalKnowledgeHub) => {
+    handleEditGoal(goalId, { knowledgeHub: updatedHub });
+  };
+
+  // Helper to schedule missing sessions for a single goal
+  const handleAutoScheduleGoal = (goalId: string) => {
+    const targetGoal = goals.find(g => g.id === goalId);
+    if (!targetGoal) return;
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const startOfWeek = new Date(todayStart);
+    startOfWeek.setDate(todayStart.getDate() - todayStart.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+
+    const goalNameLower = targetGoal.name.toLowerCase();
+    const countInWeek = events.filter(e => {
+      const isThisGoal = e.goalId === targetGoal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
+      if (!isThisGoal) return false;
+      const d = new Date(e.start);
+      return d >= startOfWeek && d <= endOfWeek;
+    }).length;
+
+    const needed = Math.max(1, targetGoal.weeklyTarget - countInWeek);
+    const newSessions = generateGoalSessions(targetGoal, events, needed, availability);
+    if (newSessions.length > 0) {
+      const nextEvents = [...newSessions, ...events];
+      setEvents(nextEvents);
+      syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
+      triggerSystemNotification(
+        "Goal Sessions Scheduled",
+        `⚡ Scheduled ${newSessions.length} session(s) for "${targetGoal.name}" on your calendar!`,
+        "success"
+      );
+    } else {
+      triggerSystemNotification(
+        "Schedule Info",
+        `"${targetGoal.name}" is already fully scheduled for this week (${countInWeek}/${targetGoal.weeklyTarget} sessions).`,
+        "success"
+      );
+    }
+  };
+
+  const handleAutoScheduleAllGoals = () => {
+    if (goals.length === 0) {
+      triggerSystemNotification(
+        "No Goals to Schedule",
+        "Add a goal first to generate your calendar sessions!",
+        "warning"
+      );
+      return;
+    }
+    triggerAutoScheduler(goals, events, availability);
+    triggerSystemNotification(
+      "Auto-Scheduler Active",
+      "⚡ Auto-scheduled sessions across your calendar for all active goals!",
+      "success"
+    );
   };
 
   // EE-2. Pause / Hold Goal (Freeze Mode)
@@ -3280,6 +3422,8 @@ export default function App() {
               onLifeHappenedToday={handleTriggerLifeHappened}
               burnoutLimits={burnoutLimits}
               onNotify={triggerSystemNotification}
+              onScheduleGoal={handleAutoScheduleGoal}
+              onAutoScheduleAllGoals={handleAutoScheduleAllGoals}
             />
           </div>
         )}
@@ -3311,6 +3455,7 @@ export default function App() {
             onOpenStreakShield={() => setShowStreakShieldModal(true)}
             burnoutLimits={burnoutLimits}
             onUpdateBurnoutLimits={handleSetBurnoutLimits}
+            onUpdateGoalKnowledgeHub={handleUpdateGoalKnowledgeHub}
           />
         )}
 
@@ -3433,6 +3578,7 @@ export default function App() {
             availability={availability}
             userEmail={userEmail}
             onClearExternalEvents={handleClearExternalEvents}
+            onImportCalendar={handleImportCalendar}
             onResetAndRegenerateCalendar={handleResetAndRegenerateCalendar}
             onImportData={handleImportDataBackup}
             onNotify={triggerSystemNotification}
@@ -3611,6 +3757,7 @@ export default function App() {
         onUpdateGoalChapters={handleUpdateGoalChapters}
         onCompleteSession={handleCompleteTimerSession}
         onExtendEventDuration={handleExtendEventDuration}
+        onUpdateGoalKnowledgeHub={handleUpdateGoalKnowledgeHub}
       />
 
       {/* Energy & Cognitive Load Profile Modal */}
@@ -3663,6 +3810,22 @@ export default function App() {
           }}
         />
       )}
+
+      {/* Weekly AI Habit Report Card Modal */}
+      <WeeklyHabitReportModal
+        isOpen={showWeeklyReportModal}
+        onClose={() => setShowWeeklyReportModal(false)}
+        goals={goals}
+        events={events}
+        availability={availability}
+        energyProfile={energyProfile}
+        onApplyScheduleAdjustment={(updatedEvents, message) => {
+          setEvents(updatedEvents);
+          syncToCloud(goals, updatedEvents, availability, notifications, coachMessages);
+          triggerSystemNotification("✨ Schedule Optimized", message, "success");
+        }}
+        onNotify={triggerSystemNotification}
+      />
 
       {/* Keyboard Shortcuts Cheatsheet Modal */}
       {showShortcutsModal && (

@@ -103,14 +103,34 @@ export function deduplicateDailyGoalEvents(
 }
 
 /**
+ * Checks whether a given decimal hour falls within the goal's preferred time window
+ */
+export function isHourInGoalPreference(hour: number, goal?: Goal): boolean {
+  if (!goal || !goal.timePreference || goal.timePreference === TimePreference.ANY) return true;
+  if (goal.timePreference === TimePreference.EARLY_MORNING) return hour >= 5 && hour < 8.5;
+  if (goal.timePreference === TimePreference.MORNING) return hour >= 8 && hour < 12.5;
+  if (goal.timePreference === TimePreference.AFTERNOON) return hour >= 12 && hour < 17;
+  if (goal.timePreference === TimePreference.EVENING) return hour >= 17 && hour < 22;
+  if (goal.timePreference === TimePreference.NIGHT) return hour >= 21 || hour < 2;
+  if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart) {
+    const [h, m] = goal.customTimeStart.split(":").map(Number);
+    const startH = (h || 0) + (m || 0) / 60;
+    let endH = startH + (goal.durationMinutes || 60) / 60;
+    if (goal.customTimeEnd) {
+      const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
+      endH = (eH || startH + 1) + (eM || 0) / 60;
+    }
+    return hour >= startH - 0.25 && hour < endH + 0.5;
+  }
+  return true;
+}
+
+/**
  * 2. ALIGN DAILY EVENTS BY PRIORITY & COGNITIVE ENERGY PROFILE:
  * On ANY calendar day where multiple uncompleted goal sessions are scheduled,
- * strictly enforces that:
- *   - Critical goals (Priority 3) are scheduled BEFORE Important goals (Priority 2).
- *   - Important goals (Priority 2) are scheduled BEFORE Normal/Undefined goals (Priority 1).
- *   - Within equal priority tiers, Deep Focus sessions are prioritized for Peak Focus energy zones.
- *   - Enforces biological Slump Protection (shifting high strain study out of post-lunch dips if enabled).
- *   - Inserts cognitive buffer minutes between intense sessions.
+ * prioritizes higher-priority & deeper-focus sessions for earlier compatible slots.
+ * CRITICAL SAFEGUARD: Never swaps events into incompatible time preference windows
+ * (e.g. will NEVER move an Evening goal into 8:00 AM or a Morning goal into 18:00 PM).
  */
 export function alignDailyEventsByPriority(
   events: CalendarEvent[],
@@ -145,130 +165,107 @@ export function alignDailyEventsByPriority(
     }
 
     // Sort chronologically
-    const chrono = [...uncompletedGoalEvts].sort(
+    const workingList = [...uncompletedGoalEvts].sort(
       (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
     );
 
-    // Check if there is an inversion in priority or energy alignment or time preference
-    let hasInversion = false;
-    for (let i = 0; i < chrono.length - 1; i++) {
-      const g1 = findGoalForEvent(chrono[i], goals);
-      const g2 = findGoalForEvent(chrono[i + 1], goals);
-      const p1 = getPriorityScore(g1?.priority);
-      const p2 = getPriorityScore(g2?.priority);
-      if (p1 < p2) {
-        hasInversion = true;
-        break;
-      }
-      if (p1 === p2) {
-        const e1 = getEnergyLevelScore(chrono[i].energyLevel || (g1 ? inferGoalEnergyLevel(g1) : "moderate"));
-        const e2 = getEnergyLevelScore(chrono[i + 1].energyLevel || (g2 ? inferGoalEnergyLevel(g2) : "moderate"));
-        if (e1 < e2) {
-          hasInversion = true;
-          break;
-        }
-      }
-    }
+    // Bubble-pass to swap inverted priority pairs ONLY when both events fit their preferred time windows
+    let swappedAny = false;
+    for (let pass = 0; pass < workingList.length - 1; pass++) {
+      for (let i = 0; i < workingList.length - 1 - pass; i++) {
+        const evtA = workingList[i];
+        const evtB = workingList[i + 1];
 
-    let hasTimePrefViolation = false;
-    for (const evt of uncompletedGoalEvts) {
-      const g = findGoalForEvent(evt, goals);
-      const minH = getGoalMinStartHour(g);
-      if (minH !== null) {
-        const evtDate = new Date(evt.start);
-        const hour = evtDate.getHours() + evtDate.getMinutes() / 60;
-        if (hour < minH) {
-          hasTimePrefViolation = true;
-          break;
-        }
-      }
-    }
+        const gA = findGoalForEvent(evtA, goals);
+        const gB = findGoalForEvent(evtB, goals);
+        const pA = getPriorityScore(gA?.priority);
+        const pB = getPriorityScore(gB?.priority);
 
-    if (!hasInversion && !hasTimePrefViolation) {
-      finalEvents.push(...dayEvts);
-      continue;
-    }
+        const energyA = evtA.energyLevel || (gA ? inferGoalEnergyLevel(gA) : "moderate");
+        const energyB = evtB.energyLevel || (gB ? inferGoalEnergyLevel(gB) : "moderate");
+        const eA = getEnergyLevelScore(energyA);
+        const eB = getEnergyLevelScore(energyB);
 
-    // Sort: Priority descending, then Energy Level descending (Deep Focus > Moderate > Recharge)
-    const prioritized = [...uncompletedGoalEvts].sort((a, b) => {
-      const gA = findGoalForEvent(a, goals);
-      const gB = findGoalForEvent(b, goals);
-      const pA = getPriorityScore(gA?.priority);
-      const pB = getPriorityScore(gB?.priority);
-      if (pB !== pA) return pB - pA;
+        const shouldSwap = (pB > pA) || (pB === pA && eB > eA);
 
-      const eA = getEnergyLevelScore(a.energyLevel || (gA ? inferGoalEnergyLevel(gA) : "moderate"));
-      const eB = getEnergyLevelScore(b.energyLevel || (gB ? inferGoalEnergyLevel(gB) : "moderate"));
-      if (eB !== eA) return eB - eA;
+        if (shouldSwap) {
+          const dateA = new Date(evtA.start);
+          const dateB = new Date(evtB.start);
+          const hourA = dateA.getHours() + dateA.getMinutes() / 60;
+          const hourB = dateB.getHours() + dateB.getMinutes() / 60;
 
-      return new Date(a.start).getTime() - new Date(b.start).getTime();
-    });
+          // Verify time preference window compatibility for BOTH events
+          const canBTakeSlotA = isHourInGoalPreference(hourA, gB);
+          const canATakeSlotB = isHourInGoalPreference(hourB, gA);
 
-    // Slots available in chronological order
-    const originalSlots = chrono.map(e => ({
-      start: new Date(e.start).getTime(),
-      end: new Date(e.end).getTime()
-    }));
+          if (canBTakeSlotA && canATakeSlotB) {
+            // Safe to swap their scheduled time slots
+            const durA = new Date(evtA.end).getTime() - dateA.getTime();
+            const durB = new Date(evtB.end).getTime() - dateB.getTime();
 
-    let currentStart = originalSlots[0].start;
-    let prevEnergyLevel: EnergyLevel | null = null;
+            const newEvtB: CalendarEvent = {
+              ...evtB,
+              energyLevel: energyB,
+              start: dateA.toISOString(),
+              end: new Date(dateA.getTime() + durB).toISOString()
+            };
 
-    const remapped: CalendarEvent[] = prioritized.map((evt, idx) => {
-      const g = findGoalForEvent(evt, goals);
-      const energyLevel = evt.energyLevel || (g ? inferGoalEnergyLevel(g) : "moderate");
-      const dur = new Date(evt.end).getTime() - new Date(evt.start).getTime();
-      const minH = getGoalMinStartHour(g);
+            const newEvtA: CalendarEvent = {
+              ...evtA,
+              energyLevel: energyA,
+              start: dateB.toISOString(),
+              end: new Date(dateB.getTime() + durA).toISOString()
+            };
 
-      // Add cognitive recovery buffer if following a deep focus session
-      if (prevEnergyLevel === "deep_focus" && energyProfile?.autoBufferMinutes) {
-        currentStart += energyProfile.autoBufferMinutes * 60 * 1000;
-        buffersAdded++;
-      }
-
-      if (minH !== null) {
-        const prefDate = new Date(currentStart);
-        prefDate.setHours(Math.floor(minH), Math.round((minH % 1) * 60), 0, 0);
-        if (currentStart < prefDate.getTime()) {
-          currentStart = prefDate.getTime();
-        }
-      }
-
-      // Slump Protection: if deep_focus lands in a slump/recharge zone, try shifting past slump
-      if (energyProfile?.slumpProtection && energyLevel === "deep_focus") {
-        const checkDate = new Date(currentStart);
-        const checkHour = checkDate.getHours() + (checkDate.getMinutes() / 60);
-        const zone = getEnergyZoneForHour(checkHour, energyProfile);
-        if (zone && zone.level === "light_recharge" && zone.endHour > checkHour && zone.endHour <= 19) {
-          const shiftDate = new Date(currentStart);
-          shiftDate.setHours(Math.floor(zone.endHour), Math.round((zone.endHour % 1) * 60), 0, 0);
-          // Only shift if it doesn't push past 21:00
-          if (shiftDate.getHours() < 21) {
-            currentStart = shiftDate.getTime();
-            slumpAdjusted++;
+            workingList[i] = newEvtB;
+            workingList[i + 1] = newEvtA;
+            swappedAny = true;
+            changedCount += 2;
           }
         }
       }
+    }
 
-      const slotStart = new Date(currentStart);
-      const slotEnd = new Date(currentStart + dur);
-      currentStart = currentStart + dur;
+    // Slump Protection: if deep_focus lands in a slump/recharge zone, try shifting within window
+    if (energyProfile?.slumpProtection) {
+      for (let i = 0; i < workingList.length; i++) {
+        const evt = workingList[i];
+        const g = findGoalForEvent(evt, goals);
+        const energyLevel = evt.energyLevel || (g ? inferGoalEnergyLevel(g) : "moderate");
 
-      if (idx + 1 < originalSlots.length && originalSlots[idx + 1].start > currentStart) {
-        currentStart = originalSlots[idx + 1].start;
+        if (energyLevel === "deep_focus") {
+          const sDate = new Date(evt.start);
+          const sHour = sDate.getHours() + sDate.getMinutes() / 60;
+          const zone = getEnergyZoneForHour(sHour, energyProfile);
+
+          if (zone && zone.level === "light_recharge" && zone.endHour > sHour && zone.endHour <= 19) {
+            const shiftDate = new Date(sDate);
+            shiftDate.setHours(Math.floor(zone.endHour), Math.round((zone.endHour % 1) * 60), 0, 0);
+            const shiftHour = zone.endHour;
+
+            // Ensure shifted hour still respects goal's preference and doesn't collide with next event
+            if (isHourInGoalPreference(shiftHour, g)) {
+              const dur = new Date(evt.end).getTime() - sDate.getTime();
+              const nextEvt = workingList[i + 1];
+              const nextEvtStart = nextEvt ? new Date(nextEvt.start).getTime() : Infinity;
+
+              if (shiftDate.getTime() + dur <= nextEvtStart) {
+                workingList[i] = {
+                  ...evt,
+                  energyLevel,
+                  start: shiftDate.toISOString(),
+                  end: new Date(shiftDate.getTime() + dur).toISOString()
+                };
+                slumpAdjusted++;
+                changedCount++;
+              }
+            }
+          }
+        }
       }
+    }
 
-      prevEnergyLevel = energyLevel;
-
-      return {
-        ...evt,
-        energyLevel,
-        start: slotStart.toISOString(),
-        end: slotEnd.toISOString()
-      };
-    });
-
-    changedCount += remapped.length;
-    finalEvents.push(...fixedEvts, ...remapped);
+    finalEvents.push(...fixedEvts, ...workingList);
   }
 
   finalEvents.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());

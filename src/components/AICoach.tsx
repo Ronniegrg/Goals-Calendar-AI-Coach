@@ -454,10 +454,13 @@ export default function AICoach({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goals, events, availability })
       });
-      const data = await res.json();
-      setDigestData(data);
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const data = await res.json();
+        setDigestData(data);
+      }
     } catch (err) {
-      console.error("Failed to fetch digest:", err);
+      console.warn("Notice: could not load online digest:", err);
     } finally {
       setLoadingDigest(false);
     }
@@ -473,10 +476,13 @@ export default function AICoach({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goals, events, availability, energyProfile })
       });
-      const data = await res.json();
-      setEnergyResult(data);
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const data = await res.json();
+        setEnergyResult(data);
+      }
     } catch (err) {
-      console.error("Failed to run energy schedule:", err);
+      console.warn("Notice: could not load online energy schedule:", err);
     } finally {
       setLoadingEnergy(false);
     }

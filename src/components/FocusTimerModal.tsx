@@ -41,10 +41,13 @@ import {
   Waves,
   CloudRain,
   Wind,
-  ExternalLink
+  ExternalLink,
+  BookOpen,
+  FileText
 } from "lucide-react";
-import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent } from "../types";
+import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote } from "../types";
 import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
+import { GoalKnowledgeHubModal } from "./GoalKnowledgeHubModal";
 
 export interface ActiveTimerData {
   title: string;
@@ -296,6 +299,60 @@ export function playBellSound(sound: SoundType = "tibetan_bell", volume: number 
   }
 }
 
+const PHASE_SOUND_ENABLED_KEY = "focus_timer_phase_sound_enabled_v2";
+
+export function playPhaseEndChime(volume: number = 90) {
+  unlockAudioEngine();
+  const normVol = Math.max(0.05, Math.min(1, volume / 100));
+  let webAudioSucceeded = false;
+
+  try {
+    const ctx = getAudioContext();
+    if (ctx) {
+      const now = ctx.currentTime;
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(normVol, now);
+      masterGain.connect(ctx.destination);
+
+      // Distinct, melodic ascending chime (D5 -> A5 -> D6) indicating phase complete!
+      const notes = [
+        { freq: 587.33, start: 0.0, decay: 1.2, gain: 0.45 },
+        { freq: 880.00, start: 0.16, decay: 1.5, gain: 0.50 },
+        { freq: 1174.66, start: 0.32, decay: 2.2, gain: 0.40 }
+      ];
+
+      notes.forEach((note) => {
+        const osc = ctx.createOscillator();
+        const oscGain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(note.freq, now + note.start);
+
+        const peak = note.gain * normVol;
+        oscGain.gain.setValueAtTime(0.0001, now + note.start);
+        oscGain.gain.exponentialRampToValueAtTime(peak, now + note.start + 0.015);
+        oscGain.gain.exponentialRampToValueAtTime(0.0001, now + note.start + note.decay);
+
+        osc.connect(oscGain);
+        oscGain.connect(masterGain);
+
+        osc.start(now + note.start);
+        osc.stop(now + note.start + note.decay + 0.1);
+      });
+
+      webAudioSucceeded = true;
+    }
+  } catch {}
+
+  if (!webAudioSucceeded) {
+    try {
+      const wavUrl = synthesizeWavBell("crystal_chime");
+      const audio = new Audio(wavUrl);
+      audio.volume = normVol;
+      audio.play().catch(() => {});
+    } catch {}
+  }
+}
+
 export function getProgressKey(goalId?: string, eventId?: string, title?: string): string {
   if (goalId) return `goal_${goalId}`;
   if (eventId) return `evt_${eventId}`;
@@ -440,6 +497,65 @@ interface FocusTimerModalProps {
   onUpdateGoalChapters?: (goalId: string, chapters: { id: string; title: string; completed: boolean }[]) => void;
   onCompleteSession: (eventId?: string, goalId?: string, note?: string, title?: string) => void;
   onExtendEventDuration?: (eventId: string, deltaMins: number) => void;
+  onUpdateGoalKnowledgeHub?: (goalId: string, hub: GoalKnowledgeHub) => void;
+}
+
+function resolveAndBalanceSubSteps(
+  rawSubSteps: SessionSubStep[] | undefined,
+  goalId?: string,
+  sessionTitle?: string,
+  sessionMinutes: number = 60,
+  goalsList?: Goal[]
+): SessionSubStep[] | undefined {
+  let steps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? [...rawSubSteps] : undefined;
+
+  // If no explicit subSteps were provided, try to inherit from goal
+  if (!steps) {
+    let targetGoal: Goal | undefined;
+    if (goalsList && goalsList.length > 0) {
+      targetGoal = (goalId ? goalsList.find(g => g.id === goalId) : undefined)
+        || (sessionTitle ? goalsList.find(g => g.name.toLowerCase() === sessionTitle.toLowerCase()) : undefined);
+    }
+    // Fallback: check localStorage cached_goals if goalsList was empty
+    if (!targetGoal) {
+      try {
+        const rawCached = localStorage.getItem("cached_goals");
+        if (rawCached) {
+          const parsedGoals: Goal[] = JSON.parse(rawCached);
+          targetGoal = (goalId ? parsedGoals.find(g => g.id === goalId) : undefined)
+            || (sessionTitle ? parsedGoals.find(g => g.name.toLowerCase() === sessionTitle.toLowerCase()) : undefined);
+        }
+      } catch {}
+    }
+
+    if (targetGoal?.subSteps && targetGoal.subSteps.length > 0) {
+      steps = [...targetGoal.subSteps];
+    } else if (targetGoal?.subtasks && targetGoal.subtasks.length > 0) {
+      steps = targetGoal.subtasks.map(s => ({
+        id: s.id,
+        title: s.title,
+        durationMinutes: s.durationMinutes || 15,
+        completed: s.completed || false
+      }));
+    }
+  }
+
+  if (!steps || steps.length === 0) return undefined;
+
+  // Check if steps sum to less than total session minutes (e.g. 15m review for a 60m session)
+  const totalAllocated = steps.reduce((sum, s) => sum + (Number(s.durationMinutes) || 10), 0);
+  if (sessionMinutes > totalAllocated && (sessionMinutes - totalAllocated) >= 5) {
+    const remainderMins = sessionMinutes - totalAllocated;
+    const remainderTitle = sessionTitle ? `${sessionTitle} Practice & Focus` : "Core Practice & Deep Focus";
+    steps.push({
+      id: `step_remainder_${Date.now()}`,
+      title: remainderTitle,
+      durationMinutes: remainderMins,
+      completed: false
+    });
+  }
+
+  return steps;
 }
 
 export default function FocusTimerModal({
@@ -456,8 +572,17 @@ export default function FocusTimerModal({
   goals,
   onUpdateGoalChapters,
   onCompleteSession,
-  onExtendEventDuration
+  onExtendEventDuration,
+  onUpdateGoalKnowledgeHub
 }: FocusTimerModalProps) {
+  // Live Study Notes & Scratchpad State
+  const [showLiveNotes, setShowLiveNotes] = useState(false);
+  const [liveNoteTitle, setLiveNoteTitle] = useState("");
+  const [liveNoteContent, setLiveNoteContent] = useState("");
+  const [liveNoteCategory, setLiveNoteCategory] = useState<StudyArtifactNote["category"]>("concept");
+  const [noteSavedFeedback, setNoteSavedFeedback] = useState<string | null>(null);
+  const [showKnowledgeHubModal, setShowKnowledgeHubModal] = useState(false);
+
   const [timerState, setTimerState] = useState<ActiveTimerData | null>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -506,6 +631,20 @@ export default function FocusTimerModal({
     const saved = localStorage.getItem(REPEAT_SOUND_KEY);
     return saved !== null ? saved === "true" : true;
   });
+
+  // Phase End Sound Enabled state
+  const [phaseSoundEnabled, setPhaseSoundEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem(PHASE_SOUND_ENABLED_KEY);
+    return saved !== null ? saved === "true" : true;
+  });
+  const [isTestingPhaseSound, setIsTestingPhaseSound] = useState<boolean>(false);
+
+  const handleTestPhaseSound = () => {
+    unlockAudioEngine();
+    setIsTestingPhaseSound(true);
+    playPhaseEndChime(soundVolume);
+    setTimeout(() => setIsTestingPhaseSound(false), 2200);
+  };
 
   // Ambient Focus Soundscape Generator State
   const [activeSoundscape, setActiveSoundscape] = useState<SoundscapeType>("none");
@@ -592,6 +731,10 @@ export default function FocusTimerModal({
     localStorage.setItem(REPEAT_SOUND_KEY, String(repeatSound));
   }, [repeatSound]);
 
+  useEffect(() => {
+    localStorage.setItem(PHASE_SOUND_ENABLED_KEY, String(phaseSoundEnabled));
+  }, [phaseSoundEnabled]);
+
   const activeGoal = useMemo(() => {
     if (!goals || goals.length === 0 || !timerState) return null;
     return goals.find(g => g.id === timerState.goalId || g.name.toLowerCase() === timerState.title.toLowerCase());
@@ -601,6 +744,50 @@ export default function FocusTimerModal({
     if (!activeGoal || !activeGoal.chapters || !onUpdateGoalChapters) return;
     const updated = activeGoal.chapters.map(ch => ch.id === chapterId ? { ...ch, completed: !ch.completed } : ch);
     onUpdateGoalChapters(activeGoal.id, updated);
+  };
+
+  const handleSaveLiveStudyNote = () => {
+    if (!activeGoal || !liveNoteContent.trim()) return;
+
+    const currentHub: GoalKnowledgeHub = activeGoal.knowledgeHub || {
+      notes: [],
+      tests: [],
+      flashcards: [],
+      overallMasteryScore: 0
+    };
+
+    const newNote: StudyArtifactNote = {
+      id: `note_${Date.now()}`,
+      title: liveNoteTitle.trim() || `${activeGoal.name} Study Note (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+      category: liveNoteCategory,
+      content: liveNoteContent.trim(),
+      chapterTitle: activeGoal.chapters?.find(c => !c.completed)?.title || undefined,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const updatedHub: GoalKnowledgeHub = {
+      ...currentHub,
+      notes: [newNote, ...currentHub.notes]
+    };
+
+    if (onUpdateGoalKnowledgeHub) {
+      onUpdateGoalKnowledgeHub(activeGoal.id, updatedHub);
+    }
+
+    try {
+      const raw = localStorage.getItem("cached_goals");
+      if (raw) {
+        const cached: Goal[] = JSON.parse(raw);
+        const next = cached.map(g => g.id === activeGoal.id ? { ...g, knowledgeHub: updatedHub } : g);
+        localStorage.setItem("cached_goals", JSON.stringify(next));
+      }
+    } catch {}
+
+    setNoteSavedFeedback("Note saved to Goal Study Hub! 📝");
+    setLiveNoteContent("");
+    setLiveNoteTitle("");
+    setTimeout(() => setNoteSavedFeedback(null), 3000);
   };
 
   // Request browser desktop notification permission on mount
@@ -619,6 +806,14 @@ export default function FocusTimerModal({
       const saved = getSavedProgress(propGoalId, propEventId, propSessionTitle);
       const initialSec = Math.max(1, propInitialDurationMinutes) * 60;
 
+      const resolvedSteps = resolveAndBalanceSubSteps(
+        propSubSteps,
+        propGoalId,
+        propSessionTitle,
+        propInitialDurationMinutes,
+        goals
+      );
+
       if (saved && saved.timeRemaining > 0 && saved.timeRemaining < saved.totalSec) {
         const restoredTimer: ActiveTimerData = {
           title: saved.title || propSessionTitle,
@@ -635,7 +830,7 @@ export default function FocusTimerModal({
           sessionTakeawayNote: saved.sessionTakeawayNote || "",
           isMinimized: false,
           isOpen: true,
-          subSteps: saved.subSteps || propSubSteps
+          subSteps: resolvedSteps || saved.subSteps || propSubSteps
         };
         setTimerState(restoredTimer);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredTimer));
@@ -655,13 +850,13 @@ export default function FocusTimerModal({
           sessionTakeawayNote: "",
           isMinimized: false,
           isOpen: true,
-          subSteps: propSubSteps
+          subSteps: resolvedSteps || propSubSteps
         };
         setTimerState(newTimer);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
       }
     }
-  }, [propIsOpen, propSessionTitle, propInitialDurationMinutes, propEventId, propGoalId, propCategory, propColor, propPreviousSessionNote, propSubSteps]);
+  }, [propIsOpen, propSessionTitle, propInitialDurationMinutes, propEventId, propGoalId, propCategory, propColor, propPreviousSessionNote, propSubSteps, goals]);
 
   // Global custom event listener
   useEffect(() => {
@@ -671,6 +866,16 @@ export default function FocusTimerModal({
       unlockAudioEngine();
       const openModal = detail.openModal !== false;
       const shouldAutoStart = detail.autoStart ?? false;
+
+      const durationMinutes = Math.max(1, detail.duration || 60);
+      const initialSec = durationMinutes * 60;
+      const resolvedSteps = resolveAndBalanceSubSteps(
+        detail.subSteps,
+        detail.goalId,
+        detail.title,
+        durationMinutes,
+        goals
+      );
 
       setTimerState((prev) => {
         const matchesCurrent = prev && (
@@ -695,14 +900,13 @@ export default function FocusTimerModal({
             targetEndTime,
             startedAt,
             previousSessionNote: detail.previousSessionNote !== undefined ? detail.previousSessionNote : prev.previousSessionNote,
-            subSteps: detail.subSteps || prev.subSteps
+            subSteps: resolvedSteps || detail.subSteps || prev.subSteps
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
           return updated;
         }
 
         const saved = getSavedProgress(detail.goalId, detail.eventId, detail.title);
-        const initialSec = Math.max(1, detail.duration || 60) * 60;
         const now = Date.now();
 
         if (saved && saved.timeRemaining > 0 && saved.timeRemaining < saved.totalSec) {
@@ -728,7 +932,7 @@ export default function FocusTimerModal({
             sessionTakeawayNote: saved.sessionTakeawayNote || "",
             isMinimized: !openModal,
             isOpen: openModal,
-            subSteps: saved.subSteps || detail.subSteps
+            subSteps: resolvedSteps || saved.subSteps || detail.subSteps
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredTimer));
           return restoredTimer;
@@ -789,7 +993,7 @@ export default function FocusTimerModal({
           sessionTakeawayNote: "",
           isMinimized: !openModal,
           isOpen: openModal,
-          subSteps: detail.subSteps
+          subSteps: resolvedSteps || detail.subSteps
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
         return newTimer;
@@ -1027,14 +1231,23 @@ export default function FocusTimerModal({
 
   // Phase transition detection ref
   const previousStepIndexRef = useRef<number>(activeStepInfo ? activeStepInfo.index : 0);
+  const currentSessionId = timerState ? `${timerState.goalId}_${timerState.eventId}_${timerState.title}` : null;
+  const previousSessionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (currentSessionId !== previousSessionIdRef.current) {
+      previousSessionIdRef.current = currentSessionId;
+      previousStepIndexRef.current = activeStepInfo?.index ?? 0;
+    }
+  }, [currentSessionId, activeStepInfo?.index]);
 
   useEffect(() => {
     if (!activeStepInfo || !timerState?.isRunning) return;
 
     if (activeStepInfo.index > previousStepIndexRef.current) {
       // Step advanced during active session!
-      if (soundEnabled) {
-        playBellSound("crystal_chime", soundVolume);
+      if (soundEnabled && phaseSoundEnabled) {
+        playPhaseEndChime(soundVolume);
       }
       setPhaseTransitionNotice({
         phaseTitle: activeStepInfo.title,
@@ -1051,7 +1264,7 @@ export default function FocusTimerModal({
     } else if (activeStepInfo.index < previousStepIndexRef.current) {
       previousStepIndexRef.current = activeStepInfo.index;
     }
-  }, [activeStepInfo?.index, timerState?.isRunning, soundEnabled, soundVolume, subStepsWithOffsets.length]);
+  }, [activeStepInfo?.index, timerState?.isRunning, soundEnabled, phaseSoundEnabled, soundVolume, subStepsWithOffsets.length]);
 
   // Audio completion trigger with 3-chime burst and tab notification
   const triggerCompletionBell = (sessionTitle: string) => {
@@ -1405,8 +1618,8 @@ export default function FocusTimerModal({
 
     const nextIndex = activeStepInfo.index + 1;
     handleJumpToSubStep(nextIndex);
-    if (soundEnabled) {
-      playBellSound("crystal_chime", soundVolume);
+    if (soundEnabled && phaseSoundEnabled) {
+      playPhaseEndChime(soundVolume);
     }
   };
 
@@ -1428,7 +1641,8 @@ export default function FocusTimerModal({
         })
       });
 
-      if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
         const data = await res.json();
         if (data.subSteps && Array.isArray(data.subSteps) && data.subSteps.length > 0) {
           updateTimerState((prev) => prev ? { ...prev, subSteps: data.subSteps } : null);
@@ -2036,7 +2250,39 @@ export default function FocusTimerModal({
             </h3>
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Live Study Notes / Scratchpad Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowLiveNotes(!showLiveNotes)}
+              className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                showLiveNotes 
+                  ? "bg-violet-600 text-white border-violet-500 shadow-md shadow-violet-900/40" 
+                  : "bg-violet-950/40 hover:bg-violet-900/60 text-violet-300 border-violet-700/50"
+              }`}
+              title="Take live study notes, scratchpad, or cheat sheet entries during this session"
+            >
+              <FileText className="w-3.5 h-3.5 text-violet-300" />
+              <span>{showLiveNotes ? "Hide Notes" : "📝 Study Notes"}</span>
+              {activeGoal?.knowledgeHub?.notes && activeGoal.knowledgeHub.notes.length > 0 && (
+                <span className="w-4 h-4 rounded-full bg-violet-700/60 text-[10px] flex items-center justify-center font-mono">
+                  {activeGoal.knowledgeHub.notes.length}
+                </span>
+              )}
+            </button>
+
+            {/* Knowledge Hub Trigger */}
+            {activeGoal && (
+              <button
+                type="button"
+                onClick={() => setShowKnowledgeHubModal(true)}
+                className="p-2 rounded-xl bg-indigo-950/40 hover:bg-indigo-900/60 border border-indigo-700/40 text-indigo-300 hover:text-white transition cursor-pointer flex items-center gap-1"
+                title="Open Study Materials, Cheat Sheets & Knowledge Tester Hub"
+              >
+                <BookOpen className="w-4 h-4 text-indigo-400" />
+              </button>
+            )}
+
             {/* Audio Settings Toggle Button */}
             <button
               type="button"
@@ -2260,6 +2506,45 @@ export default function FocusTimerModal({
                 </button>
               </div>
 
+              {/* Phase End Chime Sound Option */}
+              <div className="flex items-center justify-between text-[11px] text-slate-300 pt-2 border-t border-white/10">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <div>
+                    <span className="font-bold text-slate-200">Phase End Chime</span>
+                    <p className="text-[9px] text-slate-400">Plays melodic chime whenever a study phase finishes</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleTestPhaseSound}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition cursor-pointer flex items-center gap-1 ${
+                      isTestingPhaseSound
+                        ? "bg-amber-500 text-black border-amber-400 animate-pulse"
+                        : "bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30"
+                    }`}
+                    title="Click to test and hear the phase end chime sound"
+                  >
+                    <span>{isTestingPhaseSound ? "Chiming..." : "▶ Test Phase Chime"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      unlockAudioEngine();
+                      setPhaseSoundEnabled(!phaseSoundEnabled);
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition cursor-pointer ${
+                      phaseSoundEnabled 
+                        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" 
+                        : "bg-white/5 text-slate-400 border-white/10"
+                    }`}
+                  >
+                    {phaseSoundEnabled ? "Chime ON" : "MUTED"}
+                  </button>
+                </div>
+              </div>
+
               {/* AMBIENT FOCUS SOUNDSCAPES GENERATOR */}
               <div className="pt-2 border-t border-white/10 space-y-2">
                 <div className="flex items-center justify-between">
@@ -2408,6 +2693,130 @@ export default function FocusTimerModal({
               <span className="font-bold text-amber-300 block text-[10px] uppercase tracking-wider">Prior Session Takeaway:</span>
               <p className="italic font-medium text-[11px] leading-snug">"{timerState.previousSessionNote}"</p>
             </div>
+          </div>
+        )}
+
+        {/* IN-SESSION STUDY NOTES & SCRATCHPAD PANEL */}
+        {showLiveNotes && (
+          <div className="mb-4 p-3.5 bg-[#121324] border border-violet-500/40 rounded-2xl animate-fade-in space-y-3 shadow-xl shadow-violet-950/40">
+            <div className="flex items-center justify-between border-b border-violet-900/30 pb-2">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-violet-600/20 border border-violet-500/30 rounded-lg text-violet-300">
+                  <FileText className="w-4 h-4" />
+                </span>
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                    <span>Live Study Notes & Scratchpad</span>
+                    {activeGoal && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-violet-950/80 text-violet-300 border border-violet-800 font-mono">
+                        {activeGoal.name}
+                      </span>
+                    )}
+                  </h4>
+                  <p className="text-[10px] text-slate-400">
+                    Jot down key takeaways, code syntax, or cheat sheet notes while studying. Saves to your Goal Knowledge Hub.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {activeGoal && (
+                  <button
+                    type="button"
+                    onClick={() => setShowKnowledgeHubModal(true)}
+                    className="px-2.5 py-1 bg-violet-900/40 hover:bg-violet-800/60 border border-violet-700/50 text-violet-200 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <BookOpen className="w-3 h-3 text-amber-300" />
+                    <span>Open Hub</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowLiveNotes(false)}
+                  className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-white/10"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {noteSavedFeedback && (
+              <div className="p-2 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs font-semibold flex items-center gap-2 animate-fadeIn">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>{noteSavedFeedback}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <input
+                type="text"
+                placeholder="Note title (e.g. Chapter 3 DNS & Port 53 notes)"
+                value={liveNoteTitle}
+                onChange={(e) => setLiveNoteTitle(e.target.value)}
+                className="sm:col-span-2 text-xs px-2.5 py-1.5 bg-slate-900 border border-slate-700/60 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
+              />
+              <select
+                value={liveNoteCategory}
+                onChange={(e) => setLiveNoteCategory(e.target.value as any)}
+                className="text-xs px-2 py-1.5 bg-slate-900 border border-slate-700/60 rounded-lg text-white focus:outline-none focus:border-violet-500"
+              >
+                <option value="concept">Concept Breakdown</option>
+                <option value="cheat_sheet">Cheat Sheet</option>
+                <option value="code_snippet">Code Snippet / Command</option>
+                <option value="summary">Summary</option>
+                <option value="formula">Formula / Algorithm</option>
+              </select>
+            </div>
+
+            <textarea
+              rows={4}
+              placeholder="Type your notes here while studying... bullet points, key definitions, equations, or code syntax."
+              value={liveNoteContent}
+              onChange={(e) => setLiveNoteContent(e.target.value)}
+              className="w-full text-xs p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-white font-mono placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+            />
+
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-[10px] text-slate-400">
+                {activeGoal?.knowledgeHub?.notes?.length || 0} note(s) saved in this goal's hub
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLiveNotes(false)}
+                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                >
+                  Collapse
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveLiveStudyNote}
+                  disabled={!liveNoteContent.trim()}
+                  className="px-4 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Note to Hub</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Quick helper banner to open notes scratchpad if collapsed */}
+        {!showLiveNotes && (
+          <div className="mb-3 p-2 bg-gradient-to-r from-violet-950/30 to-indigo-950/20 border border-violet-800/30 rounded-xl flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs text-violet-200">
+              <FileText className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+              <span className="text-[11px]">Taking notes or need cheat sheets during this session?</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLiveNotes(true)}
+              className="px-2.5 py-1 rounded-lg bg-violet-600/30 hover:bg-violet-600 border border-violet-500/40 text-violet-200 hover:text-white text-[10px] font-bold transition cursor-pointer"
+            >
+              📝 Take Study Notes
+            </button>
           </div>
         )}
 
@@ -3437,6 +3846,28 @@ export default function FocusTimerModal({
           </button>
         </div>
       </div>
+
+      {/* Embedded Knowledge Hub & Tester Modal while studying */}
+      {showKnowledgeHubModal && activeGoal && (
+        <GoalKnowledgeHubModal
+          goal={activeGoal}
+          isOpen={showKnowledgeHubModal}
+          onClose={() => setShowKnowledgeHubModal(false)}
+          onUpdateKnowledgeHub={(goalId, updatedHub) => {
+            if (onUpdateGoalKnowledgeHub) {
+              onUpdateGoalKnowledgeHub(goalId, updatedHub);
+            }
+            try {
+              const raw = localStorage.getItem("cached_goals");
+              if (raw) {
+                const cached: Goal[] = JSON.parse(raw);
+                const next = cached.map(g => g.id === goalId ? { ...g, knowledgeHub: updatedHub } : g);
+                localStorage.setItem("cached_goals", JSON.stringify(next));
+              }
+            } catch {}
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -216,7 +216,8 @@ export default function ProactiveGoalSentinel({
         })
       });
 
-      if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
         const data = await res.json();
         if (data.personalizedAdvice) {
           setAiCustomAdvice(data.personalizedAdvice);
