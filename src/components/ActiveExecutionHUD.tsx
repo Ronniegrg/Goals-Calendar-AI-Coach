@@ -277,28 +277,20 @@ export default function ActiveExecutionHUD({
       .filter(e => new Date(e.start).toDateString() === todayStr)
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    // 1. Explicit calendar target session (e.g. when spotlighted on calendar) - ONLY if uncompleted!
+    // 1. Explicit calendar target session (e.g. when spotlighted on calendar) - ONLY if uncompleted and scheduled for today!
     if (targetedEventId) {
-      const targeted = todayEvents.find(e => e.id === targetedEventId && !e.completed) ||
-                       events.find(e => e.id === targetedEventId && !e.completed);
+      const targeted = todayEvents.find(e => e.id === targetedEventId && !e.completed);
       if (targeted) {
         const g = targeted.goalId ? goals.find(item => item.id === targeted.goalId) : undefined;
         return { currentEvent: targeted, matchedGoal: g, nextEvent: null };
       }
     }
 
-    // 2. Explicit calendar target goal - ONLY if that goal still has an uncompleted session!
+    // 2. Explicit calendar target goal - ONLY if that goal still has an uncompleted session TODAY!
     if (targetedGoalId) {
       const g = goals.find(item => item.id === targetedGoalId);
       if (g) {
-        const sortedAllEvents = [...events].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
         const matchingEvt = todayEvents.find(e => !e.completed && (
-          e.goalId === g.id ||
-          (e.title && g.name && (
-            e.title.toLowerCase().includes(g.name.toLowerCase()) ||
-            g.name.toLowerCase().includes(e.title.toLowerCase())
-          ))
-        )) || sortedAllEvents.find(e => !e.completed && (
           e.goalId === g.id ||
           (e.title && g.name && (
             e.title.toLowerCase().includes(g.name.toLowerCase()) ||
@@ -306,7 +298,7 @@ export default function ActiveExecutionHUD({
           ))
         ));
 
-        // CRITICAL FIX: Only lock onto targetedGoalId if it actually has an uncompleted session!
+        // CRITICAL FIX: Only lock onto targetedGoalId if it actually has an uncompleted session today!
         if (matchingEvt) {
           return { currentEvent: matchingEvt, matchedGoal: g, nextEvent: null };
         }
@@ -347,8 +339,8 @@ export default function ActiveExecutionHUD({
     return { currentEvent: null, matchedGoal: undefined, nextEvent: null };
   }, [events, goals, tickerNow, targetedEventId, targetedGoalId]);
 
-  // Tomorrow's upcoming sessions for the "Study Ahead" feature
-  const { allTodayCompleted, tomorrowEvents, nextTomorrowEvent, matchedTomorrowGoal } = useMemo(() => {
+  // Upcoming sessions for the "Study Ahead" feature (tomorrow or next upcoming scheduled day)
+  const { allTodayCompleted, tomorrowEvents, nextTomorrowEvent, matchedTomorrowGoal, isNextDayTomorrow, nextUpcomingDateLabel } = useMemo(() => {
     const nowObj = new Date(tickerNow);
     const todayStr = nowObj.toDateString();
 
@@ -359,18 +351,36 @@ export default function ActiveExecutionHUD({
     const todayEvents = events.filter(e => new Date(e.start).toDateString() === todayStr);
     const allTodayCompleted = todayEvents.length > 0 && todayEvents.every(e => e.completed);
 
+    // 1. Check tomorrow specifically
     const tomorrowEvts = events
       .filter(e => new Date(e.start).toDateString() === tomorrowStr && !e.completed)
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    const nextTomorrow = tomorrowEvts[0] || null;
-    const tomorrowGoal = nextTomorrow?.goalId ? goals.find(g => g.id === nextTomorrow.goalId) : undefined;
+    // 2. If tomorrow has no sessions scheduled, find the nearest upcoming future day with sessions
+    const futureUpcomingEvts = events
+      .filter(e => new Date(e.start).getTime() > nowObj.getTime() && new Date(e.start).toDateString() !== todayStr && !e.completed)
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    const nextUpcomingDayStr = futureUpcomingEvts[0] ? new Date(futureUpcomingEvts[0].start).toDateString() : null;
+    const nextDayEvts = nextUpcomingDayStr
+      ? futureUpcomingEvts.filter(e => new Date(e.start).toDateString() === nextUpcomingDayStr)
+      : [];
+
+    const isNextTomorrow = tomorrowEvts.length > 0;
+    const effectiveUpcomingEvts = isNextTomorrow ? tomorrowEvts : nextDayEvts;
+    const nextUpcoming = effectiveUpcomingEvts[0] || null;
+    const upcomingGoal = nextUpcoming?.goalId ? goals.find(g => g.id === nextUpcoming.goalId) : undefined;
+    const dateLabel = nextUpcoming
+      ? (isNextTomorrow ? "Tomorrow" : new Date(nextUpcoming.start).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))
+      : "Tomorrow";
 
     return {
       allTodayCompleted,
-      tomorrowEvents: tomorrowEvts,
-      nextTomorrowEvent: nextTomorrow,
-      matchedTomorrowGoal: tomorrowGoal
+      tomorrowEvents: effectiveUpcomingEvts,
+      nextTomorrowEvent: nextUpcoming,
+      matchedTomorrowGoal: upcomingGoal,
+      isNextDayTomorrow: isNextTomorrow,
+      nextUpcomingDateLabel: dateLabel
     };
   }, [events, goals, tickerNow]);
 
@@ -497,8 +507,8 @@ export default function ActiveExecutionHUD({
     };
   }, [events, tickerNow]);
 
-  // Study Ahead mode triggers when user has no active timer and no remaining uncompleted events today, but has tomorrow events!
-  const isStudyAheadMode = Boolean(!activeTimer && !currentEvent && activeTomorrowEvent);
+  // Study Ahead mode triggers when user has no active timer and no remaining uncompleted events today, but has upcoming sessions!
+  const isStudyAheadMode = Boolean(!activeTimer && (!currentEvent || allTodayCompleted) && activeTomorrowEvent);
 
   const currentEventGoal = useMemo(() => {
     if (!currentEvent) return undefined;
@@ -1395,7 +1405,7 @@ export default function ActiveExecutionHUD({
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
           
           {/* LEFT: Live Status Indicator, Goal Title & Real Timing Breakdown */}
-          <div className="flex items-start sm:items-center gap-3.5 min-w-0 flex-1">
+          <div className="flex items-start sm:items-center gap-3.5 min-w-0 flex-1 pr-4 lg:pr-8">
             {/* Goal Icon */}
             <div 
               className="w-12 h-12 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md transition-transform"
@@ -1421,23 +1431,10 @@ export default function ActiveExecutionHUD({
                     STUDY SESSION PAUSED
                   </span>
                 ) : isStudyAheadMode ? (
-                  <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
-                    <span className="inline-flex items-center gap-1.5 font-bold text-emerald-400 text-[11px] tracking-wide">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                      {allTodayCompleted ? "Today's Schedule Complete" : "Tomorrow's Goal"}
-                    </span>
-                    <span className="text-slate-600 dark:text-slate-500" aria-hidden="true">•</span>
-                    <span className="text-emerald-300 font-semibold">Study Ahead</span>
-                    {activeTomorrowEvent && (
-                      <>
-                        <span className="text-slate-600 dark:text-slate-500" aria-hidden="true">•</span>
-                        <span className="text-slate-300 flex items-center gap-1 font-medium text-[11px]">
-                          <Calendar className="w-3 h-3 text-emerald-400" />
-                          Tomorrow {formatClockTime(new Date(activeTomorrowEvent.start))} – {formatClockTime(new Date(activeTomorrowEvent.end))} ({totalSessionMinutes}m)
-                        </span>
-                      </>
-                    )}
-                  </div>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0 shadow-xs">
+                    <Sparkles className="w-2.5 h-2.5 text-amber-300 shrink-0" />
+                    <span>STUDY AHEAD</span>
+                  </span>
                 ) : hasTarget ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
                     <Clock className="w-2.5 h-2.5" />
@@ -1497,13 +1494,24 @@ export default function ActiveExecutionHUD({
               </div>
 
               {/* Title & Live Countdown */}
-              <div className="flex items-baseline gap-2.5 flex-wrap">
+              <div className="flex items-baseline gap-2.5 flex-wrap min-w-0">
                 <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
                   {primaryTitle}
                 </h3>
                 {primaryCategory && (
-                  <span className="text-xs text-slate-400 font-medium">
+                  <span className="text-xs text-slate-400 font-medium shrink-0">
                     • {primaryCategory}
+                  </span>
+                )}
+
+                {isStudyAheadMode && activeTomorrowEvent && (
+                  <span className="text-xs font-medium text-slate-400 dark:text-slate-300 flex items-center gap-1.5 shrink-0">
+                    <span className="text-slate-500" aria-hidden="true">•</span>
+                    <Calendar className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">
+                      {isNextDayTomorrow ? "Tomorrow" : nextUpcomingDateLabel} {formatClockTime(new Date(activeTomorrowEvent.start))} – {formatClockTime(new Date(activeTomorrowEvent.end))}
+                    </span>
+                    <span className="text-slate-400 dark:text-slate-500 font-mono text-[11px]">({totalSessionMinutes}m)</span>
                   </span>
                 )}
 
@@ -1532,7 +1540,7 @@ export default function ActiveExecutionHUD({
           </div>
 
           {/* RIGHT: Primary Controls for Start, Pause, Resume, and Finish */}
-          <div className="flex items-center gap-2 w-full lg:w-auto justify-end flex-wrap">
+          <div className="flex items-center gap-2 w-full lg:w-auto justify-end flex-wrap shrink-0">
             
             {/* Toggle Micro-tasks Checklist */}
             {(hasActiveSession || Boolean(effectiveGoal) || Boolean(effectiveEvent) || activeSubtasks.length > 0) && (
@@ -1597,7 +1605,7 @@ export default function ActiveExecutionHUD({
                     id="hud_pull_to_today_btn"
                     onClick={() => handlePullTomorrowEventToToday(activeTomorrowEvent)}
                     className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 transition active:scale-95 cursor-pointer shadow-xs"
-                    title="Move this session from Tomorrow's calendar to Today and start now"
+                    title={`Move this session from ${isNextDayTomorrow ? "Tomorrow" : nextUpcomingDateLabel}'s calendar to Today and start now`}
                   >
                     <Calendar className="w-3.5 h-3.5 text-indigo-400" />
                     <span>Pull to Today</span>
@@ -1610,13 +1618,13 @@ export default function ActiveExecutionHUD({
                   id="hud_study_ahead_btn"
                   onClick={() => handleStartStudying(activeTomorrowGoal, activeTomorrowEvent)}
                   className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
-                  title="Jump ahead and start studying tomorrow's session right now"
+                  title={`Jump ahead and start studying ${isNextDayTomorrow ? "tomorrow" : nextUpcomingDateLabel}'s session right now`}
                 >
                   <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
                   <span>Study Ahead Now</span>
                 </button>
 
-                {/* Tomorrow's Agenda Dropdown */}
+                {/* Tomorrow / Next Day Agenda Dropdown */}
                 {tomorrowEvents.length > 1 && (
                   <div className="relative">
                     <button
@@ -1624,10 +1632,10 @@ export default function ActiveExecutionHUD({
                       id="hud_switch_tomorrow_btn"
                       onClick={() => setShowTomorrowPicker(!showTomorrowPicker)}
                       className="px-2.5 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-white text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
-                      title="Pick from tomorrow's scheduled sessions"
+                      title={`Pick from ${isNextDayTomorrow ? "tomorrow" : nextUpcomingDateLabel}'s scheduled sessions`}
                     >
                       <Layers className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>Tomorrow ({tomorrowEvents.length})</span>
+                      <span>{isNextDayTomorrow ? "Tomorrow" : nextUpcomingDateLabel} ({tomorrowEvents.length})</span>
                       <ChevronDown className="w-3 h-3" />
                     </button>
 
