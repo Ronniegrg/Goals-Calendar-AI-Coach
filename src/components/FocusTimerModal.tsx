@@ -43,7 +43,8 @@ import {
   Wind,
   ExternalLink,
   BookOpen,
-  FileText
+  FileText,
+  StickyNote
 } from "lucide-react";
 import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote } from "../types";
 import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
@@ -67,6 +68,9 @@ export interface ActiveTimerData {
   isMinimized: boolean;
   isOpen: boolean;
   subSteps?: SessionSubStep[];
+  isReviewSession?: boolean;
+  reviewCheckpointEnabled?: boolean;
+  isCompletionLogged?: boolean;
 }
 
 export interface SavedSessionProgress {
@@ -429,6 +433,23 @@ export function clearSavedProgress(goalId?: string, eventId?: string, title?: st
   } catch {}
 }
 
+export function shouldEnableReviewCheckpoint(
+  title: string,
+  durationMins: number,
+  subSteps?: SessionSubStep[],
+  explicitFlag?: boolean,
+  isReview?: boolean
+): boolean {
+  if (explicitFlag !== undefined) return explicitFlag;
+  if (isReview) return true;
+  if (durationMins === 15) return true;
+  if (/review|recap/i.test(title || "")) return true;
+  if (subSteps && subSteps.some(s => /review|recap|recall|notes/i.test(s.title) || s.durationMinutes === 15)) {
+    return true;
+  }
+  return false;
+}
+
 export function triggerFocusTimer(params: {
   title: string;
   duration: number; // in minutes
@@ -440,6 +461,8 @@ export function triggerFocusTimer(params: {
   subSteps?: SessionSubStep[];
   autoStart?: boolean;
   openModal?: boolean;
+  isReviewSession?: boolean;
+  reviewCheckpointEnabled?: boolean;
 }) {
   unlockAudioEngine();
   window.dispatchEvent(new CustomEvent("open_focus_timer", { detail: params }));
@@ -498,6 +521,25 @@ interface FocusTimerModalProps {
   onCompleteSession: (eventId?: string, goalId?: string, note?: string, title?: string) => void;
   onExtendEventDuration?: (eventId: string, deltaMins: number) => void;
   onUpdateGoalKnowledgeHub?: (goalId: string, hub: GoalKnowledgeHub) => void;
+  onSaveGoalReviewNote?: (
+    goalId: string,
+    note: string,
+    options?: {
+      advanceChapterId?: string | null;
+      saveToHub?: boolean;
+      chapterTitle?: string;
+      stepId?: string | null;
+      stepTitle?: string | null;
+      alsoSaveToGoal?: boolean;
+    }
+  ) => void;
+  onSaveStepCarryoverNote?: (
+    goalId: string,
+    stepId: string,
+    stepTitle: string,
+    note: string,
+    eventId?: string
+  ) => void;
 }
 
 function resolveAndBalanceSubSteps(
@@ -507,35 +549,59 @@ function resolveAndBalanceSubSteps(
   sessionMinutes: number = 60,
   goalsList?: Goal[]
 ): SessionSubStep[] | undefined {
+  let targetGoal: Goal | undefined;
+  if (goalsList && goalsList.length > 0) {
+    targetGoal = (goalId ? goalsList.find(g => g.id === goalId) : undefined)
+      || (sessionTitle ? goalsList.find(g => g.name.toLowerCase() === sessionTitle.toLowerCase()) : undefined);
+  }
+  if (!targetGoal) {
+    try {
+      const rawCached = localStorage.getItem("cached_goals");
+      if (rawCached) {
+        const parsedGoals: Goal[] = JSON.parse(rawCached);
+        targetGoal = (goalId ? parsedGoals.find(g => g.id === goalId) : undefined)
+          || (sessionTitle ? parsedGoals.find(g => g.name.toLowerCase() === sessionTitle.toLowerCase()) : undefined);
+      }
+    } catch {}
+  }
+
   let steps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? [...rawSubSteps] : undefined;
 
-  // If no explicit subSteps were provided, try to inherit from goal
-  if (!steps) {
-    let targetGoal: Goal | undefined;
-    if (goalsList && goalsList.length > 0) {
-      targetGoal = (goalId ? goalsList.find(g => g.id === goalId) : undefined)
-        || (sessionTitle ? goalsList.find(g => g.name.toLowerCase() === sessionTitle.toLowerCase()) : undefined);
-    }
-    // Fallback: check localStorage cached_goals if goalsList was empty
-    if (!targetGoal) {
-      try {
-        const rawCached = localStorage.getItem("cached_goals");
-        if (rawCached) {
-          const parsedGoals: Goal[] = JSON.parse(rawCached);
-          targetGoal = (goalId ? parsedGoals.find(g => g.id === goalId) : undefined)
-            || (sessionTitle ? parsedGoals.find(g => g.name.toLowerCase() === sessionTitle.toLowerCase()) : undefined);
-        }
-      } catch {}
-    }
+  // Enrich rawSubSteps with carryover notes stored on targetGoal if missing
+  if (steps && targetGoal) {
+    const goalPool = [...(targetGoal.subtasks || []), ...(targetGoal.subSteps || [])];
+    steps = steps.map(s => {
+      if (s.carryoverNote) return s;
+      const match = goalPool.find(
+        g => (g.id === s.id || g.title.trim().toLowerCase() === s.title.trim().toLowerCase()) && g.carryoverNote
+      );
+      return match
+        ? { ...s, carryoverNote: match.carryoverNote, carryoverNoteDate: match.carryoverNoteDate }
+        : s;
+    });
+  }
 
-    if (targetGoal?.subSteps && targetGoal.subSteps.length > 0) {
-      steps = [...targetGoal.subSteps];
-    } else if (targetGoal?.subtasks && targetGoal.subtasks.length > 0) {
+  // If no explicit subSteps were provided, try to inherit from goal
+  if (!steps && targetGoal) {
+    if (targetGoal.subSteps && targetGoal.subSteps.length > 0) {
+      steps = targetGoal.subSteps.map(s => {
+        const matchTask = targetGoal?.subtasks?.find(
+          t => t.id === s.id || t.title.trim().toLowerCase() === s.title.trim().toLowerCase()
+        );
+        return {
+          ...s,
+          carryoverNote: s.carryoverNote ?? matchTask?.carryoverNote,
+          carryoverNoteDate: s.carryoverNoteDate ?? matchTask?.carryoverNoteDate
+        };
+      });
+    } else if (targetGoal.subtasks && targetGoal.subtasks.length > 0) {
       steps = targetGoal.subtasks.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
-        completed: s.completed || false
+        completed: s.completed || false,
+        carryoverNote: s.carryoverNote,
+        carryoverNoteDate: s.carryoverNoteDate
       }));
     }
   }
@@ -573,7 +639,9 @@ export default function FocusTimerModal({
   onUpdateGoalChapters,
   onCompleteSession,
   onExtendEventDuration,
-  onUpdateGoalKnowledgeHub
+  onUpdateGoalKnowledgeHub,
+  onSaveGoalReviewNote,
+  onSaveStepCarryoverNote
 }: FocusTimerModalProps) {
   // Live Study Notes & Scratchpad State
   const [showLiveNotes, setShowLiveNotes] = useState(false);
@@ -708,11 +776,42 @@ export default function FocusTimerModal({
     durationMins: number;
   } | null>(null);
 
+  // Per-Step Carryover Note inline editing inside FocusTimerModal
+  const [editingStepNoteId, setEditingStepNoteId] = useState<string | null>(null);
+  const [editingStepNoteText, setEditingStepNoteText] = useState<string>("");
+  const [bottomNoteTargetStepId, setBottomNoteTargetStepId] = useState<string>("");
+  const [bottomStepSavedToast, setBottomStepSavedToast] = useState<string | null>(null);
+
+  // 15-Minute / Phase-End Review Checkpoint Prompt State
+  const [reviewCheckpoint, setReviewCheckpoint] = useState<{
+    mode: "between_phases" | "session_end";
+    finishedStepId?: string;
+    finishedStepTitle: string;
+    finishedStepMins: number;
+    nextStepIndex?: number;
+    nextStepTitle?: string;
+    nextStepMins?: number;
+    showNoteEditor: boolean;
+    noteDraft: string;
+    targetStepId: string;
+    saveToKnowledgeHub: boolean;
+    advanceCurrentChapter: boolean;
+  } | null>(null);
+
+  const manualStepJumpRef = useRef<boolean>(false);
+  const lastCompletedSessionKeyRef = useRef<string | null>(null);
+
   const onCompleteRef = useRef(onCompleteSession);
   onCompleteRef.current = onCompleteSession;
 
   const onExtendRef = useRef(onExtendEventDuration);
   onExtendRef.current = onExtendEventDuration;
+
+  const onSaveReviewNoteRef = useRef(onSaveGoalReviewNote);
+  onSaveReviewNoteRef.current = onSaveGoalReviewNote;
+
+  const onSaveStepNoteRef = useRef(onSaveStepCarryoverNote);
+  onSaveStepNoteRef.current = onSaveStepCarryoverNote;
 
   // Persist sound settings
   useEffect(() => {
@@ -739,6 +838,13 @@ export default function FocusTimerModal({
     if (!goals || goals.length === 0 || !timerState) return null;
     return goals.find(g => g.id === timerState.goalId || g.name.toLowerCase() === timerState.title.toLowerCase());
   }, [goals, timerState?.goalId, timerState?.title]);
+
+  const incompleteChapters = useMemo(() => {
+    return activeGoal?.chapters?.filter(c => !c.completed) || [];
+  }, [activeGoal?.chapters]);
+
+  const currentSectionChapter = incompleteChapters[0] || null;
+  const nextSectionChapter = incompleteChapters[1] || null;
 
   const handleToggleChapter = (chapterId: string) => {
     if (!activeGoal || !activeGoal.chapters || !onUpdateGoalChapters) return;
@@ -814,6 +920,12 @@ export default function FocusTimerModal({
         goals
       );
 
+      const autoCheckpoint = shouldEnableReviewCheckpoint(
+        propSessionTitle,
+        propInitialDurationMinutes,
+        resolvedSteps || propSubSteps
+      );
+
       if (saved && saved.timeRemaining > 0 && saved.timeRemaining < saved.totalSec) {
         const restoredTimer: ActiveTimerData = {
           title: saved.title || propSessionTitle,
@@ -830,7 +942,8 @@ export default function FocusTimerModal({
           sessionTakeawayNote: saved.sessionTakeawayNote || "",
           isMinimized: false,
           isOpen: true,
-          subSteps: resolvedSteps || saved.subSteps || propSubSteps
+          subSteps: resolvedSteps || saved.subSteps || propSubSteps,
+          reviewCheckpointEnabled: autoCheckpoint
         };
         setTimerState(restoredTimer);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredTimer));
@@ -850,7 +963,8 @@ export default function FocusTimerModal({
           sessionTakeawayNote: "",
           isMinimized: false,
           isOpen: true,
-          subSteps: resolvedSteps || propSubSteps
+          subSteps: resolvedSteps || propSubSteps,
+          reviewCheckpointEnabled: autoCheckpoint
         };
         setTimerState(newTimer);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
@@ -869,13 +983,29 @@ export default function FocusTimerModal({
 
       const durationMinutes = Math.max(1, detail.duration || 60);
       const initialSec = durationMinutes * 60;
-      const resolvedSteps = resolveAndBalanceSubSteps(
-        detail.subSteps,
-        detail.goalId,
-        detail.title,
+      const resolvedSteps = detail.isReviewSession
+        ? (detail.subSteps && detail.subSteps.length > 0 ? detail.subSteps : undefined)
+        : resolveAndBalanceSubSteps(
+            detail.subSteps,
+            detail.goalId,
+            detail.title,
+            durationMinutes,
+            goals
+          );
+
+      const autoCheckpoint = shouldEnableReviewCheckpoint(
+        detail.title || "Focus Session",
         durationMinutes,
-        goals
+        resolvedSteps || detail.subSteps,
+        detail.reviewCheckpointEnabled,
+        detail.isReviewSession
       );
+
+      setReviewCheckpoint(null);
+      setBottomNoteTargetStepId("");
+      setEditingStepNoteId(null);
+      setBottomStepSavedToast(null);
+      lastCompletedSessionKeyRef.current = null;
 
       setTimerState((prev) => {
         const matchesCurrent = prev && (
@@ -884,7 +1014,12 @@ export default function FocusTimerModal({
           (detail.title && prev.title?.toLowerCase() === detail.title?.toLowerCase())
         );
 
-        if (matchesCurrent && prev && prev.timeRemaining < prev.totalSec && !prev.isCompleted) {
+        const wantsExplicitFreshStart = Boolean(
+          detail.forceNew ||
+          (detail.isReviewSession && prev && (!prev.isReviewSession || prev.totalSec !== initialSec))
+        );
+
+        if (!wantsExplicitFreshStart && matchesCurrent && prev && prev.timeRemaining < prev.totalSec && !prev.isCompleted) {
           const now = Date.now();
           const isRunning = shouldAutoStart ? true : prev.isRunning;
           const targetEndTime = isRunning 
@@ -900,16 +1035,18 @@ export default function FocusTimerModal({
             targetEndTime,
             startedAt,
             previousSessionNote: detail.previousSessionNote !== undefined ? detail.previousSessionNote : prev.previousSessionNote,
-            subSteps: resolvedSteps || detail.subSteps || prev.subSteps
+            subSteps: resolvedSteps || detail.subSteps || prev.subSteps,
+            isReviewSession: detail.isReviewSession !== undefined ? detail.isReviewSession : prev.isReviewSession,
+            reviewCheckpointEnabled: detail.reviewCheckpointEnabled !== undefined ? detail.reviewCheckpointEnabled : (prev.reviewCheckpointEnabled ?? autoCheckpoint)
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
           return updated;
         }
 
-        const saved = getSavedProgress(detail.goalId, detail.eventId, detail.title);
+        const saved = wantsExplicitFreshStart ? null : getSavedProgress(detail.goalId, detail.eventId, detail.title);
         const now = Date.now();
 
-        if (saved && saved.timeRemaining > 0 && saved.timeRemaining < saved.totalSec) {
+        if (saved && (!detail.isReviewSession || saved.totalSec === initialSec) && saved.timeRemaining > 0 && saved.timeRemaining < saved.totalSec) {
           const remaining = saved.timeRemaining;
           const isRunning = shouldAutoStart;
           const targetEndTime = isRunning ? now + remaining * 1000 : null;
@@ -932,7 +1069,9 @@ export default function FocusTimerModal({
             sessionTakeawayNote: saved.sessionTakeawayNote || "",
             isMinimized: !openModal,
             isOpen: openModal,
-            subSteps: resolvedSteps || saved.subSteps || detail.subSteps
+            subSteps: resolvedSteps || saved.subSteps || detail.subSteps,
+            isReviewSession: detail.isReviewSession,
+            reviewCheckpointEnabled: autoCheckpoint
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredTimer));
           return restoredTimer;
@@ -993,7 +1132,9 @@ export default function FocusTimerModal({
           sessionTakeawayNote: "",
           isMinimized: !openModal,
           isOpen: openModal,
-          subSteps: resolvedSteps || detail.subSteps
+          subSteps: resolvedSteps || detail.subSteps,
+          isReviewSession: detail.isReviewSession,
+          reviewCheckpointEnabled: autoCheckpoint
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newTimer));
         return newTimer;
@@ -1245,17 +1386,66 @@ export default function FocusTimerModal({
     if (!activeStepInfo || !timerState?.isRunning) return;
 
     if (activeStepInfo.index > previousStepIndexRef.current) {
-      // Step advanced during active session!
+      const prevIdx = previousStepIndexRef.current;
+      const finishedStep = subStepsWithOffsets[prevIdx];
+      previousStepIndexRef.current = activeStepInfo.index;
+
+      if (manualStepJumpRef.current) {
+        manualStepJumpRef.current = false;
+        return;
+      }
+
+      const isReviewPhaseEnded = Boolean(
+        finishedStep &&
+        timerState.reviewCheckpointEnabled !== false &&
+        (
+          /review|recap|recall|notes/i.test(finishedStep.title) ||
+          finishedStep.durationMinutes === 15 ||
+          timerState.reviewCheckpointEnabled === true
+        )
+      );
+
       if (soundEnabled && phaseSoundEnabled) {
         playPhaseEndChime(soundVolume);
       }
+
+      if (isReviewPhaseEnded && finishedStep) {
+        // Auto-pause cleanly at the start of the next step & ask user if they want to write a note
+        const nextRemaining = Math.max(1, timerState.totalSec - activeStepInfo.startSec);
+        updateTimerState((prev) => prev ? {
+          ...prev,
+          timeRemaining: nextRemaining,
+          targetEndTime: null,
+          isRunning: false,
+          lastPausedAt: Date.now(),
+          isOpen: true,
+          isMinimized: false
+        } : null);
+
+        setReviewCheckpoint({
+          mode: "between_phases",
+          finishedStepId: finishedStep.id,
+          finishedStepTitle: finishedStep.title,
+          finishedStepMins: finishedStep.durationMinutes,
+          nextStepIndex: activeStepInfo.index,
+          nextStepTitle: activeStepInfo.title,
+          nextStepMins: activeStepInfo.durationMinutes,
+          showNoteEditor: false,
+          noteDraft: finishedStep.carryoverNote || timerState.sessionTakeawayNote || "",
+          targetStepId: finishedStep.id,
+          saveToKnowledgeHub: true,
+          advanceCurrentChapter: false
+        });
+        return;
+      }
+
+      // Standard non-blocking phase transition notice
       setPhaseTransitionNotice({
         phaseTitle: activeStepInfo.title,
         phaseNum: activeStepInfo.index + 1,
         totalPhases: subStepsWithOffsets.length,
         durationMins: activeStepInfo.durationMinutes
       });
-      previousStepIndexRef.current = activeStepInfo.index;
 
       const timer = setTimeout(() => {
         setPhaseTransitionNotice(null);
@@ -1264,7 +1454,39 @@ export default function FocusTimerModal({
     } else if (activeStepInfo.index < previousStepIndexRef.current) {
       previousStepIndexRef.current = activeStepInfo.index;
     }
-  }, [activeStepInfo?.index, timerState?.isRunning, soundEnabled, phaseSoundEnabled, soundVolume, subStepsWithOffsets.length]);
+  }, [activeStepInfo?.index, timerState?.isRunning, timerState?.reviewCheckpointEnabled, soundEnabled, phaseSoundEnabled, soundVolume, subStepsWithOffsets.length]);
+
+  // Automatically trigger interactive review prompt when a 15-min review (or review-enabled) timer reaches 00:00
+  useEffect(() => {
+    if (!timerState?.isCompleted) {
+      lastCompletedSessionKeyRef.current = null;
+      return;
+    }
+    const completionKey = `${currentSessionId}_${timerState.totalSec}`;
+    if (lastCompletedSessionKeyRef.current === completionKey) return;
+
+    const totalMins = Math.round(timerState.totalSec / 60);
+    const shouldPromptReviewNote = Boolean(
+      timerState.reviewCheckpointEnabled ||
+      timerState.isReviewSession ||
+      totalMins === 15 ||
+      /review|recap/i.test(timerState.title)
+    );
+
+    if (shouldPromptReviewNote) {
+      lastCompletedSessionKeyRef.current = completionKey;
+      setReviewCheckpoint({
+        mode: "session_end",
+        finishedStepTitle: timerState.title,
+        finishedStepMins: totalMins,
+        showNoteEditor: false,
+        noteDraft: timerState.sessionTakeawayNote || "",
+        targetStepId: "",
+        saveToKnowledgeHub: true,
+        advanceCurrentChapter: Boolean(nextSectionChapter)
+      });
+    }
+  }, [timerState?.isCompleted, timerState?.totalSec, timerState?.title, timerState?.reviewCheckpointEnabled, timerState?.isReviewSession, currentSessionId, nextSectionChapter]);
 
   // Audio completion trigger with 3-chime burst and tab notification
   const triggerCompletionBell = (sessionTitle: string) => {
@@ -1349,6 +1571,7 @@ export default function FocusTimerModal({
             timeRemaining: 0,
             isRunning: false,
             isCompleted: true,
+            isCompletionLogged: true,
             isOpen: true,
             isMinimized: false
           };
@@ -1430,6 +1653,7 @@ export default function FocusTimerModal({
 
   const handleStart = () => {
     unlockAudioEngine();
+    setReviewCheckpoint(null);
     const now = Date.now();
     updateTimerState((prev) => {
       if (!prev) return null;
@@ -1444,7 +1668,8 @@ export default function FocusTimerModal({
         lastPausedAt: null,
         targetEndTime: now + remaining * 1000,
         isRunning: true,
-        isCompleted: false
+        isCompleted: false,
+        isCompletionLogged: false
       };
     });
   };
@@ -1465,6 +1690,7 @@ export default function FocusTimerModal({
 
   const handleReset = () => {
     unlockAudioEngine();
+    setReviewCheckpoint(null);
     clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
     updateTimerState((prev) => {
       if (!prev) return null;
@@ -1473,6 +1699,7 @@ export default function FocusTimerModal({
         timeRemaining: prev.totalSec,
         isRunning: false,
         isCompleted: false,
+        isCompletionLogged: false,
         targetEndTime: null
       };
     });
@@ -1563,26 +1790,209 @@ export default function FocusTimerModal({
 
   const handleFinishAndComplete = () => {
     unlockAudioEngine();
-    triggerCompletionBell(timerState.title);
     const eventId = timerState.eventId;
     const goalId = timerState.goalId;
     const note = timerState.sessionTakeawayNote.trim() || undefined;
     const title = timerState.title;
+    const alreadyLogged = Boolean(timerState.isCompletionLogged);
 
+    if (!alreadyLogged) {
+      triggerCompletionBell(timerState.title);
+    }
+
+    setReviewCheckpoint(null);
     clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
     updateTimerState(() => null);
     if (propOnClose) propOnClose();
 
-    queueMicrotask(() => {
-      if (onCompleteRef.current) {
-        onCompleteRef.current(eventId, goalId, note);
-      }
-      try {
-        window.dispatchEvent(new CustomEvent("focus_session_completed", {
-          detail: { eventId, goalId, title, note }
-        }));
-      } catch {}
+    if (!alreadyLogged) {
+      queueMicrotask(() => {
+        if (onCompleteRef.current) {
+          onCompleteRef.current(eventId, goalId, note, title);
+        }
+        try {
+          window.dispatchEvent(new CustomEvent("focus_session_completed", {
+            detail: { eventId, goalId, title, note }
+          }));
+        } catch {}
+      });
+    } else if (note && goalId && onSaveReviewNoteRef.current) {
+      queueMicrotask(() => {
+        onSaveReviewNoteRef.current?.(goalId, note, { saveToHub: true });
+      });
+    }
+  };
+
+  // Start the next section of the goal (or next study step) after a 15-min review checkpoint
+  const launchNextGoalSectionTimer = (noteForContext?: string, advanceChapter?: boolean) => {
+    if (!timerState) return;
+    unlockAudioEngine();
+
+    const targetGoal = activeGoal;
+    const nextIncomplete = advanceChapter && currentSectionChapter
+      ? (nextSectionChapter || null)
+      : currentSectionChapter;
+
+    const baseName = targetGoal?.name || timerState.title.replace(/\s*[—-]\s*15m Review$/i, "").trim();
+    const nextTitle = nextIncomplete
+      ? `${baseName}: ${nextIncomplete.title}`
+      : `${baseName} — Next Step`;
+
+    const nextDuration = Math.max(15, targetGoal?.durationMinutes || 30);
+    const carriedNote = noteForContext !== undefined ? noteForContext : (timerState.previousSessionNote || targetGoal?.lastSessionNote);
+
+    setReviewCheckpoint(null);
+    clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
+
+    const now = Date.now();
+    const nextTotalSec = nextDuration * 60;
+    const nextState: ActiveTimerData = {
+      title: nextTitle,
+      totalSec: nextTotalSec,
+      timeRemaining: nextTotalSec,
+      targetEndTime: now + nextTotalSec * 1000,
+      startedAt: now,
+      lastPausedAt: null,
+      isRunning: true,
+      isCompleted: false,
+      isCompletionLogged: false,
+      eventId: timerState.eventId,
+      goalId: timerState.goalId,
+      category: timerState.category,
+      color: timerState.color,
+      previousSessionNote: carriedNote,
+      sessionTakeawayNote: "",
+      isMinimized: false,
+      isOpen: true,
+      subSteps: undefined,
+      isReviewSession: false,
+      reviewCheckpointEnabled: false
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+    setTimerState(nextState);
+  };
+
+  const handleSaveModalStepNote = (stepId: string, stepTitle: string, noteText: string) => {
+    if (!timerState) return;
+    const trimmed = noteText.trim();
+    const nowIso = new Date().toISOString();
+    const normTitle = stepTitle.trim().toLowerCase();
+
+    updateTimerState((prev) => {
+      if (!prev) return null;
+      const updatedSteps = prev.subSteps?.map(s =>
+        s.id === stepId || (normTitle && s.title.trim().toLowerCase() === normTitle)
+          ? {
+              ...s,
+              carryoverNote: trimmed || undefined,
+              carryoverNoteDate: trimmed ? nowIso : undefined
+            }
+          : s
+      );
+      return { ...prev, subSteps: updatedSteps };
     });
+
+    const targetGoalId = timerState.goalId || activeGoal?.id;
+    if (targetGoalId && onSaveStepNoteRef.current) {
+      onSaveStepNoteRef.current(targetGoalId, stepId, stepTitle, trimmed, timerState.eventId);
+    }
+
+    setEditingStepNoteId(null);
+    setEditingStepNoteText("");
+  };
+
+  const handleCheckpointSaveAndContinue = (startNextSectionTimer: boolean) => {
+    if (!reviewCheckpoint || !timerState) return;
+    const trimmed = reviewCheckpoint.noteDraft.trim();
+    const targetGoalId = timerState.goalId || activeGoal?.id;
+    const nowIso = new Date().toISOString();
+
+    const availableSteps = [
+      ...(timerState.subSteps || []),
+      ...(activeGoal?.subtasks || []),
+      ...(activeGoal?.subSteps || [])
+    ];
+    const selectedStep = reviewCheckpoint.targetStepId
+      ? availableSteps.find(s => s.id === reviewCheckpoint.targetStepId)
+      : undefined;
+    const targetStepId = reviewCheckpoint.targetStepId || null;
+    const targetStepTitle = selectedStep?.title || (targetStepId && targetStepId === reviewCheckpoint.finishedStepId ? reviewCheckpoint.finishedStepTitle : null);
+
+    if (targetGoalId && onSaveReviewNoteRef.current) {
+      onSaveReviewNoteRef.current(targetGoalId, trimmed, {
+        advanceChapterId: reviewCheckpoint.advanceCurrentChapter && currentSectionChapter ? currentSectionChapter.id : null,
+        saveToHub: reviewCheckpoint.saveToKnowledgeHub,
+        chapterTitle: currentSectionChapter?.title,
+        stepId: targetStepId,
+        stepTitle: targetStepTitle,
+        alsoSaveToGoal: !targetStepId
+      });
+    } else if (reviewCheckpoint.advanceCurrentChapter && currentSectionChapter && activeGoal && onUpdateGoalChapters) {
+      const updated = activeGoal.chapters?.map(c => c.id === currentSectionChapter.id ? { ...c, completed: true } : c) || [];
+      onUpdateGoalChapters(activeGoal.id, updated);
+    }
+
+    if (reviewCheckpoint.mode === "between_phases") {
+      updateTimerState((prev) => {
+        if (!prev) return null;
+        const updatedSteps = targetStepId && trimmed
+          ? prev.subSteps?.map(s =>
+              s.id === targetStepId || (targetStepTitle && s.title.trim().toLowerCase() === targetStepTitle.trim().toLowerCase())
+                ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso }
+                : s
+            )
+          : prev.subSteps;
+        return {
+          ...prev,
+          subSteps: updatedSteps,
+          sessionTakeawayNote: !targetStepId ? (trimmed || prev.sessionTakeawayNote) : prev.sessionTakeawayNote,
+          previousSessionNote: trimmed || prev.previousSessionNote
+        };
+      });
+      setReviewCheckpoint(null);
+      handleStart();
+      return;
+    }
+
+    // session_end
+    if (startNextSectionTimer) {
+      launchNextGoalSectionTimer(trimmed || undefined, reviewCheckpoint.advanceCurrentChapter);
+    } else {
+      setReviewCheckpoint(null);
+      clearSavedProgress(timerState.goalId, timerState.eventId, timerState.title);
+      updateTimerState(() => null);
+      if (propOnClose) propOnClose();
+    }
+  };
+
+  const handleCheckpointSkipAndMoveOn = (justFinish: boolean = false) => {
+    if (!reviewCheckpoint || !timerState) return;
+    const targetGoalId = timerState.goalId || activeGoal?.id;
+
+    if (reviewCheckpoint.advanceCurrentChapter && currentSectionChapter) {
+      if (targetGoalId && onSaveReviewNoteRef.current) {
+        onSaveReviewNoteRef.current(targetGoalId, "", {
+          advanceChapterId: currentSectionChapter.id,
+          saveToHub: false,
+          chapterTitle: currentSectionChapter.title
+        });
+      } else if (activeGoal && onUpdateGoalChapters) {
+        const updated = activeGoal.chapters?.map(c => c.id === currentSectionChapter.id ? { ...c, completed: true } : c) || [];
+        onUpdateGoalChapters(activeGoal.id, updated);
+      }
+    }
+
+    if (reviewCheckpoint.mode === "between_phases") {
+      setReviewCheckpoint(null);
+      handleStart();
+      return;
+    }
+
+    if (justFinish) {
+      handleFinishAndComplete();
+    } else {
+      launchNextGoalSectionTimer(undefined, reviewCheckpoint.advanceCurrentChapter);
+    }
   };
 
   // Jump to specific sub-step
@@ -1590,6 +2000,8 @@ export default function FocusTimerModal({
     if (!subStepsWithOffsets[stepIndex]) return;
     const targetStep = subStepsWithOffsets[stepIndex];
     unlockAudioEngine();
+    manualStepJumpRef.current = true;
+    setReviewCheckpoint(null);
 
     updateTimerState((prev) => {
       if (!prev) return null;
@@ -2243,6 +2655,24 @@ export default function FocusTimerModal({
                   "PAUSED"
                 )}
               </span>
+
+              {/* Interactive Review Checkpoint Toggle Pill */}
+              <button
+                type="button"
+                id="timer_review_checkpoint_toggle_btn"
+                onClick={() => {
+                  updateTimerState((prev) => prev ? { ...prev, reviewCheckpointEnabled: !prev.reviewCheckpointEnabled } : null);
+                }}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition cursor-pointer ${
+                  timerState.reviewCheckpointEnabled
+                    ? "bg-violet-100 dark:bg-violet-500/20 text-violet-900 dark:text-violet-200 border-violet-300 dark:border-violet-400/40"
+                    : "bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:text-slate-700 dark:hover:text-slate-200"
+                }`}
+                title="When ON, pauses cleanly when your review period ends to ask if you want to save a note for next time or move to the next section."
+              >
+                <BookmarkPlus className="w-3 h-3" />
+                <span>Review Note Prompt: {timerState.reviewCheckpointEnabled ? "ON" : "OFF"}</span>
+              </button>
             </div>
             <h3 className="text-base sm:text-lg font-black text-slate-950 dark:text-white leading-tight flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: timerState.color }} />
@@ -2317,8 +2747,238 @@ export default function FocusTimerModal({
           </div>
         </div>
 
+        {/* Interactive Review Period End Checkpoint Card */}
+        {reviewCheckpoint && (
+          <div
+            id="review_checkpoint_card"
+            className="mb-3.5 p-4 rounded-2xl border-2 border-violet-400/70 dark:border-violet-400/60 bg-gradient-to-br from-violet-50 via-indigo-50 to-white dark:from-[#1a1638] dark:via-[#141730] dark:to-[#0f111a] text-slate-900 dark:text-white shadow-xl shadow-violet-500/15 animate-fade-in space-y-3"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2.5">
+                <span className="p-2 rounded-xl bg-violet-600 text-white shrink-0 shadow-sm">
+                  <Pencil className="w-4 h-4" />
+                </span>
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-violet-700 dark:text-violet-300 block">
+                    {reviewCheckpoint.finishedStepMins}-Minute Review Complete
+                  </span>
+                  <h4 className="text-sm font-extrabold text-slate-950 dark:text-white leading-snug">
+                    Write a note for your next review?
+                  </h4>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
+                    Jot down where you stopped so you know right where to start next time — or skip and move straight on.
+                  </p>
+                </div>
+              </div>
+              {reviewCheckpoint.mode === "between_phases" && (
+                <button
+                  type="button"
+                  onClick={() => setReviewCheckpoint(null)}
+                  className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg cursor-pointer"
+                  title="Dismiss checkpoint"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Upcoming Step / Next Section Context Preview */}
+            <div className="px-3 py-2 rounded-xl bg-white/80 dark:bg-black/30 border border-indigo-200/80 dark:border-white/10 text-xs flex flex-col gap-1">
+              {reviewCheckpoint.mode === "between_phases" ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 dark:text-slate-400 font-semibold">Up Next:</span>
+                  <span className="font-bold text-indigo-700 dark:text-indigo-300 truncate">
+                    Phase {(reviewCheckpoint.nextStepIndex ?? 0) + 1}: {reviewCheckpoint.nextStepTitle} ({reviewCheckpoint.nextStepMins}m)
+                  </span>
+                </div>
+              ) : (
+                <>
+                  {currentSectionChapter && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 dark:text-slate-400 font-semibold shrink-0">Current Section:</span>
+                      <span className="font-bold text-slate-800 dark:text-slate-200 truncate">{currentSectionChapter.title}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500 dark:text-slate-400 font-semibold shrink-0">Next Up:</span>
+                    <span className="font-bold text-emerald-700 dark:text-emerald-300 truncate">
+                      {nextSectionChapter
+                        ? `${nextSectionChapter.title} (${Math.max(15, activeGoal?.durationMinutes || 30)}m)`
+                        : currentSectionChapter
+                        ? `Continue ${currentSectionChapter.title} (${Math.max(15, activeGoal?.durationMinutes || 30)}m)`
+                        : `${activeGoal?.name || timerState.title.replace(/\s*[—-]\s*15m Review$/i, "")} — Next Step (${Math.max(15, activeGoal?.durationMinutes || 30)}m)`}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Optional Syllabus Section Advancement Checkbox */}
+            {currentSectionChapter && (
+              <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer select-none px-1">
+                <input
+                  type="checkbox"
+                  checked={reviewCheckpoint.advanceCurrentChapter}
+                  onChange={(e) => setReviewCheckpoint({ ...reviewCheckpoint, advanceCurrentChapter: e.target.checked })}
+                  className="rounded border-slate-300 dark:border-white/20 text-violet-600 focus:ring-violet-500"
+                />
+                <span>
+                  Mark section <strong className="text-slate-900 dark:text-white">"{currentSectionChapter.title}"</strong> done
+                  {nextSectionChapter ? ` & advance to "${nextSectionChapter.title}"` : ""}
+                </span>
+              </label>
+            )}
+
+            {!reviewCheckpoint.showNoteEditor ? (
+              <div className="space-y-2 pt-0.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    id="review_checkpoint_yes_note_btn"
+                    onClick={() => setReviewCheckpoint({ ...reviewCheckpoint, showNoteEditor: true })}
+                    className="py-2.5 px-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-extrabold text-xs shadow-md shadow-violet-500/25 flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>Yes, Write a Note</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="review_checkpoint_no_skip_btn"
+                    onClick={() => handleCheckpointSkipAndMoveOn(false)}
+                    className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-md shadow-emerald-500/20 flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
+                  >
+                    <ArrowRight className="w-3.5 h-3.5" />
+                    <span>
+                      {reviewCheckpoint.mode === "between_phases"
+                        ? "No, Move to Next Step"
+                        : "No, Move to Next Section"}
+                    </span>
+                  </button>
+                </div>
+                {reviewCheckpoint.mode === "session_end" && (
+                  <button
+                    type="button"
+                    onClick={() => handleCheckpointSkipAndMoveOn(true)}
+                    className="w-full py-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition cursor-pointer"
+                  >
+                    No note — just finish for today
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2.5 pt-1 animate-fade-in">
+                {/* Quick prompt starters */}
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    `Start next review at: ${nextSectionChapter?.title || currentSectionChapter?.title || ""}`.trim(),
+                    "Revisit weak spot: ",
+                    "Completed through: "
+                  ].map((starter, sIdx) => (
+                    <button
+                      key={sIdx}
+                      type="button"
+                      onClick={() => {
+                        const existing = reviewCheckpoint.noteDraft.trim();
+                        const nextText = existing ? `${existing}\n${starter}` : starter;
+                        setReviewCheckpoint({ ...reviewCheckpoint, noteDraft: nextText });
+                      }}
+                      className="px-2 py-0.5 rounded-md bg-violet-100 dark:bg-violet-500/20 hover:bg-violet-200 dark:hover:bg-violet-500/35 text-violet-900 dark:text-violet-200 border border-violet-300 dark:border-violet-400/30 text-[10px] font-semibold cursor-pointer transition"
+                    >
+                      + {starter.replace(/: $/, "")}
+                    </button>
+                  ))}
+                </div>
+
+                <textarea
+                  autoFocus
+                  rows={3}
+                  value={reviewCheckpoint.noteDraft}
+                  onChange={(e) => setReviewCheckpoint({ ...reviewCheckpoint, noteDraft: e.target.value })}
+                  placeholder="e.g. Reviewed OSI layers & TCP handshake. Next review: start with Firewall ACL lab #3 and port security..."
+                  className="w-full text-xs p-2.5 rounded-xl bg-white dark:bg-slate-950/80 border border-violet-300 dark:border-violet-500/40 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+
+                {/* Target Step vs Overall Goal Selector */}
+                {(subStepsWithOffsets.length > 0 || (activeGoal?.subtasks && activeGoal.subtasks.length > 0)) && (
+                  <div className="flex items-center justify-between gap-2 px-1">
+                    <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 shrink-0 flex items-center gap-1">
+                      <StickyNote className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Save note to:</span>
+                    </label>
+                    <select
+                      value={reviewCheckpoint.targetStepId}
+                      onChange={(e) => setReviewCheckpoint({ ...reviewCheckpoint, targetStepId: e.target.value })}
+                      className="flex-1 text-xs px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-white/15 text-slate-800 dark:text-slate-100 focus:outline-none focus:border-violet-500"
+                    >
+                      <option value="">General Goal Note (Where to Start)</option>
+                      {(subStepsWithOffsets.length > 0
+                        ? subStepsWithOffsets
+                        : (activeGoal?.subtasks || []).map((st, i) => ({ id: st.id, title: st.title, index: i }))
+                      ).map((st, idx) => (
+                        <option key={st.id} value={st.id}>
+                          Step {idx + 1}: {st.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {activeGoal && (
+                  <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer select-none px-1">
+                    <input
+                      type="checkbox"
+                      checked={reviewCheckpoint.saveToKnowledgeHub}
+                      onChange={(e) => setReviewCheckpoint({ ...reviewCheckpoint, saveToKnowledgeHub: e.target.checked })}
+                      className="rounded border-slate-300 dark:border-white/20 text-violet-600 focus:ring-violet-500"
+                    />
+                    <span>Also save a timestamped copy in Goal Study Notes Hub</span>
+                  </label>
+                )}
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <button
+                    type="button"
+                    id="review_checkpoint_save_continue_btn"
+                    disabled={!reviewCheckpoint.noteDraft.trim()}
+                    onClick={() => handleCheckpointSaveAndContinue(true)}
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-45 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>
+                      {reviewCheckpoint.mode === "between_phases"
+                        ? "Save Note & Start Next Step"
+                        : "Save Note & Start Next Section"}
+                    </span>
+                  </button>
+
+                  {reviewCheckpoint.mode === "session_end" && (
+                    <button
+                      type="button"
+                      id="review_checkpoint_save_finish_btn"
+                      disabled={!reviewCheckpoint.noteDraft.trim()}
+                      onClick={() => handleCheckpointSaveAndContinue(false)}
+                      className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-45 text-white font-bold text-xs shadow-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Save Note & Finish</span>
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setReviewCheckpoint({ ...reviewCheckpoint, showNoteEditor: false })}
+                  className="w-full py-1 text-[11px] font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white cursor-pointer transition"
+                >
+                  Back
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Phase Transition Alert Banner */}
-        {phaseTransitionNotice && (
+        {phaseTransitionNotice && !reviewCheckpoint && (
           <div className="mb-3 p-3 bg-gradient-to-r from-indigo-900/60 to-purple-900/60 border border-indigo-400/60 rounded-2xl text-indigo-100 flex items-center justify-between animate-fade-in shadow-lg shadow-indigo-500/20">
             <div className="flex items-center gap-2">
               <span className="p-1.5 bg-indigo-500/30 rounded-xl text-indigo-300">
@@ -2881,81 +3541,223 @@ export default function FocusTimerModal({
             </div>
 
             {/* Active Phase Focus Pill Banner */}
-            <div className="bg-indigo-950/40 border border-indigo-500/25 p-2.5 rounded-xl flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="p-1.5 bg-indigo-600/30 border border-indigo-400/40 rounded-lg text-indigo-300 shrink-0">
-                  <Flame className="w-4 h-4 text-amber-400" />
-                </span>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-indigo-300 bg-indigo-500/20 px-1.5 py-0.2 rounded font-mono">
-                      Phase {activeStepInfo.index + 1}
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      {formatTime(activeStepInfo.stepRemainingSec)} left in phase
-                    </span>
+            <div className="bg-indigo-950/40 border border-indigo-500/25 p-2.5 rounded-xl space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="p-1.5 bg-indigo-600/30 border border-indigo-400/40 rounded-lg text-indigo-300 shrink-0">
+                    <Flame className="w-4 h-4 text-amber-400" />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-indigo-300 bg-indigo-500/20 px-1.5 py-0.2 rounded font-mono">
+                        Phase {activeStepInfo.index + 1}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        {formatTime(activeStepInfo.stepRemainingSec)} left in phase
+                      </span>
+                    </div>
+                    <h4 className="text-xs font-bold text-white truncate drop-shadow-xs">
+                      {activeStepInfo.title}
+                    </h4>
+                    {activeStepInfo.description && (
+                      <p className="text-[10px] text-slate-400 truncate max-w-[200px] sm:max-w-[240px]">
+                        {activeStepInfo.description}
+                      </p>
+                    )}
                   </div>
-                  <h4 className="text-xs font-bold text-white truncate drop-shadow-xs">
-                    {activeStepInfo.title}
-                  </h4>
-                  {activeStepInfo.description && (
-                    <p className="text-[10px] text-slate-400 truncate max-w-[200px] sm:max-w-[240px]">
-                      {activeStepInfo.description}
-                    </p>
-                  )}
+                </div>
+
+                {/* Step Note + Next Phase Controls */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (editingStepNoteId === activeStepInfo.id) {
+                        setEditingStepNoteId(null);
+                      } else {
+                        setEditingStepNoteId(activeStepInfo.id);
+                        setEditingStepNoteText(activeStepInfo.carryoverNote || "");
+                      }
+                    }}
+                    className={`px-2 py-1.5 rounded-xl text-[10px] font-bold border transition flex items-center gap-1 cursor-pointer ${
+                      activeStepInfo.carryoverNote || editingStepNoteId === activeStepInfo.id
+                        ? "bg-amber-500/20 border-amber-400/45 text-amber-200 hover:bg-amber-500/30"
+                        : "bg-white/5 hover:bg-amber-500/15 border-white/10 text-slate-300 hover:text-amber-200"
+                    }`}
+                    title={activeStepInfo.carryoverNote ? "Edit carryover note for this step" : "Add carryover note for this step"}
+                  >
+                    <StickyNote className="w-3 h-3 text-amber-400" />
+                    <span>{activeStepInfo.carryoverNote ? "Step Note" : "+ Note"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCompleteCurrentSubStep}
+                    className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-400/40 text-indigo-200 hover:text-white rounded-xl text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
+                    title={activeStepInfo.isLastStep ? "Finish Session" : "Mark phase complete & advance to next phase"}
+                  >
+                    <span>{activeStepInfo.isLastStep ? "Finish" : "Next Phase"}</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
 
-              {/* Next Step / Complete Step Button */}
-              <button
-                type="button"
-                onClick={handleCompleteCurrentSubStep}
-                className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-400/40 text-indigo-200 hover:text-white rounded-xl text-[11px] font-bold transition flex items-center gap-1 shrink-0 cursor-pointer shadow-xs"
-                title={activeStepInfo.isLastStep ? "Finish Session" : "Mark phase complete & advance to next phase"}
-              >
-                <span>{activeStepInfo.isLastStep ? "Finish" : "Next Phase"}</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
+              {/* Active Step Inline Note Editor or Saved Note Callout */}
+              {editingStepNoteId === activeStepInfo.id ? (
+                <div className="space-y-1.5 pt-1.5 border-t border-white/10">
+                  <textarea
+                    rows={2}
+                    autoFocus
+                    value={editingStepNoteText}
+                    onChange={(e) => setEditingStepNoteText(e.target.value)}
+                    placeholder={`Session carryover note for "${activeStepInfo.title}"...`}
+                    className="w-full text-[11px] p-2 rounded-lg bg-slate-950/80 border border-amber-500/45 text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    {activeStepInfo.carryoverNote ? (
+                      <button
+                        type="button"
+                        onClick={() => handleSaveModalStepNote(activeStepInfo.id, activeStepInfo.title, "")}
+                        className="text-[10px] font-semibold text-rose-400 hover:text-rose-300 cursor-pointer"
+                      >
+                        Clear Note
+                      </button>
+                    ) : <span />}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setEditingStepNoteId(null)}
+                        className="px-2 py-0.5 text-[10px] text-slate-400 hover:text-white cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveModalStepNote(activeStepInfo.id, activeStepInfo.title, editingStepNoteText)}
+                        className="px-2.5 py-0.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Save Step Note</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : activeStepInfo.carryoverNote ? (
+                <div
+                  onClick={() => {
+                    setEditingStepNoteId(activeStepInfo.id);
+                    setEditingStepNoteText(activeStepInfo.carryoverNote || "");
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-200/95 flex items-start justify-between gap-2 cursor-pointer hover:bg-amber-500/15 transition"
+                  title="Click to edit carryover note for this step"
+                >
+                  <span className="italic leading-snug break-words">📝 "{activeStepInfo.carryoverNote}"</span>
+                  <span className="text-[9px] text-amber-300 underline font-bold shrink-0">Edit</span>
+                </div>
+              ) : null}
             </div>
 
             {/* Expandable Full Steps List */}
             {showSubStepsEditor && (
-              <div className="space-y-1 pt-1 border-t border-white/10 max-h-36 overflow-y-auto pr-1">
+              <div className="space-y-1.5 pt-1 border-t border-white/10 max-h-48 overflow-y-auto pr-1">
                 {subStepsWithOffsets.map((step) => {
                   const isDone = timeSpentSec >= step.endSec;
                   const isCurr = timeSpentSec >= step.startSec && timeSpentSec < step.endSec;
+                  const isEditingThisStepNote = editingStepNoteId === step.id;
 
                   return (
                     <div 
                       key={step.id} 
-                      onClick={() => handleJumpToSubStep(step.index)}
-                      className={`p-2 rounded-xl border text-xs flex items-center justify-between gap-2 cursor-pointer transition ${
+                      onClick={() => {
+                        if (!isEditingThisStepNote) handleJumpToSubStep(step.index);
+                      }}
+                      className={`p-2 rounded-xl border text-xs cursor-pointer transition space-y-1.5 ${
                         isCurr 
                           ? "bg-indigo-600/20 border-indigo-400/50 text-white font-bold ring-1 ring-indigo-400/30" 
                           : isDone 
-                          ? "bg-black/30 border-white/5 text-slate-400 opacity-70" 
+                          ? "bg-black/30 border-white/5 text-slate-400 opacity-80" 
                           : "bg-black/20 border-white/5 text-slate-300 hover:border-white/10"
                       }`}
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {isDone ? (
-                          <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        ) : isCurr ? (
-                          <div className="w-3.5 h-3.5 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
-                        ) : (
-                          <span className="w-3.5 h-3.5 rounded-full bg-white/10 text-[9px] flex items-center justify-center font-mono text-slate-400 shrink-0">
-                            {step.index + 1}
-                          </span>
-                        )}
-                        <div className="min-w-0 truncate">
-                          <span className={`truncate ${isDone ? "line-through text-slate-500" : ""}`}>
-                            {step.title}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isDone ? (
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          ) : isCurr ? (
+                            <div className="w-3.5 h-3.5 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
+                          ) : (
+                            <span className="w-3.5 h-3.5 rounded-full bg-white/10 text-[9px] flex items-center justify-center font-mono text-slate-400 shrink-0">
+                              {step.index + 1}
+                            </span>
+                          )}
+                          <div className="min-w-0 truncate">
+                            <span className={`truncate ${isDone ? "line-through text-slate-500" : ""}`}>
+                              {step.title}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isEditingThisStepNote) {
+                                setEditingStepNoteId(null);
+                              } else {
+                                setEditingStepNoteId(step.id);
+                                setEditingStepNoteText(step.carryoverNote || "");
+                              }
+                            }}
+                            className={`p-1 rounded transition cursor-pointer ${
+                              step.carryoverNote || isEditingThisStepNote
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/35"
+                                : "text-slate-400 hover:text-amber-300 hover:bg-white/10"
+                            }`}
+                            title={step.carryoverNote ? "Edit step carryover note" : "Add carryover note for this step"}
+                          >
+                            <StickyNote className="w-3 h-3" />
+                          </button>
+
+                          <span className="text-[10px] font-mono text-indigo-300 font-semibold shrink-0 bg-white/5 px-1.5 py-0.5 rounded">
+                            {step.durationMinutes}m
                           </span>
                         </div>
                       </div>
-                      <span className="text-[10px] font-mono text-indigo-300 font-semibold shrink-0 bg-white/5 px-1.5 py-0.5 rounded">
-                        {step.durationMinutes}m
-                      </span>
+
+                      {isEditingThisStepNote ? (
+                        <div className="space-y-1.5 pt-1" onClick={(e) => e.stopPropagation()}>
+                          <textarea
+                            rows={2}
+                            autoFocus
+                            value={editingStepNoteText}
+                            onChange={(e) => setEditingStepNoteText(e.target.value)}
+                            placeholder={`Carryover note for "${step.title}"...`}
+                            className="w-full text-[11px] p-1.5 rounded-lg bg-slate-950/90 border border-amber-500/40 text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400 font-normal"
+                          />
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingStepNoteId(null)}
+                              className="px-2 py-0.5 text-[10px] text-slate-400 hover:text-white cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveModalStepNote(step.id, step.title, editingStepNoteText)}
+                              className="px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                            >
+                              <Check className="w-3 h-3" />
+                              <span>Save</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : step.carryoverNote ? (
+                        <div className="ml-5 px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-200/90 italic font-normal truncate">
+                          📝 "{step.carryoverNote}"
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -3813,22 +4615,78 @@ export default function FocusTimerModal({
             </button>
           </div>
 
-          {/* Optional Carryover Note for Next Session */}
-          <div className="bg-[#0c0d16] border border-white/10 rounded-2xl p-2.5">
-            <label className="block text-[10px] font-bold text-amber-300/90 uppercase tracking-wider mb-1 flex items-center gap-1">
-              <Sparkles className="w-3 h-3 text-amber-400" />
-              Next Session Carryover Note (Optional):
-            </label>
+          {/* Optional Carryover Note for Next Session (Goal or Specific Step) */}
+          <div className="bg-[#0c0d16] border border-white/10 rounded-2xl p-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="text-[10px] font-bold text-amber-300/90 uppercase tracking-wider flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-amber-400" />
+                <span>Next Session Carryover Note:</span>
+              </label>
+
+              {subStepsWithOffsets.length > 0 && (
+                <select
+                  value={bottomNoteTargetStepId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setBottomNoteTargetStepId(nextId);
+                    if (nextId) {
+                      const found = subStepsWithOffsets.find(s => s.id === nextId);
+                      if (found?.carryoverNote) {
+                        updateTimerState((prev) => prev ? { ...prev, sessionTakeawayNote: found.carryoverNote || "" } : null);
+                      }
+                    }
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded-lg bg-white/5 border border-white/15 text-amber-200 focus:outline-none focus:border-amber-400 max-w-[190px] truncate"
+                  title="Choose whether to save to the overall session or a specific step"
+                >
+                  <option value="" className="bg-[#0f111a] text-white">Overall Goal Note</option>
+                  {subStepsWithOffsets.map((st, idx) => (
+                    <option key={st.id} value={st.id} className="bg-[#0f111a] text-white">
+                      Step {idx + 1}: {st.title}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
             <textarea
               value={timerState.sessionTakeawayNote}
               onChange={(e) => {
                 const text = e.target.value;
                 updateTimerState((prev) => prev ? { ...prev, sessionTakeawayNote: text } : null);
               }}
-              placeholder="e.g. Finished Chapter 3; resume Section 4.1 practice problems next session..."
+              placeholder={
+                bottomNoteTargetStepId
+                  ? `Carryover note for "${subStepsWithOffsets.find(s => s.id === bottomNoteTargetStepId)?.title || "selected step"}"...`
+                  : "e.g. Finished Chapter 3; resume Section 4.1 practice problems next session..."
+              }
               rows={2}
               className="w-full text-xs p-2 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-amber-400 focus:bg-white/10 transition placeholder:text-slate-500"
             />
+
+            {bottomNoteTargetStepId && (
+              <div className="flex items-center justify-between gap-2">
+                {bottomStepSavedToast ? (
+                  <span className="text-[10px] text-emerald-400 font-semibold">{bottomStepSavedToast}</span>
+                ) : (
+                  <span className="text-[10px] text-slate-400">Saves directly to selected step</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = subStepsWithOffsets.find(s => s.id === bottomNoteTargetStepId);
+                    if (!target) return;
+                    handleSaveModalStepNote(target.id, target.title, timerState.sessionTakeawayNote);
+                    setBottomStepSavedToast("Saved to step!");
+                    setTimeout(() => setBottomStepSavedToast(null), 2500);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer transition shrink-0"
+                >
+                  <Save className="w-3 h-3" />
+                  <span>Save to Step</span>
+                </button>
+              </div>
+            )}
           </div>
 
           <button

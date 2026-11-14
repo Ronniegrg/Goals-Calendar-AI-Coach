@@ -145,6 +145,24 @@ function getInitialData(userEmail: string) {
         timestamp: new Date().toISOString()
       }
     ],
+    coachChatSessions: [
+      {
+        id: "chat_default",
+        title: "Routine Coaching Chat",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        persona: "mentor" as const,
+        messages: [
+          {
+            id: "m1",
+            sender: "coach" as const,
+            text: "Hello! I am your AI Routine Coach. Create your own goals and ask me to optimize your workout schedule, suggest study intervals, or analyze your completion consistency!",
+            timestamp: new Date().toISOString()
+          }
+        ]
+      }
+    ],
+    activeCoachChatId: "chat_default",
     coachPersona: "mentor"
   };
 }
@@ -167,6 +185,34 @@ function readDb(email: string) {
     // Return user data if matches, merging with defaults to guarantee no undefined fields
     if (db[email]) {
       const userRecord = db[email];
+      const resolvedMessages = Array.isArray(userRecord.coachMessages)
+        ? userRecord.coachMessages
+        : initial.coachMessages;
+      const firstUserMsg = resolvedMessages.find((m: any) => m?.sender === "user" && typeof m?.text === "string");
+      const migratedTitle = firstUserMsg
+        ? (firstUserMsg.text.trim().length > 42
+            ? `${firstUserMsg.text.trim().slice(0, 40)}...`
+            : firstUserMsg.text.trim())
+        : "Routine Coaching Chat";
+      const resolvedSessions =
+        Array.isArray(userRecord.coachChatSessions) && userRecord.coachChatSessions.length > 0
+          ? userRecord.coachChatSessions
+          : [
+              {
+                id: "chat_default",
+                title: migratedTitle,
+                createdAt: resolvedMessages[0]?.timestamp || new Date().toISOString(),
+                updatedAt: resolvedMessages[resolvedMessages.length - 1]?.timestamp || new Date().toISOString(),
+                persona: userRecord.coachPersona || "mentor",
+                messages: resolvedMessages
+              }
+            ];
+      const resolvedActiveChatId =
+        typeof userRecord.activeCoachChatId === "string" &&
+        resolvedSessions.some((s: any) => s.id === userRecord.activeCoachChatId)
+          ? userRecord.activeCoachChatId
+          : resolvedSessions[0].id;
+
       return {
         ...initial,
         ...userRecord,
@@ -176,7 +222,9 @@ function readDb(email: string) {
           ? userRecord.availability 
           : initial.availability,
         notifications: Array.isArray(userRecord.notifications) ? userRecord.notifications : initial.notifications,
-        coachMessages: Array.isArray(userRecord.coachMessages) ? userRecord.coachMessages : initial.coachMessages,
+        coachMessages: resolvedMessages,
+        coachChatSessions: resolvedSessions,
+        activeCoachChatId: resolvedActiveChatId,
         userEmail: email,
         lastSyncedAt: userRecord.lastSyncedAt || new Date().toISOString()
       };
@@ -709,6 +757,33 @@ app.post("/api/coach/digest", async (req, res) => {
   const totalScheduled = events.length;
   const completionRate = totalScheduled > 0 ? Math.round((completedEvents.length / totalScheduled) * 100) : 78;
 
+  const fallbackAdjustments = [
+    {
+      id: "adj_freq",
+      text: "Reduce daily session frequency to prevent task backlog",
+      actionType: "reduce_frequency",
+      actionLabel: "Balance Daily Frequency",
+      impact: "Caps next week to max 2 goal sessions/day & spreads excess load",
+      params: { maxSessionsPerDay: 2 }
+    },
+    {
+      id: "adj_review",
+      text: "Prioritize the 'Review' subtasks to consolidate learning before moving to new material",
+      actionType: "prioritize_review",
+      actionLabel: "Prioritize Review First",
+      impact: "Moves Review steps to Step 1 across Study goals & next week's sessions",
+      params: { targetGoalScope: "study" }
+    },
+    {
+      id: "adj_catchup",
+      text: "Incorporate a dedicated 'catch-up' day to clear pending sessions without adding new ones",
+      actionType: "catch_up_day",
+      actionLabel: "Set Catch-Up Day",
+      impact: "Reserves a day next week to clear pending tasks without adding new ones",
+      params: { catchUpDayOfWeek: 5 }
+    }
+  ];
+
   if (!keyAvailable) {
     await new Promise((r) => setTimeout(r, 600));
     return res.json({
@@ -716,15 +791,11 @@ app.post("/api/coach/digest", async (req, res) => {
       peakFocusWindow: "09:00 - 11:30 AM (92% completion rate)",
       reflectionSummary: "Your cognitive focus was exceptionally strong during morning slots (08:00–11:30 AM), achieving a 92% completion rate across Python Dev and React Masterclass sessions. Afternoon slots experienced slight dip friction.",
       productivityPatterns: [
-        "🔥 Peak Cognitive Focus: Morning blocks (09:00 - 11:30 AM) show highest completion rate (92%) and zero distraction skips.",
-        "🏋️ Physical Routine Momentum: Morning Cardio sessions executed consistently when scheduled before 09:00 AM.",
-        "⚠️ Evening Fatigue Dip: Sessions scheduled after 20:30 PM saw a 35% higher drop rate due to cognitive fatigue."
+        "Peak Cognitive Focus: Morning blocks (09:00 - 11:30 AM) show highest completion rate (92%) and zero distraction skips.",
+        "Physical Routine Momentum: Morning Cardio sessions executed consistently when scheduled before 09:00 AM.",
+        "Evening Fatigue Dip: Sessions scheduled after 20:30 PM saw a 35% higher drop rate due to cognitive fatigue."
       ],
-      recommendedAdjustments: [
-        "🎯 Place High-Focus Goals (e.g. Python & AI Masterclass) exclusively in the 09:00–11:30 AM peak energy slot.",
-        "🍵 Shift Light Routines & Stretching to the 14:00–15:30 PM post-lunch recovery window.",
-        "⏱️ Cap evening study blocks at 45 minutes and avoid scheduling past 21:00 PM."
-      ]
+      recommendedAdjustments: fallbackAdjustments
     });
   }
 
@@ -736,11 +807,29 @@ Analyze the user's goals and completed events. Return JSON with the following EX
   "peakFocusWindow": string,
   "reflectionSummary": string,
   "productivityPatterns": [string, string, string],
-  "recommendedAdjustments": [string, string, string]
+  "recommendedAdjustments": [
+    {
+      "id": "string",
+      "text": "clear recommendation sentence",
+      "actionType": "reduce_frequency" | "prioritize_review" | "catch_up_day" | "shift_peak_window" | "cap_duration" | "add_buffers" | "general_rebalance",
+      "actionLabel": "short 2-4 word action button label",
+      "impact": "concise 1-line preview of what changes next week",
+      "params": {
+        "maxSessionsPerDay": number (optional),
+        "catchUpDayOfWeek": number 0-6 (optional),
+        "peakStartHour": number 0-23 (optional),
+        "peakEndHour": number 0-23 (optional),
+        "maxDurationMinutes": number (optional),
+        "cutoffHour": number 0-23 (optional),
+        "bufferMinutes": number (optional),
+        "targetGoalScope": "all" | "study" | "light_routines" | "evening" (optional)
+      }
+    }
+  ]
 }
-Return ONLY valid JSON. No markdown syntax wrapper.`;
+Provide 3 high-impact, concrete recommendedAdjustments tailored to the user's real patterns. Return ONLY valid JSON. No markdown syntax wrapper.`;
 
-    const userPrompt = `Goals: ${JSON.stringify(goals)}\nCompleted/Scheduled Events: ${JSON.stringify(events)}`;
+    const userPrompt = `Goals: ${JSON.stringify(goals)}\nCompleted/Scheduled Events: ${JSON.stringify(events)}\nAvailability: ${JSON.stringify(availability)}`;
     const result = await generateWithFallback({
       primaryModel: "gemini-3.8-flash",
       fallbackModel: "gemini-3.1-flash-lite",
@@ -765,17 +854,13 @@ Return ONLY valid JSON. No markdown syntax wrapper.`;
   return res.json({
     productivityScore: completionRate,
     peakFocusWindow: "09:00 - 11:30 AM (High Focus Peak)",
-    reflectionSummary: "Solid weekly progress! You maintained strong focus during morning technical blocks, while evening sessions required extra discipline.",
+    reflectionSummary: "Solid weekly progress! You maintained strong focus during technical study blocks, while overloaded days and pending tasks created avoidable friction.",
     productivityPatterns: [
-      "Morning technical study blocks achieve highest completion consistency.",
-      "Physical workout blocks correlate with improved afternoon energy levels.",
-      "Late night study slots carry higher risk of postponement."
+      "Technical study blocks achieve strongest completion consistency in dedicated focus windows.",
+      "High consistency across core technical domains when scheduled cleanly.",
+      "Pending tasks accumulate quickly when daily scheduling density increases."
     ],
-    recommendedAdjustments: [
-      "Schedule high-focus learning goals during your peak 09:00-11:30 AM energy window.",
-      "Reserve 14:00-16:00 PM for moderate tasks and active recovery.",
-      "Maintain consistent sleep hygiene by ending study blocks by 21:30 PM."
-    ]
+    recommendedAdjustments: fallbackAdjustments
   });
 });
 

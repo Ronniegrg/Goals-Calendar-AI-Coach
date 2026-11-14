@@ -45,6 +45,8 @@ export interface SubTask {
   title: string;
   completed: boolean;
   durationMinutes?: number;
+  carryoverNote?: string;
+  carryoverNoteDate?: string;
 }
 
 export interface SessionSubStep {
@@ -53,6 +55,8 @@ export interface SessionSubStep {
   durationMinutes: number;
   description?: string;
   completed?: boolean;
+  carryoverNote?: string;
+  carryoverNoteDate?: string;
 }
 
 export interface Goal {
@@ -199,6 +203,15 @@ export interface CoachMessage {
   timestamp: string;
 }
 
+export interface CoachChatSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  persona?: "mentor" | "drill" | "data";
+  messages: CoachMessage[];
+}
+
 export interface CustomSessionTemplate {
   id: string;
   name: string;
@@ -260,6 +273,8 @@ export interface SyncData {
   availability: AvailabilityWindow[];
   notifications: AppNotification[];
   coachMessages: CoachMessage[];
+  coachChatSessions?: CoachChatSession[];
+  activeCoachChatId?: string;
   userEmail: string;
   lastSyncedAt?: string;
   coachPersona?: "mentor" | "drill" | "data";
@@ -403,4 +418,31 @@ export interface SentinelTelemetry {
   lastEvaluatedAt: string;
 }
 
+export type DigestAdjustmentActionType =
+  | "reduce_frequency"
+  | "prioritize_review"
+  | "catch_up_day"
+  | "shift_peak_window"
+  | "cap_duration"
+  | "add_buffers"
+  | "general_rebalance";
 
+export interface DigestAdjustmentParams {
+  maxSessionsPerDay?: number;
+  catchUpDayOfWeek?: number; // 0 (Sun) - 6 (Sat)
+  peakStartHour?: number;
+  peakEndHour?: number;
+  maxDurationMinutes?: number;
+  cutoffHour?: number;
+  bufferMinutes?: number;
+  targetGoalScope?: "all" | "study" | "light_routines" | "evening";
+}
+
+export interface DigestAdjustmentItem {
+  id: string;
+  text: string;
+  actionType: DigestAdjustmentActionType;
+  actionLabel?: string;
+  impact?: string;
+  params?: DigestAdjustmentParams;
+}

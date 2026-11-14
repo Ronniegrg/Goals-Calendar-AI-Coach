@@ -29,10 +29,33 @@ import {
   Minimize2,
   ChevronDown,
   SlidersHorizontal,
-  Trophy
+  Trophy,
+  RotateCcw,
+  CheckCircle2,
+  MessageSquarePlus,
+  History
 } from "lucide-react";
-import { CoachMessage, Goal, CalendarEvent, AvailabilityWindow, GoalType, TimePreference, UserEnergyProfile } from "../types";
+import {
+  CoachMessage,
+  CoachChatSession,
+  Goal,
+  CalendarEvent,
+  AvailabilityWindow,
+  GoalType,
+  TimePreference,
+  UserEnergyProfile,
+  DigestAdjustmentItem,
+  DigestAdjustmentParams
+} from "../types";
 import GoalRecommendationEngine from "./GoalRecommendationEngine";
+import {
+  applyAdjustmentForNextWeek,
+  getNextWeekRange,
+  normalizeDigestAdjustments,
+  pickOptimalCatchUpDay,
+  previewAdjustmentForNextWeek,
+  SHORT_DAY_NAMES
+} from "../lib/digestAdjustments";
 
 export interface ParsedGoalAction {
   action: "create_goal" | "update_goal" | "delete_goal" | "auto_resolve_conflicts" | "launch_timer";
@@ -283,6 +306,11 @@ interface AICoachProps {
   events: CalendarEvent[];
   availability: AvailabilityWindow[];
   coachMessages: CoachMessage[];
+  coachChatSessions?: CoachChatSession[];
+  activeCoachChatId?: string;
+  onStartNewChat?: () => void;
+  onSelectChat?: (chatId: string) => void;
+  onDeleteChat?: (chatId: string) => void;
   onAddMessage: (msg: CoachMessage) => void;
   onClearMessages: () => void;
   coachPersona?: "mentor" | "drill" | "data";
@@ -294,6 +322,13 @@ interface AICoachProps {
   userEnergyProfile?: UserEnergyProfile;
   onBulkAddEvents?: (newEvents: CalendarEvent[]) => void;
   onUpdateEvents?: (events: CalendarEvent[]) => void;
+  onApplyBatchAdjustment?: (
+    updatedGoals: Goal[],
+    updatedEvents: CalendarEvent[],
+    notificationTitle?: string,
+    notificationMessage?: string
+  ) => void;
+  onNavigateToCalendar?: (targetDate?: Date, eventId?: string) => void;
   onAddNotification?: (title: string, message: string, type: any) => void;
   externalPrompt?: string;
   onClearExternalPrompt?: () => void;
@@ -308,7 +343,16 @@ interface DigestData {
   peakFocusWindow: string;
   reflectionSummary: string;
   productivityPatterns: string[];
-  recommendedAdjustments: string[];
+  recommendedAdjustments: Array<DigestAdjustmentItem | string>;
+}
+
+interface AppliedAdjustmentRecord {
+  summary: string;
+  details: string[];
+  targetDate: Date;
+  highlightedEventId?: string;
+  prevGoals: Goal[];
+  prevEvents: CalendarEvent[];
 }
 
 export default function AICoach({
@@ -316,6 +360,11 @@ export default function AICoach({
   events,
   availability,
   coachMessages,
+  coachChatSessions = [],
+  activeCoachChatId,
+  onStartNewChat,
+  onSelectChat,
+  onDeleteChat,
   onAddMessage,
   onClearMessages,
   coachPersona = "mentor",
@@ -326,6 +375,9 @@ export default function AICoach({
   onDeleteGoal,
   userEnergyProfile,
   onBulkAddEvents,
+  onUpdateEvents,
+  onApplyBatchAdjustment,
+  onNavigateToCalendar,
   onAddNotification,
   externalPrompt,
   onClearExternalPrompt,
@@ -337,11 +389,42 @@ export default function AICoach({
   const [activeSubTab, setActiveSubTab] = useState<"chat" | "digest" | "energy" | "recommendations">("chat");
   const [appliedGoalActions, setAppliedGoalActions] = useState<Record<string, boolean>>({});
   const [showPromptsDrawer, setShowPromptsDrawer] = useState<boolean>(false);
+  const [showHistoryDrawer, setShowHistoryDrawer] = useState<boolean>(false);
 
   // Chat State
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+
+  const activeChatSession = React.useMemo(
+    () => coachChatSessions.find((s) => s.id === activeCoachChatId) || coachChatSessions[0],
+    [coachChatSessions, activeCoachChatId]
+  );
+
+  const handleTriggerNewChat = () => {
+    setActiveSubTab("chat");
+    setShowHistoryDrawer(false);
+    setShowPromptsDrawer(false);
+    setInputText("");
+    if (onStartNewChat) {
+      onStartNewChat();
+    } else {
+      onClearMessages();
+    }
+    setTimeout(() => chatInputRef.current?.focus(), 60);
+  };
+
+  const formatChatTimestamp = (iso?: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const now = new Date();
+    const isSameDay = d.toDateString() === now.toDateString();
+    return isSameDay
+      ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleDateString([], { month: "short", day: "numeric" });
+  };
 
   // Sync external prompt when passed from Proactive Sentinel
   useEffect(() => {
@@ -355,6 +438,8 @@ export default function AICoach({
   // Digest State
   const [digestData, setDigestData] = useState<DigestData | null>(null);
   const [loadingDigest, setLoadingDigest] = useState(false);
+  const [adjustmentParamsMap, setAdjustmentParamsMap] = useState<Record<string, Partial<DigestAdjustmentParams>>>({});
+  const [appliedAdjustments, setAppliedAdjustments] = useState<Record<string, AppliedAdjustmentRecord>>({});
 
   // Energy Scheduler State
   const [energyProfile, setEnergyProfile] = useState<"lark" | "owl" | "balanced">("lark");
@@ -458,12 +543,130 @@ export default function AICoach({
       if (res.ok && contentType.includes("application/json")) {
         const data = await res.json();
         setDigestData(data);
+        setAppliedAdjustments({});
+        setAdjustmentParamsMap({});
       }
     } catch (err) {
       console.warn("Notice: could not load online digest:", err);
     } finally {
       setLoadingDigest(false);
     }
+  };
+
+  const nextWeekRange = React.useMemo(() => getNextWeekRange(), []);
+
+  const normalizedAdjustments = React.useMemo(
+    () => normalizeDigestAdjustments(digestData?.recommendedAdjustments, digestData?.peakFocusWindow),
+    [digestData]
+  );
+
+  const commitAdjustmentState = (
+    nextGoals: Goal[],
+    nextEvents: CalendarEvent[],
+    title: string,
+    message: string
+  ) => {
+    if (onApplyBatchAdjustment) {
+      onApplyBatchAdjustment(nextGoals, nextEvents, title, message);
+    } else {
+      onUpdateEvents?.(nextEvents);
+      onAddNotification?.(title, message, "success");
+    }
+  };
+
+  const handleApplyDigestAdjustment = (adj: DigestAdjustmentItem) => {
+    const prevGoals = goals.map((g) => ({ ...g }));
+    const prevEvents = events.map((e) => ({ ...e }));
+
+    const result = applyAdjustmentForNextWeek(
+      adj,
+      goals,
+      events,
+      availability,
+      userEnergyProfile,
+      adjustmentParamsMap[adj.id]
+    );
+
+    commitAdjustmentState(
+      result.updatedGoals,
+      result.updatedEvents,
+      "Next Week Adjusted",
+      result.summary
+    );
+
+    setAppliedAdjustments((prev) => ({
+      ...prev,
+      [adj.id]: {
+        summary: result.summary,
+        details: result.details,
+        targetDate: result.targetDate,
+        highlightedEventId: result.highlightedEventId,
+        prevGoals,
+        prevEvents
+      }
+    }));
+  };
+
+  const handleUndoDigestAdjustment = (adjId: string) => {
+    const record = appliedAdjustments[adjId];
+    if (!record) return;
+
+    commitAdjustmentState(
+      record.prevGoals,
+      record.prevEvents,
+      "Adjustment Reverted",
+      "Restored your previous goals and next week's schedule."
+    );
+
+    setAppliedAdjustments((prev) => {
+      const next = { ...prev };
+      delete next[adjId];
+      return next;
+    });
+  };
+
+  const handleApplyAllDigestAdjustments = () => {
+    const pending = normalizedAdjustments.filter((a) => !appliedAdjustments[a.id]);
+    if (pending.length === 0) return;
+
+    const initialPrevGoals = goals.map((g) => ({ ...g }));
+    const initialPrevEvents = events.map((e) => ({ ...e }));
+
+    let workingGoals = goals;
+    let workingEvents = events;
+    const newRecords: Record<string, AppliedAdjustmentRecord> = {};
+
+    for (const adj of pending) {
+      const stepPrevGoals = workingGoals.map((g) => ({ ...g }));
+      const stepPrevEvents = workingEvents.map((e) => ({ ...e }));
+      const result = applyAdjustmentForNextWeek(
+        adj,
+        workingGoals,
+        workingEvents,
+        availability,
+        userEnergyProfile,
+        adjustmentParamsMap[adj.id]
+      );
+      workingGoals = result.updatedGoals;
+      workingEvents = result.updatedEvents;
+      newRecords[adj.id] = {
+        summary: result.summary,
+        details: result.details,
+        targetDate: result.targetDate,
+        highlightedEventId: result.highlightedEventId,
+        prevGoals: adj === pending[0] ? initialPrevGoals : stepPrevGoals,
+        prevEvents: adj === pending[0] ? initialPrevEvents : stepPrevEvents
+      };
+    }
+
+    commitAdjustmentState(
+      workingGoals,
+      workingEvents,
+      "All Next-Week Adjustments Applied",
+      `Applied ${pending.length} coach recommendations to your schedule (${nextWeekRange.label}).`
+    );
+
+    setAppliedAdjustments((prev) => ({ ...prev, ...newRecords }));
   };
 
   // Run Energy Schedule
@@ -611,6 +814,38 @@ export default function AICoach({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
+              id="btn_floating_new_chat"
+              onClick={handleTriggerNewChat}
+              className="px-2 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow-sm shadow-indigo-600/25"
+              title="Start a New Chat (saves current chat to history)"
+            >
+              <MessageSquarePlus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline text-[10.5px]">New</span>
+            </button>
+
+            <button
+              type="button"
+              id="btn_floating_chat_history"
+              onClick={() => {
+                setActiveSubTab("chat");
+                setShowPromptsDrawer(false);
+                setShowHistoryDrawer(prev => !prev);
+              }}
+              className={`px-2 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                showHistoryDrawer
+                  ? "bg-indigo-600 text-white border-indigo-400/50"
+                  : "bg-white/5 text-slate-300 hover:text-white border-white/10 hover:bg-white/10"
+              }`}
+              title="Browse Saved Chat History"
+            >
+              <History className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline text-[10.5px]">
+                History{coachChatSessions.length > 0 ? ` (${coachChatSessions.length})` : ""}
+              </span>
+            </button>
+
+            <button
+              type="button"
               id="coach_open_report_card_btn"
               onClick={() => {
                 window.dispatchEvent(new CustomEvent("open_weekly_habit_report"));
@@ -624,7 +859,10 @@ export default function AICoach({
 
             <button
               type="button"
-              onClick={() => setShowPromptsDrawer(prev => !prev)}
+              onClick={() => {
+                setShowHistoryDrawer(false);
+                setShowPromptsDrawer(prev => !prev);
+              }}
               className={`p-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
                 showPromptsDrawer 
                   ? "bg-indigo-600 text-white border-indigo-400/50" 
@@ -793,6 +1031,69 @@ export default function AICoach({
       {activeSubTab === "chat" && (
         isFloatingMode && !isExpanded ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden" id="aicoach_container_floating">
+            {/* Saved Chat History Drawer (if opened) */}
+            {showHistoryDrawer && (
+              <div className="p-3 bg-slate-900 border-b border-white/10 space-y-2 animate-in fade-in slide-in-from-top-2 shrink-0 max-h-60 overflow-y-auto" id="floating_chat_history_drawer">
+                <div className="flex items-center justify-between gap-2 pb-1">
+                  <span className="text-[10.5px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <History className="w-3.5 h-3.5 text-indigo-400" />
+                    Saved Chats ({coachChatSessions.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleTriggerNewChat}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10.5px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <MessageSquarePlus className="w-3 h-3" />
+                    <span>New Chat</span>
+                  </button>
+                </div>
+
+                <div className="space-y-1.5">
+                  {coachChatSessions.map((session) => {
+                    const isActive = session.id === (activeChatSession?.id || activeCoachChatId);
+                    return (
+                      <div
+                        key={session.id}
+                        className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border transition ${
+                          isActive
+                            ? "bg-indigo-500/20 border-indigo-400/50"
+                            : "bg-white/5 border-white/10 hover:bg-white/10"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectChat?.(session.id);
+                            setShowHistoryDrawer(false);
+                          }}
+                          className="flex-1 text-left min-w-0 cursor-pointer"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {isActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />}
+                            <span className="text-xs font-bold text-white truncate">{session.title}</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 block mt-0.5">
+                            {session.messages.length} msg{session.messages.length === 1 ? "" : "s"} • {formatChatTimestamp(session.updatedAt)}
+                          </span>
+                        </button>
+                        {onDeleteChat && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteChat(session.id)}
+                            className="p-1 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer shrink-0"
+                            title="Delete this chat"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Quick Tools & Persona Drawer (if opened) */}
             {showPromptsDrawer && (
               <div className="p-3 bg-slate-900 border-b border-white/10 space-y-2.5 animate-in fade-in slide-in-from-top-2 shrink-0">
@@ -936,6 +1237,7 @@ export default function AICoach({
                 className="flex items-center gap-2"
               >
                 <input
+                  ref={chatInputRef}
                   type="text"
                   id="coach_message_input"
                   value={inputText}
@@ -1086,6 +1388,65 @@ export default function AICoach({
                 </div>
               </div>
 
+              {/* Saved Chat History Browser */}
+              <div className="space-y-2 border-t border-white/10 pt-3" id="desktop_chat_history_section">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <History className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Chat History ({coachChatSessions.length})</span>
+                  </h4>
+                  <button
+                    type="button"
+                    id="btn_sidebar_new_chat"
+                    onClick={handleTriggerNewChat}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer shadow-xs"
+                  >
+                    <MessageSquarePlus className="w-3 h-3" />
+                    <span>New Chat</span>
+                  </button>
+                </div>
+
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {coachChatSessions.map((session) => {
+                    const isActive = session.id === (activeChatSession?.id || activeCoachChatId);
+                    return (
+                      <div
+                        key={session.id}
+                        className={`group flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border transition ${
+                          isActive
+                            ? "bg-indigo-500/20 border-indigo-400/50"
+                            : "bg-white/5 border-white/10 hover:bg-white/10"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onSelectChat?.(session.id)}
+                          className="flex-1 text-left min-w-0 cursor-pointer"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {isActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />}
+                            <span className="text-xs font-bold text-white truncate">{session.title}</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 block mt-0.5">
+                            {session.messages.length} msg{session.messages.length === 1 ? "" : "s"} • {formatChatTimestamp(session.updatedAt)}
+                          </span>
+                        </button>
+                        {onDeleteChat && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteChat(session.id)}
+                            className="p-1 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer shrink-0 opacity-70 group-hover:opacity-100"
+                            title="Delete saved chat"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
             </div>
 
             {/* Bottom Actions */}
@@ -1097,7 +1458,7 @@ export default function AICoach({
                 onClick={onClearMessages}
                 className="text-xs text-slate-400 hover:text-rose-400 transition font-bold cursor-pointer py-1 px-2 rounded-lg hover:bg-white/5"
               >
-                Clear Chat History
+                Reset Current Chat
               </button>
             </div>
           </div>
@@ -1106,19 +1467,32 @@ export default function AICoach({
           <div className="coach-chat-panel lg:col-span-8 bg-slate-900/80 backdrop-blur-md border border-white/15 rounded-3xl flex flex-col h-full overflow-hidden shadow-xl" id="coach_chat_panel">
             
             {/* Chat Log Header Status */}
-            <div className="coach-chat-header px-5 py-3 border-b border-white/10 bg-slate-950/60 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
-                <span className="relative flex h-2.5 w-2.5">
+            <div className="coach-chat-header px-5 py-3 border-b border-white/10 bg-slate-950/60 flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                 </span>
-                <span className="font-bold text-white">Active Routine Session</span>
-                <span className="text-slate-400">• {goals.length} Goals Tracked</span>
+                <span className="font-bold text-white truncate">
+                  {activeChatSession?.title || "Active Routine Session"}
+                </span>
+                <span className="text-slate-400 shrink-0 hidden sm:inline">• {goals.length} Goals Tracked</span>
               </div>
 
-              <span className="text-xs text-indigo-300 font-medium">
-                Persona: <strong className="text-white capitalize">{coachPersona}</strong>
-              </span>
+              <div className="flex items-center gap-2.5 shrink-0">
+                <span className="text-xs text-indigo-300 font-medium hidden sm:inline">
+                  Persona: <strong className="text-white capitalize">{coachPersona}</strong>
+                </span>
+                <button
+                  type="button"
+                  id="btn_desktop_new_chat"
+                  onClick={handleTriggerNewChat}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm shadow-indigo-600/20 cursor-pointer"
+                >
+                  <MessageSquarePlus className="w-3.5 h-3.5" />
+                  <span>New Chat</span>
+                </button>
+              </div>
             </div>
 
             {/* Chat Message Stream */}
@@ -1218,6 +1592,7 @@ export default function AICoach({
                 className="flex items-center gap-2.5"
               >
                 <input
+                  ref={chatInputRef}
                   type="text"
                   id="coach_message_input"
                   value={inputText}
@@ -1340,18 +1715,198 @@ export default function AICoach({
 
                 {/* Recommended Adjustments */}
                 <div className="bg-slate-900/80 backdrop-blur-md border border-white/15 p-5 rounded-3xl space-y-4 shadow-xl">
-                  <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2 border-b border-white/10 pb-3">
-                    <Zap className="w-4 h-4 text-amber-400" />
-                    Recommended Adjustments for Next Week
-                  </h4>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                    <div className="space-y-0.5">
+                      <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-amber-400" />
+                        Recommended Adjustments for Next Week
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-medium pl-6">
+                        Target Window: {nextWeekRange.label}
+                      </p>
+                    </div>
+
+                    {normalizedAdjustments.length > 0 && (
+                      normalizedAdjustments.every((a) => !!appliedAdjustments[a.id]) ? (
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-xl bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          All Applied
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          id="apply_all_digest_adjustments_btn"
+                          onClick={handleApplyAllDigestAdjustments}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-md shadow-indigo-600/20 cursor-pointer shrink-0"
+                        >
+                          <Zap className="w-3.5 h-3.5" />
+                          <span>Apply All</span>
+                        </button>
+                      )
+                    )}
+                  </div>
 
                   <ul className="space-y-3">
-                    {digestData.recommendedAdjustments?.map((adj, idx) => (
-                      <li key={idx} className="bg-slate-950/70 border border-white/10 p-3.5 rounded-2xl text-xs sm:text-sm text-slate-100 font-medium flex items-start gap-3">
-                        <ChevronRight className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                        <span>{adj}</span>
-                      </li>
-                    ))}
+                    {normalizedAdjustments.map((adj) => {
+                      const customParams = adjustmentParamsMap[adj.id];
+                      const preview = previewAdjustmentForNextWeek(
+                        adj,
+                        goals,
+                        events,
+                        availability,
+                        userEnergyProfile,
+                        customParams
+                      );
+                      const appliedRecord = appliedAdjustments[adj.id];
+                      const activeCatchUpDay =
+                        customParams?.catchUpDayOfWeek ??
+                        preview.defaultCatchUpDay ??
+                        adj.params?.catchUpDayOfWeek ??
+                        pickOptimalCatchUpDay(events, nextWeekRange);
+                      const activeMaxPerDay =
+                        customParams?.maxSessionsPerDay ??
+                        adj.params?.maxSessionsPerDay ??
+                        2;
+
+                      return (
+                        <li
+                          key={adj.id}
+                          id={`digest_adjustment_card_${adj.id}`}
+                          className={`p-3.5 rounded-2xl border transition-all space-y-2.5 ${
+                            appliedRecord
+                              ? "bg-emerald-500/10 border-emerald-500/40"
+                              : "bg-slate-950/70 border-white/10 hover:border-indigo-400/40"
+                          }`}
+                        >
+                          <div className="flex items-start gap-2.5 text-xs sm:text-sm text-slate-100 font-semibold leading-snug">
+                            {appliedRecord ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                            )}
+                            <span>{adj.text}</span>
+                          </div>
+
+                          {/* Preview impact badge when not yet applied */}
+                          {!appliedRecord && (
+                            <div className="pl-6 space-y-2">
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-300 font-medium">
+                                <span className="px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25 font-bold">
+                                  {preview.badgeText}
+                                </span>
+                                <span className="text-slate-400">{preview.headline}</span>
+                              </div>
+
+                              {/* Quick inline day selector for Catch-Up Day */}
+                              {adj.actionType === "catch_up_day" && (
+                                <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1">
+                                    Catch-Up Day:
+                                  </span>
+                                  {SHORT_DAY_NAMES.map((dayLabel, dow) => (
+                                    <button
+                                      key={dow}
+                                      type="button"
+                                      onClick={() =>
+                                        setAdjustmentParamsMap((prev) => ({
+                                          ...prev,
+                                          [adj.id]: { ...prev[adj.id], catchUpDayOfWeek: dow }
+                                        }))
+                                      }
+                                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition cursor-pointer border ${
+                                        activeCatchUpDay === dow
+                                          ? "bg-indigo-600 text-white border-indigo-400 shadow-xs"
+                                          : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10"
+                                      }`}
+                                    >
+                                      {dayLabel}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Quick inline cap selector for Reduce Frequency */}
+                              {adj.actionType === "reduce_frequency" && (
+                                <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1">
+                                    Daily Cap:
+                                  </span>
+                                  {[1, 2, 3].map((cap) => (
+                                    <button
+                                      key={cap}
+                                      type="button"
+                                      onClick={() =>
+                                        setAdjustmentParamsMap((prev) => ({
+                                          ...prev,
+                                          [adj.id]: { ...prev[adj.id], maxSessionsPerDay: cap }
+                                        }))
+                                      }
+                                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition cursor-pointer border ${
+                                        activeMaxPerDay === cap
+                                          ? "bg-indigo-600 text-white border-indigo-400 shadow-xs"
+                                          : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10"
+                                      }`}
+                                    >
+                                      Max {cap}/day
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="pt-1 flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  id={`apply_digest_adj_${adj.id}`}
+                                  onClick={() => handleApplyDigestAdjustment(adj)}
+                                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm shadow-indigo-600/20 cursor-pointer"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>{adj.actionLabel || "Apply for Next Week"}</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Applied confirmation + exact changes + Undo & View in Calendar */}
+                          {appliedRecord && (
+                            <div className="pl-6 space-y-2">
+                              <div className="text-[11px] text-emerald-200 font-semibold space-y-1">
+                                {appliedRecord.details.map((d, di) => (
+                                  <p key={di} className="leading-snug">• {d}</p>
+                                ))}
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                {onNavigateToCalendar && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onNavigateToCalendar(
+                                        appliedRecord.targetDate,
+                                        appliedRecord.highlightedEventId
+                                      )
+                                    }
+                                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg transition flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Calendar className="w-3 h-3" />
+                                    <span>View Next Week</span>
+                                  </button>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleUndoDigestAdjustment(adj.id)}
+                                  className="text-[11px] font-bold px-2.5 py-1 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-slate-200 transition flex items-center gap-1 cursor-pointer"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Undo</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
 

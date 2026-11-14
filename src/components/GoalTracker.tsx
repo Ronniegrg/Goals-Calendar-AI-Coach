@@ -39,7 +39,8 @@ import {
   Brain,
   Award,
   Zap,
-  BatteryCharging
+  BatteryCharging,
+  StickyNote
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, SessionSubStep, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits, GoalKnowledgeHub } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
@@ -230,6 +231,9 @@ export default function GoalTracker({
   const [knowledgeHubGoal, setKnowledgeHubGoal] = useState<Goal | null>(null);
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
   const [editingMilestoneText, setEditingMilestoneText] = useState<string>("");
+  const [editingSubtaskNote, setEditingSubtaskNote] = useState<{ goalId: string; stepId: string; text: string } | null>(null);
+  const [showNewSubtaskNoteForGoal, setShowNewSubtaskNoteForGoal] = useState<Record<string, boolean>>({});
+  const [newSubtaskNoteForGoal, setNewSubtaskNoteForGoal] = useState<Record<string, string>>({});
   const [generatingMilestonesGoalId, setGeneratingMilestonesGoalId] = useState<string | null>(null);
 
   // Goal Hold / Freeze Modal State
@@ -328,13 +332,24 @@ export default function GoalTracker({
 
     const rawSubSteps = g.subSteps;
     const rawSubtasks = g.subtasks;
-    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? rawSubSteps : undefined;
+    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0
+      ? rawSubSteps.map(s => {
+          const matchingTask = rawSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
+          return {
+            ...s,
+            carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
+            carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
+          };
+        })
+      : undefined;
     if (!resolvedSubSteps && rawSubtasks && rawSubtasks.length > 0) {
       resolvedSubSteps = rawSubtasks.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
-        completed: s.completed || false
+        completed: s.completed || false,
+        carryoverNote: s.carryoverNote,
+        carryoverNoteDate: s.carryoverNoteDate
       }));
     }
 
@@ -351,9 +366,16 @@ export default function GoalTracker({
     });
   };
 
+  const hasGoalOrStepNotes = (g: Goal) => {
+    if (g.lastSessionNote && g.lastSessionNote.trim().length > 0) return true;
+    if ((g.subtasks || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0)) return true;
+    if ((g.subSteps || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0)) return true;
+    return false;
+  };
+
   const handleStartTimer = (g: Goal) => {
-    // If goal has saved carryover note, show where to start briefing
-    if (g.lastSessionNote && g.lastSessionNote.trim().length > 0) {
+    // If goal or any step has a saved carryover note, show where to start briefing
+    if (hasGoalOrStepNotes(g)) {
       setBriefingTarget({ goal: g, isStudyAhead: false });
       return;
     }
@@ -361,8 +383,8 @@ export default function GoalTracker({
   };
 
   const handleStartStudyAhead = (g: Goal) => {
-    // If goal has saved carryover note, show where to start briefing
-    if (g.lastSessionNote && g.lastSessionNote.trim().length > 0) {
+    // If goal or any step has a saved carryover note, show where to start briefing
+    if (hasGoalOrStepNotes(g)) {
       setBriefingTarget({ goal: g, isStudyAhead: true });
       return;
     }
@@ -518,7 +540,9 @@ export default function GoalTracker({
                 id: s.id,
                 title: s.title,
                 durationMinutes: s.durationMinutes || 15,
-                completed: s.completed || false
+                completed: s.completed || false,
+                carryoverNote: s.carryoverNote,
+                carryoverNoteDate: s.carryoverNoteDate
               })) : undefined)
             });
             booked++;
@@ -678,9 +702,54 @@ export default function GoalTracker({
       id: s.id,
       title: s.title,
       durationMinutes: s.durationMinutes || 15,
-      completed: s.completed || false
+      completed: s.completed || false,
+      carryoverNote: s.carryoverNote,
+      carryoverNoteDate: s.carryoverNoteDate
     }));
     onEditGoal(goal.id, { subtasks: list, subSteps: mappedSubSteps });
+  };
+
+  const handleUpdateGoalSubtasksSynced = (goalId: string, updatedSubtasks: SubTask[]) => {
+    const mappedSubSteps: SessionSubStep[] = updatedSubtasks.map(s => ({
+      id: s.id,
+      title: s.title,
+      durationMinutes: s.durationMinutes || 15,
+      completed: s.completed || false,
+      carryoverNote: s.carryoverNote,
+      carryoverNoteDate: s.carryoverNoteDate
+    }));
+    onEditGoal(goalId, { subtasks: updatedSubtasks, subSteps: mappedSubSteps });
+  };
+
+  const handleSaveGoalStepCarryoverNote = (goal: Goal, stepId: string, stepTitle: string, noteText: string) => {
+    const trimmed = noteText.trim();
+    const nowIso = new Date().toISOString();
+    const normTitle = stepTitle.trim().toLowerCase();
+    const matches = (s: { id: string; title: string }) =>
+      s.id === stepId || (normTitle.length > 0 && s.title.trim().toLowerCase() === normTitle);
+
+    const updatedSubtasks: SubTask[] = (goal.subtasks || []).map(s =>
+      matches(s)
+        ? { ...s, carryoverNote: trimmed || undefined, carryoverNoteDate: trimmed ? nowIso : undefined }
+        : s
+    );
+    const updatedSubSteps: SessionSubStep[] = (goal.subSteps && goal.subSteps.length > 0 ? goal.subSteps : updatedSubtasks.map(s => ({
+      id: s.id,
+      title: s.title,
+      durationMinutes: s.durationMinutes || 15,
+      completed: s.completed || false,
+      carryoverNote: s.carryoverNote,
+      carryoverNoteDate: s.carryoverNoteDate
+    }))).map(s =>
+      matches(s)
+        ? { ...s, carryoverNote: trimmed || undefined, carryoverNoteDate: trimmed ? nowIso : undefined }
+        : s
+    );
+
+    onEditGoal(goal.id, {
+      ...(goal.subtasks ? { subtasks: updatedSubtasks } : {}),
+      subSteps: updatedSubSteps
+    });
   };
 
   // Delay Goal Agenda: Shifts all uncompleted sessions associated with this goal forward by delayDays
@@ -865,6 +934,9 @@ export default function GoalTracker({
   ]);
   const [newPhaseTitle, setNewPhaseTitle] = useState("");
   const [newPhaseDuration, setNewPhaseDuration] = useState<number>(15);
+  const [newPhaseCarryoverNote, setNewPhaseCarryoverNote] = useState("");
+  const [showNewPhaseNoteInput, setShowNewPhaseNoteInput] = useState(false);
+  const [expandedFormPhaseNoteIdx, setExpandedFormPhaseNoteIdx] = useState<number | null>(null);
 
   const totalPhasesDuration = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
 
@@ -889,14 +961,18 @@ export default function GoalTracker({
     const phaseTitle = (title || newPhaseTitle).trim();
     if (!phaseTitle) return;
     const phaseDur = duration !== undefined ? duration : (Number(newPhaseDuration) || 15);
+    const trimmedNote = newPhaseCarryoverNote.trim();
     const newPhase: SessionSubStep = {
       id: `phase_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       title: phaseTitle,
       durationMinutes: Math.max(1, phaseDur),
-      completed: false
+      completed: false,
+      ...(trimmedNote ? { carryoverNote: trimmedNote, carryoverNoteDate: new Date().toISOString() } : {})
     };
     setFormPhases(prev => [...prev, newPhase]);
     setNewPhaseTitle("");
+    setNewPhaseCarryoverNote("");
+    setShowNewPhaseNoteInput(false);
   };
 
   const handleApplyPhasePreset = (presetType: "review_focus" | "pomodoro" | "spaced_recall" | "lab_practice") => {
@@ -1137,7 +1213,9 @@ export default function GoalTracker({
       id: p.id,
       title: p.title,
       durationMinutes: p.durationMinutes,
-      completed: false
+      completed: false,
+      carryoverNote: p.carryoverNote,
+      carryoverNoteDate: p.carryoverNoteDate
     })) : undefined;
 
     if (editingGoalId) {
@@ -1240,6 +1318,9 @@ export default function GoalTracker({
     ]);
     setNewPhaseTitle("");
     setNewPhaseDuration(15);
+    setNewPhaseCarryoverNote("");
+    setShowNewPhaseNoteInput(false);
+    setExpandedFormPhaseNoteIdx(null);
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -1267,6 +1348,9 @@ export default function GoalTracker({
       ]);
       setNewPhaseTitle("");
       setNewPhaseDuration(15);
+      setNewPhaseCarryoverNote("");
+      setShowNewPhaseNoteInput(false);
+      setExpandedFormPhaseNoteIdx(null);
       setShowAddGoal(true);
     } else {
       setShowAddGoal((prev) => !prev);
@@ -1305,6 +1389,9 @@ export default function GoalTracker({
     ]);
     setNewPhaseTitle("");
     setNewPhaseDuration(15);
+    setNewPhaseCarryoverNote("");
+    setShowNewPhaseNoteInput(false);
+    setExpandedFormPhaseNoteIdx(null);
     setShowAddGoal(false);
     setEditingGoalId(null);
   };
@@ -1326,13 +1413,23 @@ export default function GoalTracker({
     setEnableKnowledgeHub(g.enableKnowledgeHub !== undefined ? g.enableKnowledgeHub : (g.type === GoalType.STUDY || g.type === GoalType.JOB_SEARCH || g.type === GoalType.SIDE_PROJECT));
 
     if (g.subSteps && g.subSteps.length > 0) {
-      setFormPhases(g.subSteps.map(s => ({ ...s, completed: false })));
+      setFormPhases(g.subSteps.map(s => {
+        const matchingTask = g.subtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
+        return {
+          ...s,
+          completed: false,
+          carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
+          carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
+        };
+      }));
     } else if (g.subtasks && g.subtasks.length > 0) {
       setFormPhases(g.subtasks.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
-        completed: false
+        completed: false,
+        carryoverNote: s.carryoverNote,
+        carryoverNoteDate: s.carryoverNoteDate
       })));
     } else {
       const dur = g.durationMinutes || 60;
@@ -1345,6 +1442,9 @@ export default function GoalTracker({
     }
     setNewPhaseTitle("");
     setNewPhaseDuration(15);
+    setNewPhaseCarryoverNote("");
+    setShowNewPhaseNoteInput(false);
+    setExpandedFormPhaseNoteIdx(null);
 
     if (g.weeklyTarget > 7) {
       setIsCustomTarget(true);
@@ -2424,75 +2524,128 @@ export default function GoalTracker({
                 {formPhases.map((phase, idx) => {
                   const isFirst = idx === 0;
                   const isLast = idx === formPhases.length - 1;
+                  const isNoteOpen = expandedFormPhaseNoteIdx === idx;
+                  const hasNote = Boolean(phase.carryoverNote && phase.carryoverNote.trim().length > 0);
                   return (
                     <div
                       key={phase.id || idx}
-                      className="flex items-center gap-2 p-2 bg-[#0c0e16] border border-white/10 hover:border-indigo-500/40 rounded-lg group transition"
+                      className="p-2 bg-[#0c0e16] border border-white/10 hover:border-indigo-500/40 rounded-lg group transition space-y-1.5"
                     >
-                      {/* Step Number & Up/Down Reorder Controls */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        <span className="w-5 h-5 rounded bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 font-mono text-[10px] font-bold flex items-center justify-center">
-                          {idx + 1}
-                        </span>
-                        <div className="flex flex-col">
-                          <button
-                            type="button"
-                            disabled={isFirst}
-                            onClick={() => handleMovePhase(idx, "up")}
-                            className={`p-0.5 rounded text-slate-400 hover:text-white transition cursor-pointer ${
-                              isFirst ? "opacity-20 cursor-not-allowed" : "hover:bg-white/10"
-                            }`}
-                            title="Move phase up (runs earlier)"
-                          >
-                            <ChevronUp className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isLast}
-                            onClick={() => handleMovePhase(idx, "down")}
-                            className={`p-0.5 rounded text-slate-400 hover:text-white transition cursor-pointer ${
-                              isLast ? "opacity-20 cursor-not-allowed" : "hover:bg-white/10"
-                            }`}
-                            title="Move phase down (runs later)"
-                          >
-                            <ChevronDown className="w-3 h-3" />
-                          </button>
+                      <div className="flex items-center gap-2">
+                        {/* Step Number & Up/Down Reorder Controls */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="w-5 h-5 rounded bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 font-mono text-[10px] font-bold flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <div className="flex flex-col">
+                            <button
+                              type="button"
+                              disabled={isFirst}
+                              onClick={() => handleMovePhase(idx, "up")}
+                              className={`p-0.5 rounded text-slate-400 hover:text-white transition cursor-pointer ${
+                                isFirst ? "opacity-20 cursor-not-allowed" : "hover:bg-white/10"
+                              }`}
+                              title="Move phase up (runs earlier)"
+                            >
+                              <ChevronUp className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isLast}
+                              onClick={() => handleMovePhase(idx, "down")}
+                              className={`p-0.5 rounded text-slate-400 hover:text-white transition cursor-pointer ${
+                                isLast ? "opacity-20 cursor-not-allowed" : "hover:bg-white/10"
+                              }`}
+                              title="Move phase down (runs later)"
+                            >
+                              <ChevronDown className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Phase Title Input */}
+                        <div className="flex-1 min-w-0">
+                          <input
+                            type="text"
+                            value={phase.title}
+                            onChange={(e) => handleUpdatePhase(idx, { title: e.target.value })}
+                            placeholder="e.g. 15m Concept Review & Carryover Notes"
+                            className="w-full text-xs px-2.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white focus:outline-none focus:border-indigo-400 font-medium"
+                          />
+                        </div>
+
+                        {/* Step Carryover Note Toggle Button */}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedFormPhaseNoteIdx(isNoteOpen ? null : idx)}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold border transition cursor-pointer flex items-center gap-1 shrink-0 ${
+                            hasNote || isNoteOpen
+                              ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                              : "bg-white/5 text-slate-400 hover:text-amber-300 border-white/10"
+                          }`}
+                          title={hasNote ? "View/edit step carryover note" : "Add session carryover note for this step"}
+                        >
+                          <StickyNote className="w-3 h-3" />
+                          <span>{hasNote ? "Note" : "+ Note"}</span>
+                        </button>
+
+                        {/* Phase Duration Input */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input
+                            type="number"
+                            min="1"
+                            max="300"
+                            value={phase.durationMinutes}
+                            onChange={(e) => handleUpdatePhase(idx, { durationMinutes: Math.max(1, Number(e.target.value) || 5) })}
+                            className="w-14 text-xs px-1.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
+                          />
+                          <span className="text-[10px] text-slate-400 font-medium">min</span>
+                        </div>
+
+                        {/* Delete Phase Button */}
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePhase(idx)}
+                          className="p-1 text-slate-500 hover:text-rose-400 transition cursor-pointer shrink-0 rounded hover:bg-rose-500/10"
+                          title="Remove this phase"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
                       </div>
 
-                      {/* Phase Title Input */}
-                      <div className="flex-1 min-w-0">
-                        <input
-                          type="text"
-                          value={phase.title}
-                          onChange={(e) => handleUpdatePhase(idx, { title: e.target.value })}
-                          placeholder="e.g. 15m Concept Review & Carryover Notes"
-                          className="w-full text-xs px-2.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white focus:outline-none focus:border-indigo-400 font-medium"
-                        />
-                      </div>
-
-                      {/* Phase Duration Input */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        <input
-                          type="number"
-                          min="1"
-                          max="300"
-                          value={phase.durationMinutes}
-                          onChange={(e) => handleUpdatePhase(idx, { durationMinutes: Math.max(1, Number(e.target.value) || 5) })}
-                          className="w-14 text-xs px-1.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
-                        />
-                        <span className="text-[10px] text-slate-400 font-medium">min</span>
-                      </div>
-
-                      {/* Delete Phase Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeletePhase(idx)}
-                        className="p-1 text-slate-500 hover:text-rose-400 transition cursor-pointer shrink-0 rounded hover:bg-rose-500/10"
-                        title="Remove this phase"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
+                      {/* Preview or Editor for Step Carryover Note */}
+                      {isNoteOpen ? (
+                        <div className="pl-7 pr-1 pt-1 space-y-1">
+                          <textarea
+                            rows={2}
+                            value={phase.carryoverNote || ""}
+                            onChange={(e) => handleUpdatePhase(idx, {
+                              carryoverNote: e.target.value,
+                              carryoverNoteDate: e.target.value.trim() ? new Date().toISOString() : undefined
+                            })}
+                            placeholder={`Carryover note for step "${phase.title || `Step ${idx + 1}`}" (where to start next time)...`}
+                            className="w-full text-[11px] p-2 bg-[#141726] border border-amber-500/35 rounded-md text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                          />
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedFormPhaseNoteIdx(null)}
+                              className="text-[10px] font-bold text-amber-300 hover:text-white px-2 py-0.5 cursor-pointer"
+                            >
+                              Done
+                            </button>
+                          </div>
+                        </div>
+                      ) : hasNote ? (
+                        <div
+                          onClick={() => setExpandedFormPhaseNoteIdx(idx)}
+                          className="ml-7 px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-200/90 italic truncate cursor-pointer hover:bg-amber-500/15 flex items-center gap-1.5"
+                          title="Click to edit step carryover note"
+                        >
+                          <StickyNote className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                          <span className="truncate">"{phase.carryoverNote}"</span>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -2505,39 +2658,64 @@ export default function GoalTracker({
               </div>
 
               {/* Add Phase Input Bar */}
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  type="text"
-                  value={newPhaseTitle}
-                  onChange={(e) => setNewPhaseTitle(e.target.value)}
-                  placeholder="Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."
-                  className="flex-1 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleAddPhase();
-                    }
-                  }}
-                />
-                <div className="flex items-center gap-1 shrink-0">
+              <div className="space-y-1.5 pt-1">
+                <div className="flex items-center gap-2">
                   <input
-                    type="number"
-                    min="1"
-                    max="180"
-                    value={newPhaseDuration}
-                    onChange={(e) => setNewPhaseDuration(Math.max(1, Number(e.target.value) || 5))}
-                    className="w-14 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white font-mono font-bold text-center focus:outline-none focus:border-indigo-400"
+                    type="text"
+                    value={newPhaseTitle}
+                    onChange={(e) => setNewPhaseTitle(e.target.value)}
+                    placeholder="Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."
+                    className="flex-1 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddPhase();
+                      }
+                    }}
                   />
-                  <span className="text-[10px] text-slate-400 font-medium">min</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPhaseNoteInput(prev => !prev)}
+                    className={`px-2 py-2 rounded-lg border text-[11px] font-bold transition cursor-pointer flex items-center gap-1 shrink-0 ${
+                      showNewPhaseNoteInput || newPhaseCarryoverNote.trim()
+                        ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                        : "bg-[#0f111a] text-slate-400 hover:text-amber-300 border-white/10"
+                    }`}
+                    title="Attach a carryover note when adding this step"
+                  >
+                    <StickyNote className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Note</span>
+                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <input
+                      type="number"
+                      min="1"
+                      max="180"
+                      value={newPhaseDuration}
+                      onChange={(e) => setNewPhaseDuration(Math.max(1, Number(e.target.value) || 5))}
+                      className="w-14 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white font-mono font-bold text-center focus:outline-none focus:border-indigo-400"
+                    />
+                    <span className="text-[10px] text-slate-400 font-medium">min</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleAddPhase()}
+                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Phase</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleAddPhase()}
-                  className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Phase</span>
-                </button>
+
+                {showNewPhaseNoteInput && (
+                  <input
+                    type="text"
+                    value={newPhaseCarryoverNote}
+                    onChange={(e) => setNewPhaseCarryoverNote(e.target.value)}
+                    placeholder="Optional carryover note for this step (e.g. Start with Lab #2 ACL rules)..."
+                    className="w-full text-[11px] px-2.5 py-1.5 bg-[#0f111a] border border-amber-500/35 rounded-lg text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                  />
+                )}
               </div>
             </div>
 
@@ -3141,142 +3319,236 @@ export default function GoalTracker({
                       })()}
                       
                       {g.subtasks && g.subtasks.length > 0 ? (
-                        <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                           {g.subtasks.map((sub, sIdx) => {
                             const isEditing = editingMilestoneId === sub.id;
+                            const isEditingNote = editingSubtaskNote?.goalId === g.id && editingSubtaskNote.stepId === sub.id;
+                            const hasStepNote = Boolean(sub.carryoverNote && sub.carryoverNote.trim().length > 0);
 
                             return (
-                              <div key={sub.id} className="flex items-center justify-between gap-1 group bg-black/20 hover:bg-black/35 px-2 py-1 rounded-lg border border-white/5 transition">
-                                <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                                  <span className="text-[9px] font-mono text-slate-500 w-3 text-center shrink-0">
-                                    {sIdx + 1}
-                                  </span>
-                                  <input
-                                    type="checkbox"
-                                    checked={sub.completed}
-                                    onChange={() => {
-                                      const updatedSubtasks = g.subtasks?.map(s => 
-                                        s.id === sub.id ? { ...s, completed: !s.completed } : s
-                                      ) || [];
-                                      onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                    }}
-                                    className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer shrink-0"
-                                  />
-
-                                  {isEditing ? (
-                                    <form
-                                      onSubmit={(e) => {
-                                        e.preventDefault();
-                                        if (editingMilestoneText.trim()) {
-                                          const updatedSubtasks = g.subtasks?.map(s => 
-                                            s.id === sub.id ? { ...s, title: editingMilestoneText.trim() } : s
-                                          ) || [];
-                                          onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                        }
-                                        setEditingMilestoneId(null);
-                                      }}
-                                      className="flex items-center gap-1 flex-1 min-w-0"
-                                    >
-                                      <input
-                                        type="text"
-                                        autoFocus
-                                        value={editingMilestoneText}
-                                        onChange={(e) => setEditingMilestoneText(e.target.value)}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Escape") setEditingMilestoneId(null);
-                                        }}
-                                        className="flex-1 bg-black text-[10px] text-white px-1 py-0.5 rounded border border-indigo-500 focus:outline-none"
-                                      />
-                                      <button type="submit" className="text-emerald-400 hover:text-emerald-300 p-0.5">
-                                        <Check className="w-2.5 h-2.5" />
-                                      </button>
-                                      <button type="button" onClick={() => setEditingMilestoneId(null)} className="text-slate-400 hover:text-white p-0.5">
-                                        <X className="w-2.5 h-2.5" />
-                                      </button>
-                                    </form>
-                                  ) : (
-                                    <span 
-                                      onDoubleClick={() => {
-                                        setEditingMilestoneId(sub.id);
-                                        setEditingMilestoneText(sub.title);
-                                      }}
-                                      className={`text-[10px] truncate flex-1 min-w-0 cursor-pointer ${
-                                        sub.completed ? "line-through text-slate-500 font-medium" : "text-slate-200 font-semibold"
-                                      }`}
-                                      title="Double-click to edit milestone"
-                                    >
-                                      {sub.title}
+                              <div key={sub.id} className="group bg-black/20 hover:bg-black/35 px-2 py-1.5 rounded-lg border border-white/5 transition space-y-1">
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                    <span className="text-[9px] font-mono text-slate-500 w-3 text-center shrink-0">
+                                      {sIdx + 1}
                                     </span>
-                                  )}
-                                </div>
+                                    <input
+                                      type="checkbox"
+                                      checked={sub.completed}
+                                      onChange={() => {
+                                        const updatedSubtasks = g.subtasks?.map(s => 
+                                          s.id === sub.id ? { ...s, completed: !s.completed } : s
+                                        ) || [];
+                                        handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
+                                      }}
+                                      className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer shrink-0"
+                                    />
 
-                                <div className="flex items-center gap-1 shrink-0">
-                                  {/* Reorder Buttons */}
-                                  {sIdx > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleMoveMilestone(g, sub.id, "up")}
-                                      className="p-0.5 text-slate-500 hover:text-white opacity-40 group-hover:opacity-100 transition cursor-pointer"
-                                      title="Move up"
-                                    >
-                                      <ArrowUp className="w-2.5 h-2.5" />
-                                    </button>
-                                  )}
-                                  {sIdx < (g.subtasks?.length || 0) - 1 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleMoveMilestone(g, sub.id, "down")}
-                                      className="p-0.5 text-slate-500 hover:text-white opacity-40 group-hover:opacity-100 transition cursor-pointer"
-                                      title="Move down"
-                                    >
-                                      <ArrowDown className="w-2.5 h-2.5" />
-                                    </button>
-                                  )}
+                                    {isEditing ? (
+                                      <form
+                                        onSubmit={(e) => {
+                                          e.preventDefault();
+                                          if (editingMilestoneText.trim()) {
+                                            const updatedSubtasks = g.subtasks?.map(s => 
+                                              s.id === sub.id ? { ...s, title: editingMilestoneText.trim() } : s
+                                            ) || [];
+                                            handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
+                                          }
+                                          setEditingMilestoneId(null);
+                                        }}
+                                        className="flex items-center gap-1 flex-1 min-w-0"
+                                      >
+                                        <input
+                                          type="text"
+                                          autoFocus
+                                          value={editingMilestoneText}
+                                          onChange={(e) => setEditingMilestoneText(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Escape") setEditingMilestoneId(null);
+                                          }}
+                                          className="flex-1 bg-black text-[10px] text-white px-1 py-0.5 rounded border border-indigo-500 focus:outline-none"
+                                        />
+                                        <button type="submit" className="text-emerald-400 hover:text-emerald-300 p-0.5">
+                                          <Check className="w-2.5 h-2.5" />
+                                        </button>
+                                        <button type="button" onClick={() => setEditingMilestoneId(null)} className="text-slate-400 hover:text-white p-0.5">
+                                          <X className="w-2.5 h-2.5" />
+                                        </button>
+                                      </form>
+                                    ) : (
+                                      <span 
+                                        onDoubleClick={() => {
+                                          setEditingMilestoneId(sub.id);
+                                          setEditingMilestoneText(sub.title);
+                                        }}
+                                        className={`text-[10px] truncate flex-1 min-w-0 cursor-pointer ${
+                                          sub.completed ? "line-through text-slate-500 font-medium" : "text-slate-200 font-semibold"
+                                        }`}
+                                        title="Double-click to edit milestone"
+                                      >
+                                        {sub.title}
+                                      </span>
+                                    )}
+                                  </div>
 
-                                  {/* Edit Button */}
-                                  {!isEditing && (
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    {/* Reorder Buttons */}
+                                    {sIdx > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleMoveMilestone(g, sub.id, "up")}
+                                        className="p-0.5 text-slate-500 hover:text-white opacity-40 group-hover:opacity-100 transition cursor-pointer"
+                                        title="Move up"
+                                      >
+                                        <ArrowUp className="w-2.5 h-2.5" />
+                                      </button>
+                                    )}
+                                    {sIdx < (g.subtasks?.length || 0) - 1 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleMoveMilestone(g, sub.id, "down")}
+                                        className="p-0.5 text-slate-500 hover:text-white opacity-40 group-hover:opacity-100 transition cursor-pointer"
+                                        title="Move down"
+                                      >
+                                        <ArrowDown className="w-2.5 h-2.5" />
+                                      </button>
+                                    )}
+
+                                    {/* Per-Step Carryover Note Button */}
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        setEditingMilestoneId(sub.id);
-                                        setEditingMilestoneText(sub.title);
+                                        if (isEditingNote) {
+                                          setEditingSubtaskNote(null);
+                                        } else {
+                                          setEditingSubtaskNote({
+                                            goalId: g.id,
+                                            stepId: sub.id,
+                                            text: sub.carryoverNote || ""
+                                          });
+                                        }
                                       }}
-                                      className="p-0.5 text-slate-500 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition cursor-pointer"
-                                      title="Edit title"
+                                      className={`p-0.5 rounded transition cursor-pointer flex items-center gap-0.5 ${
+                                        hasStepNote || isEditingNote
+                                          ? "text-amber-300 bg-amber-500/15 border border-amber-500/30 opacity-100"
+                                          : "text-slate-400 hover:text-amber-300 opacity-50 group-hover:opacity-100"
+                                      }`}
+                                      title={hasStepNote ? "Edit step carryover note" : "Add carryover note for this step"}
                                     >
-                                      <Pencil className="w-2.5 h-2.5" />
+                                      <StickyNote className="w-2.5 h-2.5" />
                                     </button>
-                                  )}
 
-                                  {/* Time allocation pill */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const currentMins = sub.durationMinutes || 10;
-                                      const nextMins = currentMins >= 60 ? 5 : currentMins + 5;
-                                      const updatedSubtasks = g.subtasks?.map(s => 
-                                        s.id === sub.id ? { ...s, durationMinutes: nextMins } : s
-                                      ) || [];
-                                      onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                    }}
-                                    className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition shrink-0 cursor-pointer"
-                                    title="Click to adjust duration (+5m)"
-                                  >
-                                    {sub.durationMinutes ? `${sub.durationMinutes}m` : "+time"}
-                                  </button>
+                                    {/* Edit Title Button */}
+                                    {!isEditing && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingMilestoneId(sub.id);
+                                          setEditingMilestoneText(sub.title);
+                                        }}
+                                        className="p-0.5 text-slate-500 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                                        title="Edit title"
+                                      >
+                                        <Pencil className="w-2.5 h-2.5" />
+                                      </button>
+                                    )}
 
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const updatedSubtasks = g.subtasks?.filter(s => s.id !== sub.id) || [];
-                                      onEditGoal(g.id, { subtasks: updatedSubtasks });
-                                    }}
-                                    className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer shrink-0"
-                                    title="Delete Subtask"
-                                  >
-                                    <X className="w-2.5 h-2.5" />
-                                  </button>
+                                    {/* Time allocation pill */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const currentMins = sub.durationMinutes || 10;
+                                        const nextMins = currentMins >= 60 ? 5 : currentMins + 5;
+                                        const updatedSubtasks = g.subtasks?.map(s => 
+                                          s.id === sub.id ? { ...s, durationMinutes: nextMins } : s
+                                        ) || [];
+                                        handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
+                                      }}
+                                      className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition shrink-0 cursor-pointer"
+                                      title="Click to adjust duration (+5m)"
+                                    >
+                                      {sub.durationMinutes ? `${sub.durationMinutes}m` : "+time"}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updatedSubtasks = g.subtasks?.filter(s => s.id !== sub.id) || [];
+                                        handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
+                                      }}
+                                      className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5 cursor-pointer shrink-0"
+                                      title="Delete Subtask"
+                                    >
+                                      <X className="w-2.5 h-2.5" />
+                                    </button>
+                                  </div>
                                 </div>
+
+                                {/* Per-Step Carryover Note Editor or Saved Preview */}
+                                {isEditingNote ? (
+                                  <div className="pl-4 pt-1 space-y-1.5">
+                                    <textarea
+                                      rows={2}
+                                      autoFocus
+                                      value={editingSubtaskNote.text}
+                                      onChange={(e) => setEditingSubtaskNote({ goalId: g.id, stepId: sub.id, text: e.target.value })}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Escape") setEditingSubtaskNote(null);
+                                      }}
+                                      placeholder={`Session carryover note for "${sub.title}"...`}
+                                      className="w-full text-[10px] p-1.5 rounded bg-[#0f111a] border border-amber-500/40 text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                                    />
+                                    <div className="flex items-center justify-between gap-2">
+                                      {hasStepNote ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            handleSaveGoalStepCarryoverNote(g, sub.id, sub.title, "");
+                                            setEditingSubtaskNote(null);
+                                          }}
+                                          className="text-[9px] font-semibold text-rose-400 hover:text-rose-300 cursor-pointer"
+                                        >
+                                          Clear Note
+                                        </button>
+                                      ) : <span />}
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingSubtaskNote(null)}
+                                          className="px-2 py-0.5 text-[9px] text-slate-400 hover:text-white cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            handleSaveGoalStepCarryoverNote(g, sub.id, sub.title, editingSubtaskNote.text);
+                                            setEditingSubtaskNote(null);
+                                          }}
+                                          className="px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-[9px] font-bold flex items-center gap-0.5 cursor-pointer"
+                                        >
+                                          <Check className="w-2.5 h-2.5" />
+                                          <span>Save Note</span>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : hasStepNote ? (
+                                  <div
+                                    onClick={() => setEditingSubtaskNote({ goalId: g.id, stepId: sub.id, text: sub.carryoverNote || "" })}
+                                    className="ml-4 px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-200/90 flex items-start justify-between gap-1.5 cursor-pointer hover:bg-amber-500/15 transition"
+                                    title="Click to edit this step's carryover note"
+                                  >
+                                    <span className="italic break-words leading-snug">
+                                      📝 "{sub.carryoverNote}"
+                                    </span>
+                                    {sub.carryoverNoteDate && (
+                                      <span className="text-[8px] font-mono text-amber-400/75 shrink-0 mt-0.5">
+                                        {new Date(sub.carryoverNoteDate).toLocaleDateString([], { month: "short", day: "numeric" })}
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : null}
                               </div>
                             );
                           })}
@@ -3294,44 +3566,86 @@ export default function GoalTracker({
                           const title = input.value.trim();
                           if (!title) return;
                           const mins = parseInt(durInput?.value) || 15;
+                          const stepNoteText = (newSubtaskNoteForGoal[g.id] || "").trim();
                           
                           const newSub: SubTask = {
                             id: `sub_${Date.now()}`,
                             title,
                             durationMinutes: mins,
-                            completed: false
+                            completed: false,
+                            ...(stepNoteText ? {
+                              carryoverNote: stepNoteText,
+                              carryoverNoteDate: new Date().toISOString()
+                            } : {})
                           };
                           const updatedSubtasks = [...(g.subtasks || []), newSub];
-                          onEditGoal(g.id, { subtasks: updatedSubtasks });
+                          const updatedSubSteps: SessionSubStep[] = [
+                            ...(g.subSteps || []),
+                            {
+                              id: newSub.id,
+                              title: newSub.title,
+                              durationMinutes: mins,
+                              completed: false,
+                              carryoverNote: newSub.carryoverNote,
+                              carryoverNoteDate: newSub.carryoverNoteDate
+                            }
+                          ];
+                          onEditGoal(g.id, { subtasks: updatedSubtasks, subSteps: updatedSubSteps });
                           input.value = "";
                           if (durInput) durInput.value = "15";
+                          setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: "" }));
+                          setShowNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: false }));
                         }}
-                        className="flex items-center gap-1"
+                        className="space-y-1"
                       >
-                        <input
-                          type="text"
-                          name="subtaskTitle"
-                          placeholder="Add milestone..."
-                          className="flex-1 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
-                        />
-                        <div className="flex items-center bg-[#0f111a] border border-white/5 rounded px-1.5 py-1">
+                        <div className="flex items-center gap-1">
                           <input
-                            type="number"
-                            name="subtaskMins"
-                            defaultValue={15}
-                            min={1}
-                            max={180}
-                            className="w-8 text-[10px] text-center text-white bg-transparent focus:outline-none font-mono font-bold"
-                            title="Minutes for this step"
+                            type="text"
+                            name="subtaskTitle"
+                            placeholder="Add milestone..."
+                            className="flex-1 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
                           />
-                          <span className="text-[9px] text-slate-400 font-mono">m</span>
+                          <button
+                            type="button"
+                            onClick={() => setShowNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: !prev[g.id] }))}
+                            className={`p-1 rounded border transition cursor-pointer shrink-0 ${
+                              showNewSubtaskNoteForGoal[g.id] || (newSubtaskNoteForGoal[g.id] || "").trim()
+                                ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                                : "bg-[#0f111a] text-slate-400 hover:text-amber-300 border-white/5"
+                            }`}
+                            title="Attach a carryover note for this new step"
+                          >
+                            <StickyNote className="w-3 h-3" />
+                          </button>
+                          <div className="flex items-center bg-[#0f111a] border border-white/5 rounded px-1.5 py-1">
+                            <input
+                              type="number"
+                              name="subtaskMins"
+                              defaultValue={15}
+                              min={1}
+                              max={180}
+                              className="w-8 text-[10px] text-center text-white bg-transparent focus:outline-none font-mono font-bold"
+                              title="Minutes for this step"
+                            />
+                            <span className="text-[9px] text-slate-400 font-mono">m</span>
+                          </div>
+                          <button
+                            type="submit"
+                            className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white p-1 rounded transition text-[10px] font-bold shrink-0 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        <button
-                          type="submit"
-                          className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white p-1 rounded transition text-[10px] font-bold shrink-0 cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
+
+                        {showNewSubtaskNoteForGoal[g.id] && (
+                          <input
+                            type="text"
+                            value={newSubtaskNoteForGoal[g.id] || ""}
+                            onChange={(e) => setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: e.target.value }))}
+                            placeholder="Optional carryover note for this step (where to start next)..."
+                            className="w-full bg-[#0f111a] text-[10px] px-2 py-1 border border-amber-500/35 rounded text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                          />
+                        )}
                       </form>
                     </div>
 
@@ -3979,6 +4293,12 @@ export default function GoalTracker({
               lastSessionNote: updatedNote,
               lastSessionNoteDate: new Date().toISOString()
             });
+          }}
+          onUpdateStepNote={(goalId, stepId, stepTitle, updatedNote) => {
+            const targetGoal = goals.find(item => item.id === goalId);
+            if (targetGoal) {
+              handleSaveGoalStepCarryoverNote(targetGoal, stepId, stepTitle, updatedNote);
+            }
           }}
         />
       )}

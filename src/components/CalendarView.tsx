@@ -327,13 +327,24 @@ export default function CalendarView({
     
     const rawSubSteps = evt.subSteps || associatedGoal?.subSteps;
     const rawSubtasks = evt.subtasks || associatedGoal?.subtasks;
-    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? rawSubSteps : undefined;
+    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0
+      ? rawSubSteps.map(s => {
+          const matchingTask = rawSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
+          return {
+            ...s,
+            carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
+            carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
+          };
+        })
+      : undefined;
     if (!resolvedSubSteps && rawSubtasks && rawSubtasks.length > 0) {
       resolvedSubSteps = rawSubtasks.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
-        completed: s.completed || false
+        completed: s.completed || false,
+        carryoverNote: s.carryoverNote,
+        carryoverNoteDate: s.carryoverNoteDate
       }));
     }
 
@@ -374,13 +385,24 @@ export default function CalendarView({
 
     const rawSubSteps = goal.subSteps;
     const rawSubtasks = goal.subtasks;
-    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? rawSubSteps : undefined;
+    let resolvedSubSteps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0
+      ? rawSubSteps.map(s => {
+          const matchingTask = rawSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
+          return {
+            ...s,
+            carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
+            carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
+          };
+        })
+      : undefined;
     if (!resolvedSubSteps && rawSubtasks && rawSubtasks.length > 0) {
       resolvedSubSteps = rawSubtasks.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
-        completed: s.completed || false
+        completed: s.completed || false,
+        carryoverNote: s.carryoverNote,
+        carryoverNoteDate: s.carryoverNoteDate
       }));
     }
 

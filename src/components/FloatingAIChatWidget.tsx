@@ -11,7 +11,7 @@ import {
   Calendar
 } from "lucide-react";
 import AICoach from "./AICoach";
-import { Goal, CalendarEvent, AvailabilityWindow, CoachMessage, UserEnergyProfile } from "../types";
+import { Goal, CalendarEvent, AvailabilityWindow, CoachMessage, CoachChatSession, UserEnergyProfile } from "../types";
 
 export interface FloatingAIChatWidgetProps {
   isOpen: boolean;
@@ -21,6 +21,11 @@ export interface FloatingAIChatWidgetProps {
   events: CalendarEvent[];
   availability: AvailabilityWindow[];
   coachMessages: CoachMessage[];
+  coachChatSessions?: CoachChatSession[];
+  activeCoachChatId?: string;
+  onStartNewChat?: () => void;
+  onSelectChat?: (chatId: string) => void;
+  onDeleteChat?: (chatId: string) => void;
   onAddMessage: (msg: CoachMessage) => void;
   onClearMessages: () => void;
   coachPersona: "mentor" | "drill" | "data";
@@ -31,11 +36,17 @@ export interface FloatingAIChatWidgetProps {
   userEnergyProfile?: UserEnergyProfile;
   onBulkAddEvents?: (newEvents: CalendarEvent[]) => void;
   onUpdateEvents?: (updatedEvts: CalendarEvent[]) => void;
+  onApplyBatchAdjustment?: (
+    updatedGoals: Goal[],
+    updatedEvents: CalendarEvent[],
+    notificationTitle?: string,
+    notificationMessage?: string
+  ) => void;
   onAddNotification?: (title: string, message: string, type: any) => void;
   onApplyEnergySchedule?: (newEvents: CalendarEvent[]) => void;
   externalPrompt?: string;
   onClearExternalPrompt?: () => void;
-  onNavigateToCalendar?: () => void;
+  onNavigateToCalendar?: (targetDate?: Date, eventId?: string) => void;
   onNavigateToGoals?: () => void;
 }
 
@@ -47,6 +58,11 @@ export default function FloatingAIChatWidget({
   events,
   availability,
   coachMessages,
+  coachChatSessions,
+  activeCoachChatId,
+  onStartNewChat,
+  onSelectChat,
+  onDeleteChat,
   onAddMessage,
   onClearMessages,
   coachPersona,
@@ -57,6 +73,7 @@ export default function FloatingAIChatWidget({
   userEnergyProfile,
   onBulkAddEvents,
   onUpdateEvents,
+  onApplyBatchAdjustment,
   onAddNotification,
   onApplyEnergySchedule,
   externalPrompt,
@@ -181,6 +198,11 @@ export default function FloatingAIChatWidget({
                 events={events}
                 availability={availability}
                 coachMessages={coachMessages}
+                coachChatSessions={coachChatSessions}
+                activeCoachChatId={activeCoachChatId}
+                onStartNewChat={onStartNewChat}
+                onSelectChat={onSelectChat}
+                onDeleteChat={onDeleteChat}
                 onAddMessage={onAddMessage}
                 onClearMessages={onClearMessages}
                 coachPersona={coachPersona}
@@ -191,6 +213,15 @@ export default function FloatingAIChatWidget({
                 userEnergyProfile={userEnergyProfile}
                 onBulkAddEvents={onBulkAddEvents}
                 onUpdateEvents={onUpdateEvents}
+                onApplyBatchAdjustment={onApplyBatchAdjustment}
+                onNavigateToCalendar={
+                  onNavigateToCalendar
+                    ? (targetDate?: Date, eventId?: string) => {
+                        onNavigateToCalendar(targetDate, eventId);
+                        onClose();
+                      }
+                    : undefined
+                }
                 onAddNotification={onAddNotification}
                 onApplyEnergySchedule={onApplyEnergySchedule}
                 externalPrompt={externalPrompt}

@@ -746,8 +746,13 @@ html.light-theme .coach-high-contrast .coach-chat-header {
   border-bottom-color: #e2e8f0 !important;
 }
 
-html.light-theme .coach-high-contrast .coach-chat-header * {
+html.light-theme .coach-high-contrast .coach-chat-header *:not(.keep-white):not([class*="bg-indigo-"]):not([class*="bg-indigo-"] *) {
   color: #0f172a !important;
+}
+
+html.light-theme .coach-high-contrast .coach-chat-header button[class*="bg-indigo-"],
+html.light-theme .coach-high-contrast .coach-chat-header button[class*="bg-indigo-"] * {
+  color: #ffffff !important;
 }
 
 /* --- DARK THEME RULES --- */

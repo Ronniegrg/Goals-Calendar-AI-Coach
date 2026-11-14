@@ -34,7 +34,7 @@ import ActiveExecutionHUD from "./components/ActiveExecutionHUD";
 import AIScheduleController from "./components/AIScheduleController";
 import { StreakShieldModal } from "./components/StreakShieldModal";
 import WeeklyHabitReportModal from "./components/WeeklyHabitReportModal";
-import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, SyncData, GoalType, TimePreference, AutopilotMode, AutopilotPacing, DailyBurnoutLimits, GoalKnowledgeHub } from "./types";
+import { Goal, CalendarEvent, AvailabilityWindow, AppNotification, CoachMessage, CoachChatSession, SyncData, GoalType, TimePreference, AutopilotMode, AutopilotPacing, DailyBurnoutLimits, GoalKnowledgeHub, StudyArtifactNote } from "./types";
 import { 
   sanitizeAndOptimizeSchedule, 
   deduplicateDailyGoalEvents, 
@@ -114,6 +114,20 @@ export default function App() {
       return [];
     }
   });
+  const createDefaultCoachWelcome = (text?: string): CoachMessage => ({
+    id: `m_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    sender: "coach",
+    text: text || "Hello! I am your AI Routine Coach. Ask me to optimize your schedule, build a study routine, or troubleshoot consistency!",
+    timestamp: new Date().toISOString()
+  });
+
+  const deriveCoachChatTitle = (msgs: CoachMessage[], fallbackTitle = "New Coaching Chat"): string => {
+    const firstUser = msgs.find((m) => m.sender === "user" && m.text.trim().length > 0);
+    if (!firstUser) return fallbackTitle;
+    const cleaned = firstUser.text.trim().replace(/\s+/g, " ");
+    return cleaned.length > 42 ? `${cleaned.slice(0, 40)}...` : cleaned;
+  };
+
   const [coachMessages, setCoachMessages] = useState<CoachMessage[]>(() => {
     try {
       const val = localStorage.getItem("cached_coachMessages");
@@ -122,6 +136,47 @@ export default function App() {
       return [];
     }
   });
+  const [coachChatSessions, setCoachChatSessions] = useState<CoachChatSession[]>(() => {
+    try {
+      const savedSessions = localStorage.getItem("cached_coachChatSessions");
+      if (savedSessions) {
+        const parsed = JSON.parse(savedSessions);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      const cachedMsgsRaw = localStorage.getItem("cached_coachMessages");
+      const cachedMsgs: CoachMessage[] = cachedMsgsRaw ? JSON.parse(cachedMsgsRaw) : [];
+      if (Array.isArray(cachedMsgs) && cachedMsgs.length > 0) {
+        return [
+          {
+            id: "chat_default",
+            title: deriveCoachChatTitle(cachedMsgs, "Routine Coaching Chat"),
+            createdAt: cachedMsgs[0]?.timestamp || new Date().toISOString(),
+            updatedAt: cachedMsgs[cachedMsgs.length - 1]?.timestamp || new Date().toISOString(),
+            messages: cachedMsgs
+          }
+        ];
+      }
+    } catch {
+      // ignore storage errors
+    }
+    const welcome = createDefaultCoachWelcome();
+    return [
+      {
+        id: "chat_default",
+        title: "Routine Coaching Chat",
+        createdAt: welcome.timestamp,
+        updatedAt: welcome.timestamp,
+        messages: [welcome]
+      }
+    ];
+  });
+  const [activeCoachChatId, setActiveCoachChatId] = useState<string>(() => {
+    return localStorage.getItem("cached_activeCoachChatId") || "chat_default";
+  });
+  const coachChatSessionsRef = useRef<CoachChatSession[]>(coachChatSessions);
+  coachChatSessionsRef.current = coachChatSessions;
+  const activeCoachChatIdRef = useRef<string>(activeCoachChatId);
+  activeCoachChatIdRef.current = activeCoachChatId;
   const [autopilotMode, setAutopilotMode] = useState<AutopilotMode>(() => {
     const saved = localStorage.getItem("ai_autopilot_mode");
     if (saved) return saved as AutopilotMode;
@@ -543,6 +598,8 @@ export default function App() {
       localStorage.setItem("cached_availability", JSON.stringify(prevAvailability));
       localStorage.setItem("cached_notifications", JSON.stringify(prevNotifications));
       localStorage.setItem("cached_coachMessages", JSON.stringify(prevCoachMessages));
+      localStorage.setItem("cached_coachChatSessions", JSON.stringify(coachChatSessionsRef.current));
+      localStorage.setItem("cached_activeCoachChatId", activeCoachChatIdRef.current);
       localStorage.setItem("local_last_updated", nowStr);
     } catch (storageErr) {
       console.warn("LocalStorage cache update note:", storageErr);
@@ -563,6 +620,8 @@ export default function App() {
       availability: prevAvailability,
       notifications: prevNotifications,
       coachMessages: prevCoachMessages,
+      coachChatSessions: coachChatSessionsRef.current,
+      activeCoachChatId: activeCoachChatIdRef.current,
       userEmail,
       coachPersona: activePersona,
       customTemplates: localTemplates
@@ -648,7 +707,25 @@ export default function App() {
             : [];
           const localAvailability = JSON.parse(localStorage.getItem("cached_availability") || "[]");
           const localNotifications = JSON.parse(localStorage.getItem("cached_notifications") || "[]");
-          const localCoachMessages = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
+          const localCoachMessages: CoachMessage[] = JSON.parse(localStorage.getItem("cached_coachMessages") || "[]");
+          const cachedSessionsRaw = localStorage.getItem("cached_coachChatSessions");
+          const parsedLocalSessions: CoachChatSession[] = cachedSessionsRaw ? JSON.parse(cachedSessionsRaw) : [];
+          const resolvedLocalSessions: CoachChatSession[] =
+            Array.isArray(parsedLocalSessions) && parsedLocalSessions.length > 0
+              ? parsedLocalSessions
+              : [
+                  {
+                    id: "chat_default",
+                    title: deriveCoachChatTitle(localCoachMessages, "Routine Coaching Chat"),
+                    createdAt: localCoachMessages[0]?.timestamp || new Date().toISOString(),
+                    updatedAt: localCoachMessages[localCoachMessages.length - 1]?.timestamp || new Date().toISOString(),
+                    messages: localCoachMessages.length > 0 ? localCoachMessages : [createDefaultCoachWelcome()]
+                  }
+                ];
+          const resolvedLocalActiveId =
+            localStorage.getItem("cached_activeCoachChatId") || resolvedLocalSessions[0].id;
+          const activeLocalSession =
+            resolvedLocalSessions.find((s) => s.id === resolvedLocalActiveId) || resolvedLocalSessions[0];
 
           // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
           const cleanEventsRaw = localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
@@ -662,7 +739,11 @@ export default function App() {
             setAvailability(data.availability || []);
           }
           setNotifications(localNotifications);
-          setCoachMessages(localCoachMessages);
+          coachChatSessionsRef.current = resolvedLocalSessions;
+          activeCoachChatIdRef.current = activeLocalSession.id;
+          setCoachChatSessions(resolvedLocalSessions);
+          setActiveCoachChatId(activeLocalSession.id);
+          setCoachMessages(activeLocalSession.messages || localCoachMessages);
 
           localStorage.setItem("cached_goals", JSON.stringify(localGoalsList));
           localStorage.setItem("cached_events", JSON.stringify(optimizedLocalEvents));
@@ -674,7 +755,7 @@ export default function App() {
             optimizedLocalEvents,
             localAvailability.length > 0 ? localAvailability : data.availability || [],
             localNotifications,
-            localCoachMessages,
+            activeLocalSession.messages || localCoachMessages,
             (localStorage.getItem("coach_persona") as "mentor" | "drill" | "data") || "mentor",
             true
           );
@@ -684,11 +765,39 @@ export default function App() {
           // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
           const { optimizedEvents: optimizedCloudEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanCloudEventsRaw, cloudGoalsClean);
 
+          const cloudMsgs = data.coachMessages || [];
+          const cloudSessions: CoachChatSession[] =
+            Array.isArray(data.coachChatSessions) && data.coachChatSessions.length > 0
+              ? data.coachChatSessions
+              : [
+                  {
+                    id: "chat_default",
+                    title: deriveCoachChatTitle(cloudMsgs, "Routine Coaching Chat"),
+                    createdAt: cloudMsgs[0]?.timestamp || new Date().toISOString(),
+                    updatedAt: cloudMsgs[cloudMsgs.length - 1]?.timestamp || new Date().toISOString(),
+                    persona: data.coachPersona || "mentor",
+                    messages: cloudMsgs.length > 0 ? cloudMsgs : [createDefaultCoachWelcome()]
+                  }
+                ];
+          const cloudActiveId =
+            data.activeCoachChatId && cloudSessions.some((s) => s.id === data.activeCoachChatId)
+              ? data.activeCoachChatId
+              : cloudSessions[0].id;
+          const activeCloudSession = cloudSessions.find((s) => s.id === cloudActiveId) || cloudSessions[0];
+          const activeCloudMessages =
+            activeCloudSession?.messages && activeCloudSession.messages.length > 0
+              ? activeCloudSession.messages
+              : cloudMsgs;
+
           setGoals(cloudGoalsClean);
           setEvents(optimizedCloudEvents);
           setAvailability(data.availability || []);
           setNotifications(data.notifications || []);
-          setCoachMessages(data.coachMessages || []);
+          coachChatSessionsRef.current = cloudSessions;
+          activeCoachChatIdRef.current = activeCloudSession.id;
+          setCoachChatSessions(cloudSessions);
+          setActiveCoachChatId(activeCloudSession.id);
+          setCoachMessages(activeCloudMessages);
           if (data.coachPersona) {
             setCoachPersona(data.coachPersona);
             localStorage.setItem("coach_persona", data.coachPersona);
@@ -698,7 +807,9 @@ export default function App() {
           localStorage.setItem("cached_events", JSON.stringify(optimizedCloudEvents));
           localStorage.setItem("cached_availability", JSON.stringify(data.availability || []));
           localStorage.setItem("cached_notifications", JSON.stringify(data.notifications || []));
-          localStorage.setItem("cached_coachMessages", JSON.stringify(data.coachMessages || []));
+          localStorage.setItem("cached_coachMessages", JSON.stringify(activeCloudMessages));
+          localStorage.setItem("cached_coachChatSessions", JSON.stringify(cloudSessions));
+          localStorage.setItem("cached_activeCoachChatId", activeCloudSession.id);
           if (data.customTemplates && Array.isArray(data.customTemplates) && data.customTemplates.length > 0) {
             const localTemplatesRaw = localStorage.getItem("focus_timer_custom_templates_v2");
             if (!localTemplatesRaw) {
@@ -714,7 +825,7 @@ export default function App() {
               optimizedCloudEvents,
               data.availability || [],
               data.notifications || [],
-              data.coachMessages || [],
+              activeCloudMessages,
               data.coachPersona || "mentor",
               true
             );
@@ -1056,7 +1167,9 @@ export default function App() {
                   id: s.id,
                   title: s.title,
                   durationMinutes: s.durationMinutes || 15,
-                  completed: s.completed || false
+                  completed: s.completed || false,
+                  carryoverNote: s.carryoverNote,
+                  carryoverNoteDate: s.carryoverNoteDate
                 })) : undefined)
               });
               scheduledCount++;
@@ -2061,8 +2174,8 @@ export default function App() {
             return {
               ...g,
               completedCount: shouldIncrementGoalCount ? g.completedCount + 1 : g.completedCount,
-              lastSessionNote: trimmedNote || undefined,
-              lastSessionNoteDate: trimmedNote ? new Date().toISOString() : undefined
+              lastSessionNote: trimmedNote ? trimmedNote : g.lastSessionNote,
+              lastSessionNoteDate: trimmedNote ? new Date().toISOString() : g.lastSessionNoteDate
             };
           }
           return g;
@@ -2344,7 +2457,9 @@ export default function App() {
                 id: s.id,
                 title: s.title,
                 durationMinutes: s.durationMinutes || 15,
-                completed: s.completed || false
+                completed: s.completed || false,
+                carryoverNote: s.carryoverNote,
+                carryoverNoteDate: s.carryoverNoteDate
               })) : undefined)
             });
 
@@ -2644,6 +2759,228 @@ export default function App() {
     handleEditGoal(goalId, { knowledgeHub: updatedHub });
   };
 
+  const handleSaveStepCarryoverNote = (
+    goalId: string,
+    stepId: string,
+    stepTitle: string,
+    note: string,
+    eventId?: string
+  ) => {
+    const trimmed = note.trim();
+    const nowIso = new Date().toISOString();
+    const normTitle = stepTitle.trim().toLowerCase();
+
+    const matchesStep = (s: { id: string; title: string }) =>
+      s.id === stepId || (normTitle.length > 0 && s.title.trim().toLowerCase() === normTitle);
+
+    const nextGoals = goals.map(g => {
+      if (g.id !== goalId) return g;
+      const updatedSubtasks = g.subtasks?.map(s =>
+        matchesStep(s)
+          ? {
+              ...s,
+              carryoverNote: trimmed || undefined,
+              carryoverNoteDate: trimmed ? nowIso : undefined
+            }
+          : s
+      );
+      const updatedSubSteps = g.subSteps?.map(s =>
+        matchesStep(s)
+          ? {
+              ...s,
+              carryoverNote: trimmed || undefined,
+              carryoverNoteDate: trimmed ? nowIso : undefined
+            }
+          : s
+      );
+      return {
+        ...g,
+        ...(updatedSubtasks ? { subtasks: updatedSubtasks } : {}),
+        ...(updatedSubSteps ? { subSteps: updatedSubSteps } : {})
+      };
+    });
+
+    const nextEvents = events.map(evt => {
+      const shouldUpdateEvt = (eventId && evt.id === eventId) || (!evt.completed && evt.goalId === goalId);
+      if (!shouldUpdateEvt) return evt;
+      const updatedSubtasks = evt.subtasks?.map(s =>
+        matchesStep(s)
+          ? {
+              ...s,
+              carryoverNote: trimmed || undefined,
+              carryoverNoteDate: trimmed ? nowIso : undefined
+            }
+          : s
+      );
+      const updatedSubSteps = evt.subSteps?.map(s =>
+        matchesStep(s)
+          ? {
+              ...s,
+              carryoverNote: trimmed || undefined,
+              carryoverNoteDate: trimmed ? nowIso : undefined
+            }
+          : s
+      );
+      return {
+        ...evt,
+        ...(updatedSubtasks ? { subtasks: updatedSubtasks } : {}),
+        ...(updatedSubSteps ? { subSteps: updatedSubSteps } : {})
+      };
+    });
+
+    setGoals(nextGoals);
+    setEvents(nextEvents);
+    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+
+    if (trimmed) {
+      triggerSystemNotification(
+        "📝 Step Carryover Note Saved",
+        `Saved note for step "${stepTitle}": "${trimmed}"`,
+        "motivation"
+      );
+    }
+  };
+
+  const handleSaveGoalReviewNote = (
+    goalId: string,
+    note: string,
+    options?: {
+      advanceChapterId?: string | null;
+      saveToHub?: boolean;
+      chapterTitle?: string;
+      stepId?: string | null;
+      stepTitle?: string | null;
+      alsoSaveToGoal?: boolean;
+    }
+  ) => {
+    const trimmed = note.trim();
+    const targetGoal = goals.find(g => g.id === goalId);
+    if (!targetGoal) return;
+
+    const nowIso = new Date().toISOString();
+    let updatedChapters = targetGoal.chapters;
+    if (options?.advanceChapterId && targetGoal.chapters) {
+      updatedChapters = targetGoal.chapters.map(ch =>
+        ch.id === options.advanceChapterId ? { ...ch, completed: true } : ch
+      );
+    }
+
+    const normStepTitle = (options?.stepTitle || "").trim().toLowerCase();
+    const matchesStep = (s: { id: string; title: string }) =>
+      (options?.stepId && s.id === options.stepId) ||
+      (normStepTitle.length > 0 && s.title.trim().toLowerCase() === normStepTitle);
+
+    const hasStepTarget = Boolean(options?.stepId || options?.stepTitle);
+    const updatedSubtasks = hasStepTarget && trimmed
+      ? targetGoal.subtasks?.map(s =>
+          matchesStep(s)
+            ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso }
+            : s
+        )
+      : targetGoal.subtasks;
+    const updatedSubSteps = hasStepTarget && trimmed
+      ? targetGoal.subSteps?.map(s =>
+          matchesStep(s)
+            ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso }
+            : s
+        )
+      : targetGoal.subSteps;
+
+    let updatedHub = targetGoal.knowledgeHub;
+    if (trimmed && options?.saveToHub !== false) {
+      const currentHub: GoalKnowledgeHub = targetGoal.knowledgeHub || {
+        notes: [],
+        tests: [],
+        flashcards: [],
+        overallMasteryScore: 0
+      };
+      const labelPrefix = options?.stepTitle ? `Step "${options.stepTitle}" Note` : "Review Note — Where to Start Next";
+      const nextNote: StudyArtifactNote = {
+        id: `review_note_${Date.now()}`,
+        title: `${labelPrefix} (${new Date().toLocaleDateString([], { month: "short", day: "numeric" })})`,
+        category: "summary",
+        content: trimmed,
+        chapterTitle: options?.chapterTitle || options?.stepTitle || targetGoal.chapters?.find(c => !c.completed)?.title || undefined,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      };
+      updatedHub = {
+        ...currentHub,
+        notes: [nextNote, ...currentHub.notes]
+      };
+    }
+
+    const shouldUpdateGoalNote = options?.alsoSaveToGoal !== false || !hasStepTarget;
+
+    const nextGoals = goals.map(g => {
+      if (g.id !== goalId) return g;
+      return {
+        ...g,
+        ...(trimmed && shouldUpdateGoalNote ? { lastSessionNote: trimmed, lastSessionNoteDate: nowIso } : {}),
+        ...(updatedChapters ? { chapters: updatedChapters } : {}),
+        ...(updatedSubtasks ? { subtasks: updatedSubtasks } : {}),
+        ...(updatedSubSteps ? { subSteps: updatedSubSteps } : {}),
+        ...(updatedHub ? { knowledgeHub: updatedHub } : {})
+      };
+    });
+
+    const nextEvents = hasStepTarget && trimmed
+      ? events.map(evt => {
+          if (evt.completed || evt.goalId !== goalId) return evt;
+          return {
+            ...evt,
+            ...(evt.subtasks ? {
+              subtasks: evt.subtasks.map(s =>
+                matchesStep(s) ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso } : s
+              )
+            } : {}),
+            ...(evt.subSteps ? {
+              subSteps: evt.subSteps.map(s =>
+                matchesStep(s) ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso } : s
+              )
+            } : {})
+          };
+        })
+      : events;
+
+    setGoals(nextGoals);
+    if (nextEvents !== events) {
+      setEvents(nextEvents);
+    }
+    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+
+    if (trimmed) {
+      triggerSystemNotification(
+        hasStepTarget ? "📝 Step Carryover Note Saved" : "📝 Review Note Saved",
+        hasStepTarget
+          ? `Saved note for "${targetGoal.name}" → Step "${options?.stepTitle || "Phase"}": "${trimmed}"`
+          : `Saved where to start next for "${targetGoal.name}": "${trimmed}"`,
+        "motivation"
+      );
+    } else if (options?.advanceChapterId) {
+      triggerSystemNotification(
+        "➡️ Moved to Next Section",
+        `Advanced section progress for "${targetGoal.name}".`,
+        "success"
+      );
+    }
+  };
+
+  // Atomic batch updater for Digest Next-Week Adjustments & Undo snapshots
+  const handleApplyBatchAdjustment = (
+    updatedGoals: Goal[],
+    updatedEvents: CalendarEvent[],
+    notificationTitle?: string,
+    notificationMessage?: string
+  ) => {
+    setGoals(updatedGoals);
+    setEvents(updatedEvents);
+    syncToCloud(updatedGoals, updatedEvents, availability, notifications, coachMessages);
+    if (notificationTitle && notificationMessage) {
+      triggerSystemNotification(notificationTitle, notificationMessage, "success");
+    }
+  };
+
   // Helper to schedule missing sessions for a single goal
   const handleAutoScheduleGoal = (goalId: string) => {
     const targetGoal = goals.find(g => g.id === goalId);
@@ -2850,23 +3187,170 @@ export default function App() {
     );
   };
 
-  // I. Add customized system messages
+  // I. Persistent Multi-Chat AI Coach History Handlers
   const handleAddCoachMessage = (msg: CoachMessage) => {
-    const nextMsgs = [...coachMessages, msg];
-    setCoachMessages(nextMsgs);
-    // We don't necessarily have to block the interface on syncing simple coach text, but doing so keeps cloud sync in pristine shape
-    syncToCloud(goals, events, availability, notifications, nextMsgs);
+    const currentSessions = coachChatSessionsRef.current;
+    const currentId = activeCoachChatIdRef.current;
+    const targetSession = currentSessions.find((s) => s.id === currentId) || currentSessions[0];
+
+    let nextSessions: CoachChatSession[];
+    let nextActiveMessages: CoachMessage[];
+
+    if (!targetSession) {
+      const welcome = createDefaultCoachWelcome();
+      nextActiveMessages = [welcome, msg];
+      const newSession: CoachChatSession = {
+        id: `chat_${Date.now()}`,
+        title: deriveCoachChatTitle(nextActiveMessages, "New Coaching Chat"),
+        createdAt: welcome.timestamp,
+        updatedAt: msg.timestamp,
+        persona: coachPersona,
+        messages: nextActiveMessages
+      };
+      nextSessions = [newSession];
+      activeCoachChatIdRef.current = newSession.id;
+      setActiveCoachChatId(newSession.id);
+    } else {
+      nextActiveMessages = [...targetSession.messages, msg];
+      const isDefaultTitle =
+        targetSession.title === "New Coaching Chat" ||
+        targetSession.title === "Routine Coaching Chat" ||
+        targetSession.title === "New Chat";
+      const updatedTitle =
+        isDefaultTitle && msg.sender === "user"
+          ? deriveCoachChatTitle(nextActiveMessages, targetSession.title)
+          : targetSession.title;
+
+      const updatedSession: CoachChatSession = {
+        ...targetSession,
+        title: updatedTitle,
+        updatedAt: msg.timestamp,
+        persona: coachPersona,
+        messages: nextActiveMessages
+      };
+      // Move updated session to top of history list cleanly
+      nextSessions = [
+        updatedSession,
+        ...currentSessions.filter((s) => s.id !== targetSession.id)
+      ];
+      activeCoachChatIdRef.current = targetSession.id;
+    }
+
+    coachChatSessionsRef.current = nextSessions;
+    setCoachChatSessions(nextSessions);
+    setCoachMessages(nextActiveMessages);
+    syncToCloud(goals, events, availability, notifications, nextActiveMessages);
+  };
+
+  const handleStartNewCoachChat = () => {
+    const currentSessions = coachChatSessionsRef.current;
+    const currentActive = currentSessions.find((s) => s.id === activeCoachChatIdRef.current);
+
+    // If current chat already has no user messages yet, keep it active rather than stacking empty chats
+    if (currentActive && !currentActive.messages.some((m) => m.sender === "user")) {
+      const refreshedWelcome = createDefaultCoachWelcome(
+        "Fresh chat started! What routine, goal, or schedule change should we work on?"
+      );
+      const updatedSession: CoachChatSession = {
+        ...currentActive,
+        title: "New Coaching Chat",
+        updatedAt: refreshedWelcome.timestamp,
+        persona: coachPersona,
+        messages: [refreshedWelcome]
+      };
+      const nextSessions = [
+        updatedSession,
+        ...currentSessions.filter((s) => s.id !== currentActive.id)
+      ];
+      coachChatSessionsRef.current = nextSessions;
+      setCoachChatSessions(nextSessions);
+      setCoachMessages(updatedSession.messages);
+      syncToCloud(goals, events, availability, notifications, updatedSession.messages);
+      return;
+    }
+
+    const welcomeMsg = createDefaultCoachWelcome(
+      "New coaching conversation started! Ask me to adjust your week, design study blocks, or analyze your progress."
+    );
+    const newSession: CoachChatSession = {
+      id: `chat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      title: "New Coaching Chat",
+      createdAt: welcomeMsg.timestamp,
+      updatedAt: welcomeMsg.timestamp,
+      persona: coachPersona,
+      messages: [welcomeMsg]
+    };
+
+    const nextSessions = [newSession, ...currentSessions];
+    coachChatSessionsRef.current = nextSessions;
+    activeCoachChatIdRef.current = newSession.id;
+    setCoachChatSessions(nextSessions);
+    setActiveCoachChatId(newSession.id);
+    setCoachMessages(newSession.messages);
+    syncToCloud(goals, events, availability, notifications, newSession.messages);
+  };
+
+  const handleSelectCoachChat = (chatId: string) => {
+    const target = coachChatSessionsRef.current.find((s) => s.id === chatId);
+    if (!target) return;
+
+    activeCoachChatIdRef.current = target.id;
+    setActiveCoachChatId(target.id);
+    setCoachMessages(target.messages);
+    syncToCloud(goals, events, availability, notifications, target.messages);
+  };
+
+  const handleDeleteCoachChat = (chatId: string) => {
+    const remaining = coachChatSessionsRef.current.filter((s) => s.id !== chatId);
+    if (remaining.length === 0) {
+      const welcome = createDefaultCoachWelcome();
+      const freshSession: CoachChatSession = {
+        id: `chat_${Date.now()}`,
+        title: "Routine Coaching Chat",
+        createdAt: welcome.timestamp,
+        updatedAt: welcome.timestamp,
+        persona: coachPersona,
+        messages: [welcome]
+      };
+      coachChatSessionsRef.current = [freshSession];
+      activeCoachChatIdRef.current = freshSession.id;
+      setCoachChatSessions([freshSession]);
+      setActiveCoachChatId(freshSession.id);
+      setCoachMessages(freshSession.messages);
+      syncToCloud(goals, events, availability, notifications, freshSession.messages);
+      return;
+    }
+
+    const nextActive =
+      activeCoachChatIdRef.current === chatId
+        ? remaining[0]
+        : remaining.find((s) => s.id === activeCoachChatIdRef.current) || remaining[0];
+
+    coachChatSessionsRef.current = remaining;
+    activeCoachChatIdRef.current = nextActive.id;
+    setCoachChatSessions(remaining);
+    setActiveCoachChatId(nextActive.id);
+    setCoachMessages(nextActive.messages);
+    syncToCloud(goals, events, availability, notifications, nextActive.messages);
   };
 
   const handleClearCoachHistory = () => {
     const cleanMsg: CoachMessage[] = [
-      {
-        id: "m_rst",
-        sender: "coach",
-        text: "Log initialized. Suggest optimized workout blocks now!",
-        timestamp: new Date().toISOString()
-      }
+      createDefaultCoachWelcome("Current chat reset. Ask me to optimize your routine or start another topic!")
     ];
+    const currentId = activeCoachChatIdRef.current;
+    const nextSessions = coachChatSessionsRef.current.map((s) =>
+      s.id === currentId
+        ? {
+            ...s,
+            title: "New Coaching Chat",
+            updatedAt: cleanMsg[0].timestamp,
+            messages: cleanMsg
+          }
+        : s
+    );
+    coachChatSessionsRef.current = nextSessions;
+    setCoachChatSessions(nextSessions);
     setCoachMessages(cleanMsg);
     syncToCloud(goals, events, availability, notifications, cleanMsg);
   };
@@ -2941,6 +3425,19 @@ export default function App() {
           }
         ]
       };
+
+      const resetSession: CoachChatSession = {
+        id: `chat_${Date.now()}`,
+        title: "Routine Coaching Chat",
+        createdAt: initial.coachMessages[0].timestamp,
+        updatedAt: initial.coachMessages[0].timestamp,
+        persona: "mentor",
+        messages: initial.coachMessages
+      };
+      coachChatSessionsRef.current = [resetSession];
+      activeCoachChatIdRef.current = resetSession.id;
+      setCoachChatSessions([resetSession]);
+      setActiveCoachChatId(resetSession.id);
 
       setGoals([]);
       setEvents([]);
@@ -3508,6 +4005,11 @@ export default function App() {
             events={events}
             availability={availability}
             coachMessages={coachMessages}
+            coachChatSessions={coachChatSessions}
+            activeCoachChatId={activeCoachChatId}
+            onStartNewChat={handleStartNewCoachChat}
+            onSelectChat={handleSelectCoachChat}
+            onDeleteChat={handleDeleteCoachChat}
             onAddMessage={handleAddCoachMessage}
             onClearMessages={handleClearCoachHistory}
             coachPersona={coachPersona}
@@ -3525,6 +4027,8 @@ export default function App() {
               setEvents(updatedEvts);
               syncToCloud(goals, updatedEvts, availability, notifications, coachMessages);
             }}
+            onApplyBatchAdjustment={handleApplyBatchAdjustment}
+            onNavigateToCalendar={handleNavigateToCalendar}
             onAddNotification={triggerSystemNotification}
             onApplyEnergySchedule={(newEvts) => {
               const updatedEvents = [...events, ...newEvts];
@@ -3717,6 +4221,11 @@ export default function App() {
         events={events}
         availability={availability}
         coachMessages={coachMessages}
+        coachChatSessions={coachChatSessions}
+        activeCoachChatId={activeCoachChatId}
+        onStartNewChat={handleStartNewCoachChat}
+        onSelectChat={handleSelectCoachChat}
+        onDeleteChat={handleDeleteCoachChat}
         onAddMessage={handleAddCoachMessage}
         onClearMessages={handleClearCoachHistory}
         coachPersona={coachPersona}
@@ -3734,6 +4243,7 @@ export default function App() {
           setEvents(updatedEvts);
           syncToCloud(goals, updatedEvts, availability, notifications, coachMessages);
         }}
+        onApplyBatchAdjustment={handleApplyBatchAdjustment}
         onAddNotification={triggerSystemNotification}
         onApplyEnergySchedule={(newEvts) => {
           const updatedEvents = [...events, ...newEvts];
@@ -3758,6 +4268,8 @@ export default function App() {
         onCompleteSession={handleCompleteTimerSession}
         onExtendEventDuration={handleExtendEventDuration}
         onUpdateGoalKnowledgeHub={handleUpdateGoalKnowledgeHub}
+        onSaveGoalReviewNote={handleSaveGoalReviewNote}
+        onSaveStepCarryoverNote={handleSaveStepCarryoverNote}
       />
 
       {/* Energy & Cognitive Load Profile Modal */}

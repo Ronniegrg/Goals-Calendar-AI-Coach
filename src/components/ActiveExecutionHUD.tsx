@@ -30,7 +30,8 @@ import {
   Wand2,
   Loader2,
   RefreshCw,
-  X
+  X,
+  StickyNote
 } from "lucide-react";
 import { CalendarEvent, Goal, SubTask, SessionSubStep } from "../types";
 import { 
@@ -89,8 +90,12 @@ export default function ActiveExecutionHUD({
   const [showGoalPicker, setShowGoalPicker] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [newSubtaskMinutes, setNewSubtaskMinutes] = useState<number>(15);
+  const [newSubtaskCarryoverNote, setNewSubtaskCarryoverNote] = useState("");
+  const [showNewSubtaskNote, setShowNewSubtaskNote] = useState(false);
   const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState<string>("");
+  const [editingSubtaskNoteId, setEditingSubtaskNoteId] = useState<string | null>(null);
+  const [editingSubtaskNoteText, setEditingSubtaskNoteText] = useState<string>("");
   const [isGeneratingAiSteps, setIsGeneratingAiSteps] = useState(false);
   const [showTemplatesMenu, setShowTemplatesMenu] = useState(false);
 
@@ -143,6 +148,7 @@ export default function ActiveExecutionHUD({
     goal: Goal;
     event?: CalendarEvent | null;
     isStudyAhead: boolean;
+    isReviewMode?: boolean;
   } | null>(null);
 
   // Sync with global timer events (dispatched by FocusTimerModal on start, pause, resume, tick, finish)
@@ -555,14 +561,29 @@ export default function ActiveExecutionHUD({
     return 45;
   }, [activeTimer, effectiveEvent, effectiveGoal, userSelectedGoal, userSelectedGoalEvent]);
 
-  // Subtasks logic (merging active timer subtasks, event subtasks, or goal subtasks)
+  // Subtasks logic (merging active timer subtasks, event subtasks, or goal subtasks while preserving carryover notes)
   const activeSubtasks: SubTask[] = useMemo(() => {
+    const fallbackNotesSource = [
+      ...(effectiveGoal?.subtasks || []),
+      ...(effectiveGoal?.subSteps || []),
+      ...(effectiveEvent?.subtasks || []),
+      ...(effectiveEvent?.subSteps || [])
+    ];
+    const enrichNote = (step: { id: string; title: string; carryoverNote?: string; carryoverNoteDate?: string }) => {
+      if (step.carryoverNote) return { carryoverNote: step.carryoverNote, carryoverNoteDate: step.carryoverNoteDate };
+      const match = fallbackNotesSource.find(
+        f => (f.id === step.id || f.title.trim().toLowerCase() === step.title.trim().toLowerCase()) && f.carryoverNote
+      );
+      return { carryoverNote: match?.carryoverNote, carryoverNoteDate: match?.carryoverNoteDate };
+    };
+
     if (activeTimer?.subSteps && activeTimer.subSteps.length > 0) {
       return activeTimer.subSteps.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes,
-        completed: s.completed || false
+        completed: s.completed || false,
+        ...enrichNote(s)
       }));
     }
     if (effectiveEvent?.subSteps && effectiveEvent.subSteps.length > 0) {
@@ -570,22 +591,24 @@ export default function ActiveExecutionHUD({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes,
-        completed: s.completed || false
+        completed: s.completed || false,
+        ...enrichNote(s)
       }));
     }
     if (effectiveEvent?.subtasks && effectiveEvent.subtasks.length > 0) {
-      return effectiveEvent.subtasks;
+      return effectiveEvent.subtasks.map(s => ({ ...s, ...enrichNote(s) }));
     }
     if (effectiveGoal?.subSteps && effectiveGoal.subSteps.length > 0) {
       return effectiveGoal.subSteps.map(s => ({
         id: s.id,
         title: s.title,
         durationMinutes: s.durationMinutes,
-        completed: s.completed || false
+        completed: s.completed || false,
+        ...enrichNote(s)
       }));
     }
     if (effectiveGoal?.subtasks && effectiveGoal.subtasks.length > 0) {
-      return effectiveGoal.subtasks;
+      return effectiveGoal.subtasks.map(s => ({ ...s, ...enrichNote(s) }));
     }
     return [];
   }, [activeTimer, effectiveEvent, effectiveGoal]);
@@ -601,23 +624,43 @@ export default function ActiveExecutionHUD({
   const isOverallocated = allocatedMinutes > totalSessionMinutes;
   const hasTimingOnSteps = activeSubtasks.some(t => typeof t.durationMinutes === "number" && t.durationMinutes > 0);
 
-  // Synchronize subtasks to event, goal, and active timer
+  // Synchronize subtasks cleanly to goal (which also syncs uncompleted events), standalone event, and active timer
   const persistSubtasks = (updated: SubTask[]) => {
-    if (effectiveEvent?.id && onEditEvent) {
-      onEditEvent(effectiveEvent.id, { subtasks: updated });
-    } else if (effectiveGoal?.id && onEditGoal) {
-      onEditGoal(effectiveGoal.id, { subtasks: updated });
+    const convertedSteps: SessionSubStep[] = updated.map((t) => ({
+      id: t.id,
+      title: t.title,
+      durationMinutes: t.durationMinutes || 10,
+      completed: t.completed,
+      carryoverNote: t.carryoverNote,
+      carryoverNoteDate: t.carryoverNoteDate
+    }));
+
+    if (effectiveGoal?.id && onEditGoal) {
+      onEditGoal(effectiveGoal.id, { subtasks: updated, subSteps: convertedSteps });
+    } else if (effectiveEvent?.id && onEditEvent) {
+      onEditEvent(effectiveEvent.id, { subtasks: updated, subSteps: convertedSteps });
     }
 
     if (activeTimer) {
-      const convertedSteps: SessionSubStep[] = updated.map((t, idx) => ({
-        id: t.id,
-        title: t.title,
-        durationMinutes: t.durationMinutes || 10,
-        completed: t.completed
-      }));
       updateActiveTimerSubSteps(convertedSteps);
     }
+  };
+
+  const handleSaveSubtaskCarryoverNote = (taskId: string, noteText: string) => {
+    const trimmed = noteText.trim();
+    const nowIso = new Date().toISOString();
+    const updated = activeSubtasks.map(t =>
+      t.id === taskId
+        ? {
+            ...t,
+            carryoverNote: trimmed || undefined,
+            carryoverNoteDate: trimmed ? nowIso : undefined
+          }
+        : t
+    );
+    persistSubtasks(updated);
+    setEditingSubtaskNoteId(null);
+    setEditingSubtaskNoteText("");
   };
 
   const handleToggleSubtask = (taskId: string) => {
@@ -659,14 +702,21 @@ export default function ActiveExecutionHUD({
     e.preventDefault();
     if (!newSubtaskTitle.trim()) return;
     const dur = Math.max(1, Number(newSubtaskMinutes) || 15);
+    const trimmedNote = newSubtaskCarryoverNote.trim();
     const newTask: SubTask = {
       id: `task_${Date.now()}`,
       title: newSubtaskTitle.trim(),
       durationMinutes: dur,
-      completed: false
+      completed: false,
+      ...(trimmedNote ? {
+        carryoverNote: trimmedNote,
+        carryoverNoteDate: new Date().toISOString()
+      } : {})
     };
     const nextList = [...activeSubtasks, newTask];
     setNewSubtaskTitle("");
+    setNewSubtaskCarryoverNote("");
+    setShowNewSubtaskNote(false);
     persistSubtasks(nextList);
   };
 
@@ -845,7 +895,12 @@ export default function ActiveExecutionHUD({
   };
 
   // Actual execution of study timer
-  const executeStartStudying = (g?: Goal, evt?: CalendarEvent | null, noteOverride?: string) => {
+  const executeStartStudying = (
+    g?: Goal,
+    evt?: CalendarEvent | null,
+    noteOverride?: string,
+    startAsReview: boolean = false
+  ) => {
     // Only use evt if it genuinely belongs to g, never an unrelated scheduled event from another goal (e.g. Python when studying Cybersecurity)
     const isMatchingEvent = evt && (!g || evt.goalId === g.id || (evt.title && g.name && (
       evt.title.toLowerCase().includes(g.name.toLowerCase()) ||
@@ -853,32 +908,48 @@ export default function ActiveExecutionHUD({
     )));
     const matchedEvt = isMatchingEvent ? evt : null;
 
-    const title = matchedEvt?.title || g?.name || "Focus Study Session";
-    const duration = matchedEvt 
-      ? Math.max(15, Math.round((new Date(matchedEvt.end).getTime() - new Date(matchedEvt.start).getTime()) / 60000)) 
-      : (g?.durationMinutes || 45);
+    const baseTitle = matchedEvt?.title || g?.name || "Focus Study Session";
+    const title = startAsReview ? `${g?.name || baseTitle} — 15m Review` : baseTitle;
+    const duration = startAsReview
+      ? 15
+      : (matchedEvt 
+          ? Math.max(15, Math.round((new Date(matchedEvt.end).getTime() - new Date(matchedEvt.start).getTime()) / 60000)) 
+          : (g?.durationMinutes || 45));
 
     // Convert active subtasks to sessionSubSteps with their duration
     const rawGoalSubtasks = g?.subtasks || matchedEvt?.subtasks || (effectiveGoal?.id === g?.id ? effectiveGoal?.subtasks : undefined);
     const rawGoalSubSteps = g?.subSteps || matchedEvt?.subSteps;
 
-    const subStepsToPass: SessionSubStep[] | undefined = activeSubtasks.length > 0 
-      ? activeSubtasks.map((t) => ({
-          id: t.id,
-          title: t.title,
-          durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
-          completed: t.completed
-        }))
-      : (rawGoalSubSteps && rawGoalSubSteps.length > 0
-          ? rawGoalSubSteps
-          : (rawGoalSubtasks && rawGoalSubtasks.length > 0
-              ? rawGoalSubtasks.map(t => ({
-                  id: t.id,
-                  title: t.title,
-                  durationMinutes: t.durationMinutes || 15,
-                  completed: t.completed || false
-                }))
-              : undefined));
+    const subStepsToPass: SessionSubStep[] | undefined = startAsReview
+      ? undefined
+      : (activeSubtasks.length > 0 && (!g || !effectiveGoal || g.id === effectiveGoal.id)
+          ? activeSubtasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
+              completed: t.completed,
+              carryoverNote: t.carryoverNote,
+              carryoverNoteDate: t.carryoverNoteDate
+            }))
+          : (rawGoalSubSteps && rawGoalSubSteps.length > 0
+              ? rawGoalSubSteps.map(s => {
+                  const matchingTask = rawGoalSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
+                  return {
+                    ...s,
+                    carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
+                    carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
+                  };
+                })
+              : (rawGoalSubtasks && rawGoalSubtasks.length > 0
+                  ? rawGoalSubtasks.map(t => ({
+                      id: t.id,
+                      title: t.title,
+                      durationMinutes: t.durationMinutes || 15,
+                      completed: t.completed || false,
+                      carryoverNote: t.carryoverNote,
+                      carryoverNoteDate: t.carryoverNoteDate
+                    }))
+                  : undefined)));
 
     // Suppress upcoming pre-session alerts because user is studying now
     try {
@@ -915,7 +986,9 @@ export default function ActiveExecutionHUD({
       previousSessionNote: noteOverride !== undefined ? noteOverride : g?.lastSessionNote,
       subSteps: subStepsToPass,
       autoStart: true,
-      openModal: false
+      openModal: false,
+      isReviewSession: startAsReview,
+      reviewCheckpointEnabled: startAsReview ? true : undefined
     });
     setSelectedGoalId(null);
     try {
@@ -926,10 +999,10 @@ export default function ActiveExecutionHUD({
   };
 
   // User Actions for Timer:
-  // When user clicks "Start Studying Now" or "Study Ahead Now":
+  // When user clicks "Start Studying Now", "15m Review", or "Study Ahead Now":
   // If the goal has a note saved, show the note so they know where to start!
   // Otherwise, start normally without interruption.
-  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent) => {
+  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent, isReviewMode: boolean = false) => {
     // When called from the main "Start Studying Now" button with no override, ALWAYS study the scheduled target session (e.g. React)!
     const targetGoal = overrideGoal || effectiveGoal || matchedGoal || userSelectedGoal;
 
@@ -960,18 +1033,26 @@ export default function ActiveExecutionHUD({
       (targetEvent && tomorrowEvents.some(te => te.id === targetEvent.id))
     );
 
-    // Check if goal has a saved note to tell the user where to start
-    if (targetGoal && targetGoal.lastSessionNote && targetGoal.lastSessionNote.trim().length > 0) {
+    // Check if goal or any of its steps has a saved carryover note to tell the user where to start
+    const hasGoalNote = Boolean(targetGoal?.lastSessionNote && targetGoal.lastSessionNote.trim().length > 0);
+    const hasStepNotes = Boolean(
+      targetGoal && (
+        (targetGoal.subtasks || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0) ||
+        (targetGoal.subSteps || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0)
+      )
+    );
+    if (targetGoal && (hasGoalNote || hasStepNotes)) {
       setBriefingTarget({
         goal: targetGoal,
         event: targetEvent,
-        isStudyAhead: isAhead
+        isStudyAhead: isAhead,
+        isReviewMode
       });
       return;
     }
 
     // Otherwise, works normally
-    executeStartStudying(targetGoal, targetEvent);
+    executeStartStudying(targetGoal, targetEvent, undefined, isReviewMode);
   };
 
   const handlePullTomorrowEventToToday = (evt: CalendarEvent) => {
@@ -1017,8 +1098,22 @@ export default function ActiveExecutionHUD({
       });
     } else if (effectiveGoal || effectiveEvent) {
       const stepsToPass = activeSubtasks.length > 0
-        ? activeSubtasks.map(t => ({ id: t.id, title: t.title, durationMinutes: t.durationMinutes || 15, completed: t.completed }))
-        : (effectiveGoal?.subSteps || (effectiveGoal?.subtasks ? effectiveGoal.subtasks.map(s => ({ id: s.id, title: s.title, durationMinutes: s.durationMinutes || 15, completed: s.completed })) : undefined));
+        ? activeSubtasks.map(t => ({
+            id: t.id,
+            title: t.title,
+            durationMinutes: t.durationMinutes || 15,
+            completed: t.completed,
+            carryoverNote: t.carryoverNote,
+            carryoverNoteDate: t.carryoverNoteDate
+          }))
+        : (effectiveGoal?.subSteps || (effectiveGoal?.subtasks ? effectiveGoal.subtasks.map(s => ({
+            id: s.id,
+            title: s.title,
+            durationMinutes: s.durationMinutes || 15,
+            completed: s.completed,
+            carryoverNote: s.carryoverNote,
+            carryoverNoteDate: s.carryoverNoteDate
+          })) : undefined));
 
       triggerFocusTimer({
         title: primaryTitle,
@@ -1154,8 +1249,14 @@ export default function ActiveExecutionHUD({
             goal={briefingTarget.goal}
             event={briefingTarget.event}
             isStudyAhead={briefingTarget.isStudyAhead}
-            onConfirmStart={(editedNote) => {
-              executeStartStudying(briefingTarget.goal, briefingTarget.event, editedNote);
+            isReviewMode={briefingTarget.isReviewMode}
+            onConfirmStart={(editedNote, startAsReview) => {
+              executeStartStudying(
+                briefingTarget.goal,
+                briefingTarget.event,
+                editedNote,
+                startAsReview ?? briefingTarget.isReviewMode
+              );
               setBriefingTarget(null);
               setSelectedGoalId(null);
             }}
@@ -1166,6 +1267,25 @@ export default function ActiveExecutionHUD({
                   lastSessionNoteDate: new Date().toISOString()
                 });
               }
+            }}
+            onUpdateStepNote={(goalId, stepId, stepTitle, updatedNote) => {
+              const gObj = goals.find(item => item.id === goalId);
+              if (!gObj || !onEditGoal) return;
+              const trimmed = updatedNote.trim();
+              const nowIso = new Date().toISOString();
+              const normTitle = stepTitle.trim().toLowerCase();
+              const matches = (s: { id: string; title: string }) =>
+                s.id === stepId || (normTitle.length > 0 && s.title.trim().toLowerCase() === normTitle);
+              const updatedSubtasks = gObj.subtasks?.map(s =>
+                matches(s) ? { ...s, carryoverNote: trimmed || undefined, carryoverNoteDate: trimmed ? nowIso : undefined } : s
+              );
+              const updatedSubSteps = gObj.subSteps?.map(s =>
+                matches(s) ? { ...s, carryoverNote: trimmed || undefined, carryoverNoteDate: trimmed ? nowIso : undefined } : s
+              );
+              onEditGoal(goalId, {
+                ...(updatedSubtasks ? { subtasks: updatedSubtasks } : {}),
+                ...(updatedSubSteps ? { subSteps: updatedSubSteps } : {})
+              });
             }}
           />
         )}
@@ -1526,14 +1646,22 @@ export default function ActiveExecutionHUD({
 
               {/* CURRENT ACTIVE PACED STEP CALLOUT */}
               {isTimerRunning && currentPacedStep?.step && (
-                <div className="flex items-center gap-2 pt-0.5">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    <Timer className="w-3 h-3 text-indigo-400" />
-                    Step {currentPacedStep.step.idx + 1} of {subtasksTimeline.length}: {currentPacedStep.step.title}
-                  </span>
-                  <span className="text-[11px] font-mono text-emerald-400 font-bold">
-                    {formatCountdown(currentPacedStep.remainingSec)} left of {currentPacedStep.step.durMins}m
-                  </span>
+                <div className="space-y-1 pt-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      <Timer className="w-3 h-3 text-indigo-400" />
+                      Step {currentPacedStep.step.idx + 1} of {subtasksTimeline.length}: {currentPacedStep.step.title}
+                    </span>
+                    <span className="text-[11px] font-mono text-emerald-400 font-bold">
+                      {formatCountdown(currentPacedStep.remainingSec)} left of {currentPacedStep.step.durMins}m
+                    </span>
+                  </div>
+                  {currentPacedStep.step.carryoverNote && (
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[11px] text-amber-200 font-medium italic">
+                      <StickyNote className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span>Step Note: "{currentPacedStep.step.carryoverNote}"</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1685,16 +1813,28 @@ export default function ActiveExecutionHUD({
                 )}
               </>
             ) : (
-              <button
-                type="button"
-                id="hud_start_studying_btn"
-                onClick={() => handleStartStudying()}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
-                title="Click to start studying now - tracks start time, pauses, and exact finishing time"
-              >
-                <Play className="w-3.5 h-3.5 fill-white" />
-                <span>Start Studying Now</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  id="hud_start_15m_review_btn"
+                  onClick={() => handleStartStudying(undefined, undefined, true)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-violet-100 hover:bg-violet-200 dark:bg-violet-500/20 dark:hover:bg-violet-500/35 text-violet-900 dark:text-violet-200 border border-violet-300 dark:border-violet-400/40 transition active:scale-95 cursor-pointer"
+                  title="Start a 15-minute review session; asks if you want to save a carryover note when done"
+                >
+                  <Clock className="w-3.5 h-3.5 text-violet-600 dark:text-violet-300" />
+                  <span>15m Review</span>
+                </button>
+                <button
+                  type="button"
+                  id="hud_start_studying_btn"
+                  onClick={() => handleStartStudying()}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
+                  title="Click to start studying now - tracks start time, pauses, and exact finishing time"
+                >
+                  <Play className="w-3.5 h-3.5 fill-white" />
+                  <span>Start Studying Now</span>
+                </button>
+              </div>
             )}
 
             {/* Open Fullscreen Focus Room */}
@@ -1786,32 +1926,51 @@ export default function ActiveExecutionHUD({
                         {goals.map(g => {
                           const isSelected = (activeTimer?.goalId === g.id) || (userSelectedGoal?.id === g.id);
                           return (
-                            <button
+                            <div
                               key={g.id}
-                              type="button"
-                              onClick={() => {
-                                setShowGoalPicker(false);
-                                handleStartStudying(g);
-                              }}
-                              className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition cursor-pointer ${
+                              className={`w-full flex items-center justify-between gap-1.5 p-2 rounded-lg text-left text-xs transition ${
                                 isSelected 
-                                  ? "bg-indigo-50 dark:bg-indigo-500/20 text-indigo-900 dark:text-indigo-200 font-bold border border-indigo-200 dark:border-indigo-500/30"
+                                  ? "bg-indigo-50 dark:bg-indigo-500/20 text-indigo-900 dark:text-indigo-200 font-bold border border-indigo-200 dark:border-indigo-500/30" 
                                   : "hover:bg-slate-100 dark:hover:bg-white/10 text-slate-800 dark:text-white"
                               }`}
                             >
-                              <div className="min-w-0 flex-1 pr-2">
-                                <div className="truncate font-medium">{g.name}</div>
-                                <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
-                                  <span>{g.category || "Study"}</span>
-                                  <span>•</span>
-                                  <span>{g.durationMinutes || 45}m</span>
-                                  {isSelected && (
-                                    <span className="text-emerald-500 font-semibold">• Active</span>
-                                  )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowGoalPicker(false);
+                                  handleStartStudying(g);
+                                }}
+                                className="min-w-0 flex-1 flex items-center justify-between pr-1 text-left cursor-pointer"
+                              >
+                                <div className="min-w-0 flex-1 pr-2">
+                                  <div className="truncate font-medium">{g.name}</div>
+                                  <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                                    <span>{g.category || "Study"}</span>
+                                    <span>•</span>
+                                    <span>{g.durationMinutes || 45}m</span>
+                                    {g.lastSessionNote && (
+                                      <span className="text-amber-600 dark:text-amber-300 font-semibold">• Has Note</span>
+                                    )}
+                                    {isSelected && (
+                                      <span className="text-emerald-500 font-semibold">• Active</span>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                              <Play className="w-3 h-3 text-emerald-400 shrink-0" />
-                            </button>
+                                <Play className="w-3 h-3 text-emerald-400 shrink-0" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowGoalPicker(false);
+                                  handleStartStudying(g, undefined, true);
+                                }}
+                                className="px-2 py-1 rounded-md bg-violet-100 hover:bg-violet-200 dark:bg-violet-500/20 dark:hover:bg-violet-500/35 text-violet-900 dark:text-violet-200 border border-violet-300 dark:border-violet-400/30 text-[10px] font-bold shrink-0 cursor-pointer transition"
+                                title={`Start a 15-minute review for ${g.name}`}
+                              >
+                                15m Review
+                              </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -2190,11 +2349,13 @@ export default function ActiveExecutionHUD({
                 {subtasksTimeline.map((task, idx) => {
                   const isCurrentPaced = isTimerRunning && currentPacedStep?.step?.id === task.id;
                   const isEditingThis = editingSubtaskId === task.id;
+                  const isEditingThisNote = editingSubtaskNoteId === task.id;
+                  const hasStepNote = Boolean(task.carryoverNote && task.carryoverNote.trim().length > 0);
 
                   return (
                     <div
                       key={task.id}
-                      className={`relative flex items-center justify-between gap-2.5 p-2.5 rounded-xl border transition group ${
+                      className={`relative flex flex-col gap-2 p-2.5 rounded-xl border transition group ${
                         task.completed
                           ? "bg-slate-50/60 dark:bg-white/5 border-slate-200/60 dark:border-white/5 text-slate-400 dark:text-slate-500"
                           : isCurrentPaced
@@ -2202,182 +2363,274 @@ export default function ActiveExecutionHUD({
                             : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 hover:border-indigo-400/50"
                       }`}
                     >
-                      {/* Checkbox, Step Number & Title */}
-                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                        {/* Step Sequence Badge */}
-                        <span className="w-4 text-center font-mono text-[10px] font-bold text-slate-400 shrink-0">
-                          {idx + 1}
-                        </span>
+                      <div className="flex items-center justify-between gap-2.5">
+                        {/* Checkbox, Step Number & Title */}
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          {/* Step Sequence Badge */}
+                          <span className="w-4 text-center font-mono text-[10px] font-bold text-slate-400 shrink-0">
+                            {idx + 1}
+                          </span>
 
-                        {/* Completion Checkbox */}
-                        <div 
-                          onClick={() => handleToggleSubtask(task.id)}
-                          className={`w-4 h-4 rounded-md flex items-center justify-center border transition shrink-0 cursor-pointer ${
-                            task.completed
-                              ? "bg-emerald-500 border-emerald-500 text-white"
-                              : "border-slate-300 dark:border-white/20 hover:border-indigo-400"
-                          }`}
-                        >
-                          {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
-                        </div>
+                          {/* Completion Checkbox */}
+                          <div 
+                            onClick={() => handleToggleSubtask(task.id)}
+                            className={`w-4 h-4 rounded-md flex items-center justify-center border transition shrink-0 cursor-pointer ${
+                              task.completed
+                                ? "bg-emerald-500 border-emerald-500 text-white"
+                                : "border-slate-300 dark:border-white/20 hover:border-indigo-400"
+                            }`}
+                          >
+                            {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
+                          </div>
 
-                        {/* Title Display or Inline Editing */}
-                        <div className="min-w-0 flex-1">
-                          {isEditingThis ? (
-                            <form
-                              onSubmit={(e) => {
-                                e.preventDefault();
-                                handleRenameSubtask(task.id, editingSubtaskTitle);
-                              }}
-                              className="flex items-center gap-1"
-                            >
-                              <input
-                                type="text"
-                                autoFocus
-                                value={editingSubtaskTitle}
-                                onChange={(e) => setEditingSubtaskTitle(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Escape") setEditingSubtaskId(null);
+                          {/* Title Display or Inline Editing */}
+                          <div className="min-w-0 flex-1">
+                            {isEditingThis ? (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  handleRenameSubtask(task.id, editingSubtaskTitle);
                                 }}
-                                className="w-full text-xs bg-slate-900 border border-indigo-500 rounded px-1.5 py-0.5 text-white focus:outline-none font-semibold"
-                              />
-                              <button
-                                type="submit"
-                                className="p-1 rounded bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer shrink-0"
-                                title="Save"
+                                className="flex items-center gap-1"
                               >
-                                <Check className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditingSubtaskId(null)}
-                                className="p-1 rounded bg-white/10 text-slate-400 hover:text-white cursor-pointer shrink-0"
-                                title="Cancel"
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  value={editingSubtaskTitle}
+                                  onChange={(e) => setEditingSubtaskTitle(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Escape") setEditingSubtaskId(null);
+                                  }}
+                                  className="w-full text-xs bg-slate-900 border border-indigo-500 rounded px-1.5 py-0.5 text-white focus:outline-none font-semibold"
+                                />
+                                <button
+                                  type="submit"
+                                  className="p-1 rounded bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer shrink-0"
+                                  title="Save"
+                                >
+                                  <Check className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingSubtaskId(null)}
+                                  className="p-1 rounded bg-white/10 text-slate-400 hover:text-white cursor-pointer shrink-0"
+                                  title="Cancel"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </form>
+                            ) : (
+                              <div 
+                                onDoubleClick={() => {
+                                  setEditingSubtaskId(task.id);
+                                  setEditingSubtaskTitle(task.title);
+                                }}
+                                className="cursor-pointer select-none"
+                                title="Double click to edit title"
                               >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </form>
-                          ) : (
-                            <div 
-                              onDoubleClick={() => {
-                                setEditingSubtaskId(task.id);
-                                setEditingSubtaskTitle(task.title);
-                              }}
-                              className="cursor-pointer select-none"
-                              title="Double click to edit title"
-                            >
-                              <div className="flex items-center gap-1.5">
-                                <span className={`text-xs font-semibold truncate ${task.completed ? "line-through text-slate-400" : ""}`}>
-                                  {task.title}
-                                </span>
-                                {isCurrentPaced && (
-                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse shrink-0">
-                                    ACTIVE NOW
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`text-xs font-semibold truncate ${task.completed ? "line-through text-slate-400" : ""}`}>
+                                    {task.title}
                                   </span>
+                                  {isCurrentPaced && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse shrink-0">
+                                      ACTIVE NOW
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                {/* If current paced step, display time remaining on this specific step */}
+                                {isCurrentPaced && (
+                                  <div className="text-[10px] font-mono text-indigo-300 mt-0.5">
+                                    {formatCountdown(currentPacedStep.remainingSec)} remaining on this step
+                                  </div>
                                 )}
                               </div>
-                              
-                              {/* If current paced step, display time remaining on this specific step */}
-                              {isCurrentPaced && (
-                                <div className="text-[10px] font-mono text-indigo-300 mt-0.5">
-                                  {formatCountdown(currentPacedStep.remainingSec)} remaining on this step
-                                </div>
-                              )}
-                            </div>
-                          )}
+                            )}
+                          </div>
                         </div>
-                      </div>
 
-                      {/* Right: Reorder, Edit, Time Badge & Delete */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        {/* Move Up */}
-                        {idx > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => handleMoveSubtask(task.id, "up")}
-                            className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 opacity-60 group-hover:opacity-100 transition cursor-pointer"
-                            title="Move step up"
-                          >
-                            <ArrowUp className="w-3 h-3" />
-                          </button>
-                        )}
-
-                        {/* Move Down */}
-                        {idx < activeSubtasks.length - 1 && (
-                          <button
-                            type="button"
-                            onClick={() => handleMoveSubtask(task.id, "down")}
-                            className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 opacity-60 group-hover:opacity-100 transition cursor-pointer"
-                            title="Move step down"
-                          >
-                            <ArrowDown className="w-3 h-3" />
-                          </button>
-                        )}
-
-                        {/* Edit Title Button */}
-                        {!isEditingThis && (
+                        {/* Right: Note, Reorder, Edit, Time Badge & Delete */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {/* Per-Step Carryover Note Button */}
                           <button
                             type="button"
                             onClick={() => {
-                              setEditingSubtaskId(task.id);
-                              setEditingSubtaskTitle(task.title);
+                              if (isEditingThisNote) {
+                                setEditingSubtaskNoteId(null);
+                              } else {
+                                setEditingSubtaskNoteId(task.id);
+                                setEditingSubtaskNoteText(task.carryoverNote || "");
+                              }
                             }}
-                            className="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-white/10 opacity-0 group-hover:opacity-100 transition cursor-pointer"
-                            title="Edit step title"
+                            className={`p-1 rounded transition cursor-pointer ${
+                              hasStepNote || isEditingThisNote
+                                ? "bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/35 opacity-100"
+                                : "text-slate-400 hover:text-amber-500 dark:hover:text-amber-300 hover:bg-amber-500/10 opacity-70 group-hover:opacity-100"
+                            }`}
+                            title={hasStepNote ? "Edit session carryover note for this step" : "Add session carryover note for this step"}
                           >
-                            <Pencil className="w-3 h-3" />
+                            <StickyNote className="w-3 h-3" />
                           </button>
-                        )}
 
-                        {/* -5 min */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleAdjustSubtaskDuration(task.id, -5);
-                          }}
-                          className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white transition cursor-pointer"
-                          title="Subtract 5 mins"
-                        >
-                          -5
-                        </button>
+                          {/* Move Up */}
+                          {idx > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleMoveSubtask(task.id, "up")}
+                              className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 opacity-60 group-hover:opacity-100 transition cursor-pointer"
+                              title="Move step up"
+                            >
+                              <ArrowUp className="w-3 h-3" />
+                            </button>
+                          )}
 
-                        {/* Duration Pill */}
-                        <div 
-                          className="px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1"
-                          title="Minutes allocated for this step"
-                        >
-                          <Clock className="w-3 h-3 text-indigo-400" />
-                          <span>{task.durationMinutes || 10}m</span>
+                          {/* Move Down */}
+                          {idx < activeSubtasks.length - 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleMoveSubtask(task.id, "down")}
+                              className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 opacity-60 group-hover:opacity-100 transition cursor-pointer"
+                              title="Move step down"
+                            >
+                              <ArrowDown className="w-3 h-3" />
+                            </button>
+                          )}
+
+                          {/* Edit Title Button */}
+                          {!isEditingThis && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingSubtaskId(task.id);
+                                setEditingSubtaskTitle(task.title);
+                              }}
+                              className="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-white/10 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                              title="Edit step title"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
+
+                          {/* -5 min */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAdjustSubtaskDuration(task.id, -5);
+                            }}
+                            className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white transition cursor-pointer"
+                            title="Subtract 5 mins"
+                          >
+                            -5
+                          </button>
+
+                          {/* Duration Pill */}
+                          <div 
+                            className="px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1"
+                            title="Minutes allocated for this step"
+                          >
+                            <Clock className="w-3 h-3 text-indigo-400" />
+                            <span>{task.durationMinutes || 10}m</span>
+                          </div>
+
+                          {/* +5 min */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAdjustSubtaskDuration(task.id, +5);
+                            }}
+                            className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white transition cursor-pointer"
+                            title="Add 5 mins"
+                          >
+                            +5
+                          </button>
+
+                          {/* Delete subtask */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteSubtask(task.id);
+                            }}
+                            className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-1 cursor-pointer"
+                            title="Delete step"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                         </div>
-
-                        {/* +5 min */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleAdjustSubtaskDuration(task.id, +5);
-                          }}
-                          className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white transition cursor-pointer"
-                          title="Add 5 mins"
-                        >
-                          +5
-                        </button>
-
-                        {/* Delete subtask */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteSubtask(task.id);
-                          }}
-                          className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-1 cursor-pointer"
-                          title="Delete step"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
                       </div>
 
+                      {/* Per-Step Carryover Note Inline Editor or Saved Strip */}
+                      {isEditingThisNote ? (
+                        <div className="pl-6 space-y-1.5 pt-1 border-t border-slate-200/60 dark:border-white/10">
+                          <textarea
+                            rows={2}
+                            autoFocus
+                            value={editingSubtaskNoteText}
+                            onChange={(e) => setEditingSubtaskNoteText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                setEditingSubtaskNoteId(null);
+                                setEditingSubtaskNoteText("");
+                              }
+                            }}
+                            placeholder={`Session carryover note for "${task.title}" (where to start next time)...`}
+                            className="w-full text-[11px] p-2 rounded-lg bg-slate-50 dark:bg-slate-900/90 border border-amber-400/60 text-slate-900 dark:text-amber-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                          />
+                          <div className="flex items-center justify-between gap-2">
+                            {hasStepNote ? (
+                              <button
+                                type="button"
+                                onClick={() => handleSaveSubtaskCarryoverNote(task.id, "")}
+                                className="text-[10px] font-semibold text-rose-500 dark:text-rose-400 hover:underline cursor-pointer"
+                              >
+                                Clear Note
+                              </button>
+                            ) : <span />}
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingSubtaskNoteId(null);
+                                  setEditingSubtaskNoteText("");
+                                }}
+                                className="px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSaveSubtaskCarryoverNote(task.id, editingSubtaskNoteText)}
+                                className="px-2.5 py-0.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Check className="w-3 h-3" />
+                                <span>Save Step Note</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : hasStepNote ? (
+                        <div
+                          onClick={() => {
+                            setEditingSubtaskNoteId(task.id);
+                            setEditingSubtaskNoteText(task.carryoverNote || "");
+                          }}
+                          className="ml-6 px-2.5 py-1.5 rounded-lg bg-amber-50/90 dark:bg-amber-500/10 border border-amber-300/60 dark:border-amber-500/25 text-[11px] text-amber-900 dark:text-amber-200 flex items-start justify-between gap-2 cursor-pointer hover:bg-amber-100/70 dark:hover:bg-amber-500/15 transition"
+                          title="Click to edit carryover note for this step"
+                        >
+                          <div className="flex items-start gap-1.5 min-w-0">
+                            <StickyNote className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                            <span className="italic break-words leading-snug">"{task.carryoverNote}"</span>
+                          </div>
+                          {task.carryoverNoteDate && (
+                            <span className="text-[9px] font-mono text-amber-700/75 dark:text-amber-300/75 shrink-0">
+                              {new Date(task.carryoverNoteDate).toLocaleDateString([], { month: "short", day: "numeric" })}
+                            </span>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -2452,53 +2705,79 @@ export default function ActiveExecutionHUD({
               ))}
             </div>
 
-            {/* Quick add custom subtask form with minute allocation */}
-            <form onSubmit={handleAddSubtask} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
-              <input
-                type="text"
-                value={newSubtaskTitle}
-                onChange={e => setNewSubtaskTitle(e.target.value)}
-                placeholder="Add custom step (e.g. 'Read Chapter 4', 'Solve LeetCode #206')..."
-                className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
+            {/* Quick add custom subtask form with minute allocation + optional step carryover note */}
+            <form onSubmit={handleAddSubtask} className="space-y-1.5 pt-1">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <input
+                  type="text"
+                  value={newSubtaskTitle}
+                  onChange={e => setNewSubtaskTitle(e.target.value)}
+                  placeholder="Add custom step (e.g. 'Read Chapter 4', 'Solve LeetCode #206')..."
+                  className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
 
-              {/* Minute budget input */}
-              <div className="flex items-center gap-1.5 self-end sm:self-auto">
-                <div className="flex items-center bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-2.5 py-1.5">
-                  <Clock className="w-3.5 h-3.5 text-indigo-400 mr-1" />
-                  <input
-                    type="number"
-                    value={newSubtaskMinutes}
-                    onChange={e => setNewSubtaskMinutes(Math.max(1, Number(e.target.value) || 1))}
-                    min={1}
-                    max={180}
-                    className="w-8 text-xs font-mono font-bold text-center text-slate-900 dark:text-white bg-transparent focus:outline-none"
-                    title="Allocated minutes"
-                  />
-                  <span className="text-[11px] font-mono text-slate-400">mins</span>
-                </div>
-
-                {/* Quick chip for remaining buffer if available */}
-                {unallocatedMinutes > 0 && unallocatedMinutes !== newSubtaskMinutes && (
+                {/* Minute budget input + Note toggle */}
+                <div className="flex items-center gap-1.5 self-end sm:self-auto">
                   <button
                     type="button"
-                    onClick={() => setNewSubtaskMinutes(unallocatedMinutes)}
-                    className="px-2 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-mono text-slate-300 transition cursor-pointer"
-                    title="Use remaining session buffer"
+                    onClick={() => setShowNewSubtaskNote(prev => !prev)}
+                    className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold transition cursor-pointer flex items-center gap-1 ${
+                      showNewSubtaskNote || newSubtaskCarryoverNote.trim()
+                        ? "bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/40"
+                        : "bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:text-amber-500 dark:hover:text-amber-300 border-slate-200 dark:border-white/10"
+                    }`}
+                    title="Attach a session carryover note to this step"
                   >
-                    Use rest ({unallocatedMinutes}m)
+                    <StickyNote className="w-3.5 h-3.5" />
+                    <span>+ Note</span>
                   </button>
-                )}
 
-                <button
-                  type="submit"
-                  disabled={!newSubtaskTitle.trim()}
-                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Step</span>
-                </button>
+                  <div className="flex items-center bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-2.5 py-1.5">
+                    <Clock className="w-3.5 h-3.5 text-indigo-400 mr-1" />
+                    <input
+                      type="number"
+                      value={newSubtaskMinutes}
+                      onChange={e => setNewSubtaskMinutes(Math.max(1, Number(e.target.value) || 1))}
+                      min={1}
+                      max={180}
+                      className="w-8 text-xs font-mono font-bold text-center text-slate-900 dark:text-white bg-transparent focus:outline-none"
+                      title="Allocated minutes"
+                    />
+                    <span className="text-[11px] font-mono text-slate-400">mins</span>
+                  </div>
+
+                  {/* Quick chip for remaining buffer if available */}
+                  {unallocatedMinutes > 0 && unallocatedMinutes !== newSubtaskMinutes && (
+                    <button
+                      type="button"
+                      onClick={() => setNewSubtaskMinutes(unallocatedMinutes)}
+                      className="px-2 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-mono text-slate-300 transition cursor-pointer"
+                      title="Use remaining session buffer"
+                    >
+                      Use rest ({unallocatedMinutes}m)
+                    </button>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={!newSubtaskTitle.trim()}
+                    className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Step</span>
+                  </button>
+                </div>
               </div>
+
+              {showNewSubtaskNote && (
+                <input
+                  type="text"
+                  value={newSubtaskCarryoverNote}
+                  onChange={e => setNewSubtaskCarryoverNote(e.target.value)}
+                  placeholder="Optional carryover note for this step (where to pick up next session)..."
+                  className="w-full px-3 py-1.5 rounded-xl border border-amber-400/50 bg-amber-50/70 dark:bg-slate-900/70 text-xs text-slate-900 dark:text-amber-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                />
+              )}
             </form>
 
           </div>
@@ -2517,8 +2796,14 @@ export default function ActiveExecutionHUD({
           goal={briefingTarget.goal}
           event={briefingTarget.event}
           isStudyAhead={briefingTarget.isStudyAhead}
-          onConfirmStart={(editedNote) => {
-            executeStartStudying(briefingTarget.goal, briefingTarget.event, editedNote);
+          isReviewMode={briefingTarget.isReviewMode}
+          onConfirmStart={(editedNote, startAsReview) => {
+            executeStartStudying(
+              briefingTarget.goal,
+              briefingTarget.event,
+              editedNote,
+              startAsReview ?? briefingTarget.isReviewMode
+            );
             setBriefingTarget(null);
             setSelectedGoalId(null);
           }}
@@ -2529,6 +2814,25 @@ export default function ActiveExecutionHUD({
                 lastSessionNoteDate: new Date().toISOString()
               });
             }
+          }}
+          onUpdateStepNote={(goalId, stepId, stepTitle, updatedNote) => {
+            const gObj = goals.find(item => item.id === goalId);
+            if (!gObj || !onEditGoal) return;
+            const trimmed = updatedNote.trim();
+            const nowIso = new Date().toISOString();
+            const normTitle = stepTitle.trim().toLowerCase();
+            const matches = (s: { id: string; title: string }) =>
+              s.id === stepId || (normTitle.length > 0 && s.title.trim().toLowerCase() === normTitle);
+            const updatedSubtasks = gObj.subtasks?.map(s =>
+              matches(s) ? { ...s, carryoverNote: trimmed || undefined, carryoverNoteDate: trimmed ? nowIso : undefined } : s
+            );
+            const updatedSubSteps = gObj.subSteps?.map(s =>
+              matches(s) ? { ...s, carryoverNote: trimmed || undefined, carryoverNoteDate: trimmed ? nowIso : undefined } : s
+            );
+            onEditGoal(goalId, {
+              ...(updatedSubtasks ? { subtasks: updatedSubtasks } : {}),
+              ...(updatedSubSteps ? { subSteps: updatedSubSteps } : {})
+            });
           }}
         />
       )}
