@@ -53,6 +53,13 @@ interface ActiveExecutionHUDProps {
   events: CalendarEvent[];
   goals: Goal[];
   onToggleCompleteEvent: (eventId: string) => void;
+  onCompleteSession?: (
+    eventId?: string,
+    goalId?: string,
+    note?: string,
+    sessionTitle?: string,
+    options?: { savedStepKeys?: string[]; sessionStartedAt?: number }
+  ) => void;
   onEditEvent?: (eventId: string, updates: Partial<CalendarEvent>) => void;
   onEditGoal?: (goalId: string, updates: Partial<Goal>) => void;
   onNavigateToCalendar?: (date?: Date, eventId?: string) => void;
@@ -77,6 +84,7 @@ export default function ActiveExecutionHUD({
   events,
   goals,
   onToggleCompleteEvent,
+  onCompleteSession,
   onEditEvent,
   onEditGoal,
   onNavigateToCalendar
@@ -143,12 +151,11 @@ export default function ActiveExecutionHUD({
   // User-selected goal from "Other Goals" picker (in-memory override for this study session, not persisted across sessions)
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
 
-  // Target goal and session for "Where to start" briefing note popup
+  // Target goal and session for goal step carryover briefing popup
   const [briefingTarget, setBriefingTarget] = useState<{
     goal: Goal;
     event?: CalendarEvent | null;
     isStudyAhead: boolean;
-    isReviewMode?: boolean;
   } | null>(null);
 
   // Sync with global timer events (dispatched by FocusTimerModal on start, pause, resume, tick, finish)
@@ -624,6 +631,14 @@ export default function ActiveExecutionHUD({
   const isOverallocated = allocatedMinutes > totalSessionMinutes;
   const hasTimingOnSteps = activeSubtasks.some(t => typeof t.durationMinutes === "number" && t.durationMinutes > 0);
 
+  const hudSessionSavedStepKeysRef = React.useRef<Set<string>>(new Set());
+  const hudStudyStartRef = React.useRef<number>(Date.now());
+
+  useEffect(() => {
+    hudSessionSavedStepKeysRef.current = new Set();
+    hudStudyStartRef.current = Date.now();
+  }, [effectiveGoal?.id, effectiveEvent?.id]);
+
   // Synchronize subtasks cleanly to goal (which also syncs uncompleted events), standalone event, and active timer
   const persistSubtasks = (updated: SubTask[]) => {
     const convertedSteps: SessionSubStep[] = updated.map((t) => ({
@@ -649,6 +664,17 @@ export default function ActiveExecutionHUD({
   const handleSaveSubtaskCarryoverNote = (taskId: string, noteText: string) => {
     const trimmed = noteText.trim();
     const nowIso = new Date().toISOString();
+    const targetTask = activeSubtasks.find(t => t.id === taskId);
+    const normTitleKey = targetTask?.title?.trim() ? `title:${targetTask.title.trim().toLowerCase()}` : "";
+
+    if (trimmed) {
+      hudSessionSavedStepKeysRef.current.add(taskId);
+      if (normTitleKey) hudSessionSavedStepKeysRef.current.add(normTitleKey);
+    } else {
+      hudSessionSavedStepKeysRef.current.delete(taskId);
+      if (normTitleKey) hudSessionSavedStepKeysRef.current.delete(normTitleKey);
+    }
+
     const updated = activeSubtasks.map(t =>
       t.id === taskId
         ? {
@@ -659,6 +685,18 @@ export default function ActiveExecutionHUD({
         : t
     );
     persistSubtasks(updated);
+
+    try {
+      window.dispatchEvent(new CustomEvent("focus_timer_step_note_saved", {
+        detail: {
+          goalId: effectiveGoal?.id,
+          stepId: taskId,
+          stepTitle: targetTask?.title || "",
+          saved: Boolean(trimmed)
+        }
+      }));
+    } catch {}
+
     setEditingSubtaskNoteId(null);
     setEditingSubtaskNoteText("");
   };
@@ -898,8 +936,7 @@ export default function ActiveExecutionHUD({
   const executeStartStudying = (
     g?: Goal,
     evt?: CalendarEvent | null,
-    noteOverride?: string,
-    startAsReview: boolean = false
+    noteOverride?: string
   ) => {
     // Only use evt if it genuinely belongs to g, never an unrelated scheduled event from another goal (e.g. Python when studying Cybersecurity)
     const isMatchingEvent = evt && (!g || evt.goalId === g.id || (evt.title && g.name && (
@@ -908,48 +945,44 @@ export default function ActiveExecutionHUD({
     )));
     const matchedEvt = isMatchingEvent ? evt : null;
 
-    const baseTitle = matchedEvt?.title || g?.name || "Focus Study Session";
-    const title = startAsReview ? `${g?.name || baseTitle} — 15m Review` : baseTitle;
-    const duration = startAsReview
-      ? 15
-      : (matchedEvt 
-          ? Math.max(15, Math.round((new Date(matchedEvt.end).getTime() - new Date(matchedEvt.start).getTime()) / 60000)) 
-          : (g?.durationMinutes || 45));
+    const title = matchedEvt?.title || g?.name || "Focus Study Session";
+    const duration = matchedEvt 
+      ? Math.max(15, Math.round((new Date(matchedEvt.end).getTime() - new Date(matchedEvt.start).getTime()) / 60000)) 
+      : (g?.durationMinutes || 45);
 
     // Convert active subtasks to sessionSubSteps with their duration
     const rawGoalSubtasks = g?.subtasks || matchedEvt?.subtasks || (effectiveGoal?.id === g?.id ? effectiveGoal?.subtasks : undefined);
     const rawGoalSubSteps = g?.subSteps || matchedEvt?.subSteps;
 
-    const subStepsToPass: SessionSubStep[] | undefined = startAsReview
-      ? undefined
-      : (activeSubtasks.length > 0 && (!g || !effectiveGoal || g.id === effectiveGoal.id)
-          ? activeSubtasks.map((t) => ({
-              id: t.id,
-              title: t.title,
-              durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
-              completed: t.completed,
-              carryoverNote: t.carryoverNote,
-              carryoverNoteDate: t.carryoverNoteDate
-            }))
-          : (rawGoalSubSteps && rawGoalSubSteps.length > 0
-              ? rawGoalSubSteps.map(s => {
-                  const matchingTask = rawGoalSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
-                  return {
-                    ...s,
-                    carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
-                    carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
-                  };
-                })
-              : (rawGoalSubtasks && rawGoalSubtasks.length > 0
-                  ? rawGoalSubtasks.map(t => ({
-                      id: t.id,
-                      title: t.title,
-                      durationMinutes: t.durationMinutes || 15,
-                      completed: t.completed || false,
-                      carryoverNote: t.carryoverNote,
-                      carryoverNoteDate: t.carryoverNoteDate
-                    }))
-                  : undefined)));
+    const subStepsToPass: SessionSubStep[] | undefined =
+      activeSubtasks.length > 0 && (!g || !effectiveGoal || g.id === effectiveGoal.id)
+        ? activeSubtasks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            durationMinutes: t.durationMinutes || Math.max(5, Math.round(duration / activeSubtasks.length)),
+            completed: t.completed,
+            carryoverNote: t.carryoverNote,
+            carryoverNoteDate: t.carryoverNoteDate
+          }))
+        : (rawGoalSubSteps && rawGoalSubSteps.length > 0
+            ? rawGoalSubSteps.map(s => {
+                const matchingTask = rawGoalSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
+                return {
+                  ...s,
+                  carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
+                  carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
+                };
+              })
+            : (rawGoalSubtasks && rawGoalSubtasks.length > 0
+                ? rawGoalSubtasks.map(t => ({
+                    id: t.id,
+                    title: t.title,
+                    durationMinutes: t.durationMinutes || 15,
+                    completed: t.completed || false,
+                    carryoverNote: t.carryoverNote,
+                    carryoverNoteDate: t.carryoverNoteDate
+                  }))
+                : undefined));
 
     // Suppress upcoming pre-session alerts because user is studying now
     try {
@@ -983,12 +1016,10 @@ export default function ActiveExecutionHUD({
       goalId: g?.id || matchedEvt?.goalId,
       category: g?.category || matchedEvt?.type,
       color: g?.color || "#6366f1",
-      previousSessionNote: noteOverride !== undefined ? noteOverride : g?.lastSessionNote,
+      previousSessionNote: noteOverride,
       subSteps: subStepsToPass,
       autoStart: true,
-      openModal: false,
-      isReviewSession: startAsReview,
-      reviewCheckpointEnabled: startAsReview ? true : undefined
+      openModal: false
     });
     setSelectedGoalId(null);
     try {
@@ -999,10 +1030,10 @@ export default function ActiveExecutionHUD({
   };
 
   // User Actions for Timer:
-  // When user clicks "Start Studying Now", "15m Review", or "Study Ahead Now":
-  // If the goal has a note saved, show the note so they know where to start!
+  // When user clicks "Start Studying Now" or "Study Ahead Now":
+  // If any of the goal's steps have a carryover note saved, show the step notes briefing first!
   // Otherwise, start normally without interruption.
-  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent, isReviewMode: boolean = false) => {
+  const handleStartStudying = (overrideGoal?: Goal, overrideEvent?: CalendarEvent) => {
     // When called from the main "Start Studying Now" button with no override, ALWAYS study the scheduled target session (e.g. React)!
     const targetGoal = overrideGoal || effectiveGoal || matchedGoal || userSelectedGoal;
 
@@ -1033,26 +1064,24 @@ export default function ActiveExecutionHUD({
       (targetEvent && tomorrowEvents.some(te => te.id === targetEvent.id))
     );
 
-    // Check if goal or any of its steps has a saved carryover note to tell the user where to start
-    const hasGoalNote = Boolean(targetGoal?.lastSessionNote && targetGoal.lastSessionNote.trim().length > 0);
+    // Check if any of the goal's steps has a saved carryover note
     const hasStepNotes = Boolean(
       targetGoal && (
         (targetGoal.subtasks || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0) ||
         (targetGoal.subSteps || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0)
       )
     );
-    if (targetGoal && (hasGoalNote || hasStepNotes)) {
+    if (targetGoal && hasStepNotes) {
       setBriefingTarget({
         goal: targetGoal,
         event: targetEvent,
-        isStudyAhead: isAhead,
-        isReviewMode
+        isStudyAhead: isAhead
       });
       return;
     }
 
     // Otherwise, works normally
-    executeStartStudying(targetGoal, targetEvent, undefined, isReviewMode);
+    executeStartStudying(targetGoal, targetEvent, undefined);
   };
 
   const handlePullTomorrowEventToToday = (evt: CalendarEvent) => {
@@ -1132,7 +1161,16 @@ export default function ActiveExecutionHUD({
     if (activeTimer) {
       finishFocusTimer();
     } else if (effectiveEvent) {
-      onToggleCompleteEvent(effectiveEvent.id);
+      if (!effectiveEvent.completed && onCompleteSession) {
+        onCompleteSession(effectiveEvent.id, effectiveGoal?.id, undefined, effectiveEvent.title, {
+          savedStepKeys: Array.from(hudSessionSavedStepKeysRef.current),
+          sessionStartedAt: hudStudyStartRef.current
+        });
+        hudSessionSavedStepKeysRef.current = new Set();
+        hudStudyStartRef.current = Date.now();
+      } else {
+        onToggleCompleteEvent(effectiveEvent.id);
+      }
     }
   };
 
@@ -1249,24 +1287,13 @@ export default function ActiveExecutionHUD({
             goal={briefingTarget.goal}
             event={briefingTarget.event}
             isStudyAhead={briefingTarget.isStudyAhead}
-            isReviewMode={briefingTarget.isReviewMode}
-            onConfirmStart={(editedNote, startAsReview) => {
+            onConfirmStart={() => {
               executeStartStudying(
                 briefingTarget.goal,
-                briefingTarget.event,
-                editedNote,
-                startAsReview ?? briefingTarget.isReviewMode
+                briefingTarget.event
               );
               setBriefingTarget(null);
               setSelectedGoalId(null);
-            }}
-            onUpdateGoalNote={(goalId, updatedNote) => {
-              if (onEditGoal) {
-                onEditGoal(goalId, {
-                  lastSessionNote: updatedNote,
-                  lastSessionNoteDate: new Date().toISOString()
-                });
-              }
             }}
             onUpdateStepNote={(goalId, stepId, stepTitle, updatedNote) => {
               const gObj = goals.find(item => item.id === goalId);
@@ -1813,28 +1840,16 @@ export default function ActiveExecutionHUD({
                 )}
               </>
             ) : (
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  id="hud_start_15m_review_btn"
-                  onClick={() => handleStartStudying(undefined, undefined, true)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-violet-100 hover:bg-violet-200 dark:bg-violet-500/20 dark:hover:bg-violet-500/35 text-violet-900 dark:text-violet-200 border border-violet-300 dark:border-violet-400/40 transition active:scale-95 cursor-pointer"
-                  title="Start a 15-minute review session; asks if you want to save a carryover note when done"
-                >
-                  <Clock className="w-3.5 h-3.5 text-violet-600 dark:text-violet-300" />
-                  <span>15m Review</span>
-                </button>
-                <button
-                  type="button"
-                  id="hud_start_studying_btn"
-                  onClick={() => handleStartStudying()}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
-                  title="Click to start studying now - tracks start time, pauses, and exact finishing time"
-                >
-                  <Play className="w-3.5 h-3.5 fill-white" />
-                  <span>Start Studying Now</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                id="hud_start_studying_btn"
+                onClick={() => handleStartStudying()}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
+                title="Click to start studying now - tracks start time, pauses, and exact finishing time"
+              >
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>Start Studying Now</span>
+              </button>
             )}
 
             {/* Open Fullscreen Focus Room */}
@@ -1948,8 +1963,8 @@ export default function ActiveExecutionHUD({
                                     <span>{g.category || "Study"}</span>
                                     <span>•</span>
                                     <span>{g.durationMinutes || 45}m</span>
-                                    {g.lastSessionNote && (
-                                      <span className="text-amber-600 dark:text-amber-300 font-semibold">• Has Note</span>
+                                    {(g.subtasks?.some(s => s.carryoverNote) || g.subSteps?.some(s => s.carryoverNote)) && (
+                                      <span className="text-amber-600 dark:text-amber-300 font-semibold">• Step Notes</span>
                                     )}
                                     {isSelected && (
                                       <span className="text-emerald-500 font-semibold">• Active</span>
@@ -1957,18 +1972,6 @@ export default function ActiveExecutionHUD({
                                   </div>
                                 </div>
                                 <Play className="w-3 h-3 text-emerald-400 shrink-0" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setShowGoalPicker(false);
-                                  handleStartStudying(g, undefined, true);
-                                }}
-                                className="px-2 py-1 rounded-md bg-violet-100 hover:bg-violet-200 dark:bg-violet-500/20 dark:hover:bg-violet-500/35 text-violet-900 dark:text-violet-200 border border-violet-300 dark:border-violet-400/30 text-[10px] font-bold shrink-0 cursor-pointer transition"
-                                title={`Start a 15-minute review for ${g.name}`}
-                              >
-                                15m Review
                               </button>
                             </div>
                           );
@@ -2796,24 +2799,13 @@ export default function ActiveExecutionHUD({
           goal={briefingTarget.goal}
           event={briefingTarget.event}
           isStudyAhead={briefingTarget.isStudyAhead}
-          isReviewMode={briefingTarget.isReviewMode}
-          onConfirmStart={(editedNote, startAsReview) => {
+          onConfirmStart={() => {
             executeStartStudying(
               briefingTarget.goal,
-              briefingTarget.event,
-              editedNote,
-              startAsReview ?? briefingTarget.isReviewMode
+              briefingTarget.event
             );
             setBriefingTarget(null);
             setSelectedGoalId(null);
-          }}
-          onUpdateGoalNote={(goalId, updatedNote) => {
-            if (onEditGoal) {
-              onEditGoal(goalId, {
-                lastSessionNote: updatedNote,
-                lastSessionNoteDate: new Date().toISOString()
-              });
-            }
           }}
           onUpdateStepNote={(goalId, stepId, stepTitle, updatedNote) => {
             const gObj = goals.find(item => item.id === goalId);

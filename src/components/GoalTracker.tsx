@@ -52,7 +52,8 @@ import {
   alignDailyEventsByPriority, 
   deduplicateDailyGoalEvents, 
   findGoalForEvent, 
-  getPriorityScore 
+  getPriorityScore,
+  runUnifiedAutoScheduler
 } from "../lib/scheduleOptimizer";
 import { inferGoalEnergyLevel, getEnergyBadgeData } from "../lib/energyProfile";
 import GoalRecommendationEngine from "./GoalRecommendationEngine";
@@ -195,6 +196,7 @@ interface GoalTrackerProps {
   burnoutLimits?: DailyBurnoutLimits;
   onUpdateBurnoutLimits?: (limits: DailyBurnoutLimits) => void;
   onUpdateGoalKnowledgeHub?: (goalId: string, updatedHub: GoalKnowledgeHub) => void;
+  onOptimizeSchedule?: () => void;
 }
 
 export default function GoalTracker({
@@ -221,7 +223,8 @@ export default function GoalTracker({
   onOpenStreakShield,
   burnoutLimits,
   onUpdateBurnoutLimits,
-  onUpdateGoalKnowledgeHub
+  onUpdateGoalKnowledgeHub,
+  onOptimizeSchedule
 }: GoalTrackerProps) {
   const streakBank = getStreakShieldBank();
   // Goal Form State
@@ -359,23 +362,22 @@ export default function GoalTracker({
       goalId: g.id,
       category: g.category || g.type,
       color: g.color || "#6366f1",
-      previousSessionNote: noteOverride !== undefined ? noteOverride : g.lastSessionNote,
+      previousSessionNote: noteOverride,
       subSteps: resolvedSubSteps,
       autoStart: true,
       openModal: !isStudyAhead
     });
   };
 
-  const hasGoalOrStepNotes = (g: Goal) => {
-    if (g.lastSessionNote && g.lastSessionNote.trim().length > 0) return true;
+  const hasStepCarryoverNotes = (g: Goal) => {
     if ((g.subtasks || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0)) return true;
     if ((g.subSteps || []).some(s => s.carryoverNote && s.carryoverNote.trim().length > 0)) return true;
     return false;
   };
 
   const handleStartTimer = (g: Goal) => {
-    // If goal or any step has a saved carryover note, show where to start briefing
-    if (hasGoalOrStepNotes(g)) {
+    // If any step has a saved carryover note, show step notes briefing
+    if (hasStepCarryoverNotes(g)) {
       setBriefingTarget({ goal: g, isStudyAhead: false });
       return;
     }
@@ -383,8 +385,8 @@ export default function GoalTracker({
   };
 
   const handleStartStudyAhead = (g: Goal) => {
-    // If goal or any step has a saved carryover note, show where to start briefing
-    if (hasGoalOrStepNotes(g)) {
+    // If any step has a saved carryover note, show step notes briefing
+    if (hasStepCarryoverNotes(g)) {
       setBriefingTarget({ goal: g, isStudyAhead: true });
       return;
     }
@@ -1503,186 +1505,40 @@ export default function GoalTracker({
     );
   };
 
-  // --- AUTOMATIC SCHEDULING ALGORITHM ---
+  // --- UNIFIED AUTOMATIC SCHEDULING TRIGGER ---
   const handleAutoSchedule = () => {
-    const isAutoSchedEvent = (e: CalendarEvent) =>
-      !e.completed &&
-      e.type !== "external" &&
-      (
-        e.id.startsWith("sch_") ||
-        e.id.includes("_sch_") ||
-        e.id.includes("sch_") ||
-        (e.notes && (e.notes.toLowerCase().includes("auto-scheduled") || e.notes.toLowerCase().includes("intelligently mapped")))
-      );
-
-    // Keep fixed events: completed events, external events, or manually added custom non-auto events
-    const fixedEvents = events.filter(e => !isAutoSchedEvent(e));
-    
-    // Auto-scheduled event IDs to replace with fresh priority-sorted placements
-    const autoSchedEvtIdsToRemove = events
-      .filter(e => isAutoSchedEvent(e))
-      .map(e => e.id);
-
-    const newScheduledEvents: CalendarEvent[] = [];
-    let scheduledCount = 0;
-    const now = new Date();
-
-    // Prioritize Critical goals first, then Important, then Normal goals
-    const sortedGoals = [...goals].sort((a, b) => {
-      const pScore = (p?: string) => p === "critical" ? 3 : p === "important" ? 2 : 1;
-      return pScore(b.priority) - pScore(a.priority);
-    });
-
-    sortedGoals.forEach(goal => {
-      const goalNameLower = goal.name.toLowerCase();
-
-      // Find existing scheduled events for this goal (among fixed and newly scheduled)
-      const currentScheduledEvents = [...fixedEvents, ...newScheduledEvents].filter(e => {
-        if (e.goalId === goal.id) return true;
-        if (e.title && e.title.toLowerCase().includes(goalNameLower)) return true;
-        return false;
-      });
-
-      const neededCount = Math.max(goal.weeklyTarget - currentScheduledEvents.length, 0);
-      if (neededCount === 0) return;
-
-      let successBooked = 0;
-
-      for (let dayOffset = 0; dayOffset <= 14; dayOffset++) {
-        if (successBooked >= neededCount) break;
-
-        const targetDay = new Date(now);
-        targetDay.setDate(now.getDate() + dayOffset);
-        const dayOfWeek = targetDay.getDay();
-
-        const availDay = availability.find(a => a.dayOfWeek === dayOfWeek);
-        if (!availDay || !availDay.active) continue;
-
-        // Strictly 1 session per day per goal
-        const maxSessionsPerDay = 1;
-        const targetDayString = targetDay.toDateString();
-
-        const sessionsOnTargetDay = [...fixedEvents, ...newScheduledEvents].filter(evt => {
-          const matchedGoal = findGoalForEvent(evt, goals);
-          const isThisGoal = (matchedGoal && matchedGoal.id === goal.id) || evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-          return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-        }).length;
-
-        if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
-
-        let [availStartHour] = availDay.startTime.split(":").map(Number);
-        let [availEndHour] = availDay.endTime.split(":").map(Number);
-
-        let prefStart = availStartHour;
-        let prefEnd = availEndHour;
-
-        if (goal.timePreference === TimePreference.EARLY_MORNING) {
-          prefStart = Math.max(availStartHour, 5);
-          prefEnd = Math.min(availEndHour, 8.5);
-        } else if (goal.timePreference === TimePreference.MORNING) {
-          prefStart = Math.max(availStartHour, 8);
-          prefEnd = Math.min(availEndHour, 12.5);
-        } else if (goal.timePreference === TimePreference.AFTERNOON) {
-          prefStart = Math.max(availStartHour, 12);
-          prefEnd = Math.min(availEndHour, 17);
-        } else if (goal.timePreference === TimePreference.EVENING) {
-          prefStart = Math.max(availStartHour, 17);
-          prefEnd = Math.max(availEndHour, 22);
-        } else if (goal.timePreference === TimePreference.NIGHT) {
-          prefStart = Math.max(availStartHour, 21);
-          prefEnd = 24;
-        }
-
-        const blockDurationHours = goal.durationMinutes / 60;
-
-        let windowsToTry: { start: number; end: number }[] = [];
-        if (!goal.timePreference || goal.timePreference === TimePreference.ANY) {
-          windowsToTry = [
-            { start: prefStart, end: prefEnd },
-            { start: availStartHour, end: availEndHour }
-          ];
-        } else {
-          windowsToTry = [
-            { start: prefStart, end: prefEnd }
-          ];
-        }
-
-        let slotBookedOnDay = false;
-
-        for (const win of windowsToTry) {
-          if (slotBookedOnDay) break;
-
-          for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
-            if (successBooked >= neededCount) break;
-
-            const currentDayCount = [...fixedEvents, ...newScheduledEvents].filter(evt => {
-              const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-              return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-            }).length;
-
-            if (currentDayCount >= maxSessionsPerDay) break;
-
-            const slotStart = new Date(targetDay);
-            slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
-
-            if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
-              continue;
-            }
-
-            const slotEnd = new Date(slotStart);
-            slotEnd.setMinutes(slotStart.getMinutes() + goal.durationMinutes);
-
-            const overlap = [...fixedEvents, ...newScheduledEvents].some(evt => {
-              const evtStart = new Date(evt.start);
-              const evtEnd = new Date(evt.end);
-              return slotStart < evtEnd && slotEnd > evtStart;
-            });
-
-            if (!overlap) {
-              newScheduledEvents.push({
-                id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-                title: goal.name,
-                type: goal.type === GoalType.WORKOUT ? "workout" :
-                      goal.type === GoalType.STUDY ? "study" :
-                      goal.type === GoalType.JOB_SEARCH ? "job_search" :
-                      goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-                      goal.type === GoalType.ROUTINE ? "routine" :
-                      "personal",
-                start: slotStart.toISOString(),
-                end: slotEnd.toISOString(),
-                goalId: goal.id,
-                completed: false,
-                notes: `Intelligently mapped in conflict-free time on ${slotStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-              });
-              successBooked++;
-              scheduledCount++;
-              slotBookedOnDay = true;
-              break;
-            }
-          }
-        }
-      }
-    });
-
-    if (autoSchedEvtIdsToRemove.length > 0) {
-      autoSchedEvtIdsToRemove.forEach(id => onDeleteGoal ? onDeleteGoal(id) : null);
+    if (onOptimizeSchedule) {
+      onOptimizeSchedule();
+      return;
     }
 
-    if (newScheduledEvents.length > 0) {
-      const combined = [...fixedEvents, ...newScheduledEvents];
-      const { alignedEvents } = alignDailyEventsByPriority(combined, goals);
-      const alignedNewEvents = alignedEvents.filter(e => newScheduledEvents.some(ne => ne.id === e.id));
+    const result = runUnifiedAutoScheduler({
+      goals,
+      events,
+      availability,
+      energyProfile,
+      burnoutLimits,
+      horizonDays: 28,
+      rebuildAutoScheduled: false
+    });
 
-      onBulkAddEvents(alignedNewEvents.length > 0 ? alignedNewEvents : newScheduledEvents);
+    if (result.addedEvents.length > 0) {
+      onBulkAddEvents(result.addedEvents);
       onAddNotification(
         "Auto-Scheduler Success",
-        `Reprioritized schedule: ${scheduledCount} session(s) mapped with Critical goals strictly scheduled before Important goals!`,
+        `Scheduled ${result.addedEvents.length} buffered session(s) honoring inactive days, energy zones, and burnout caps!`,
         "success"
+      );
+    } else if (result.unplacedReasons.length > 0) {
+      onAddNotification(
+        "Schedule Guardrail Notice",
+        result.unplacedReasons[0],
+        "warning"
       );
     } else {
       onAddNotification(
         "Auto-Scheduler Notice",
-        "Your calendar is already fully optimized and synced or has no pending targets.",
+        "Your calendar is already optimally scheduled within your active availability and recovery buffers.",
         "upcoming"
       );
     }
@@ -3774,7 +3630,13 @@ export default function GoalTracker({
                                 if (onCompleteSession) {
                                   onCompleteSession(undefined, g.id, undefined);
                                 } else {
-                                  onEditGoal(g.id, { completedCount: g.completedCount + 1, lastSessionNote: undefined, lastSessionNoteDate: undefined });
+                                  onEditGoal(g.id, {
+                                    completedCount: g.completedCount + 1,
+                                    lastSessionNote: undefined,
+                                    lastSessionNoteDate: undefined,
+                                    ...(g.subtasks ? { subtasks: g.subtasks.map(s => ({ ...s, carryoverNote: undefined, carryoverNoteDate: undefined })) } : {}),
+                                    ...(g.subSteps ? { subSteps: g.subSteps.map(s => ({ ...s, carryoverNote: undefined, carryoverNoteDate: undefined })) } : {})
+                                  });
                                 }
                               }}
                               className="w-full py-2 px-2.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
@@ -4284,15 +4146,9 @@ export default function GoalTracker({
           onClose={() => setBriefingTarget(null)}
           goal={briefingTarget.goal}
           isStudyAhead={briefingTarget.isStudyAhead}
-          onConfirmStart={(editedNote) => {
-            executeStartTimer(briefingTarget.goal, editedNote, briefingTarget.isStudyAhead);
+          onConfirmStart={() => {
+            executeStartTimer(briefingTarget.goal, undefined, briefingTarget.isStudyAhead);
             setBriefingTarget(null);
-          }}
-          onUpdateGoalNote={(goalId, updatedNote) => {
-            onEditGoal(goalId, {
-              lastSessionNote: updatedNote,
-              lastSessionNoteDate: new Date().toISOString()
-            });
           }}
           onUpdateStepNote={(goalId, stepId, stepTitle, updatedNote) => {
             const targetGoal = goals.find(item => item.id === goalId);

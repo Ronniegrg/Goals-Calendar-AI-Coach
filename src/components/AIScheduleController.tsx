@@ -40,7 +40,8 @@ import {
   AIScheduleProposal, 
   ScheduleDiffItem,
   AutopilotMode,
-  AutopilotLogEntry
+  AutopilotLogEntry,
+  DailyBurnoutLimits
 } from "../types";
 
 interface AIScheduleControllerProps {
@@ -48,6 +49,7 @@ interface AIScheduleControllerProps {
   events: CalendarEvent[];
   availability: AvailabilityWindow[];
   energyProfile: UserEnergyProfile;
+  burnoutLimits?: DailyBurnoutLimits;
   onApplySchedule: (newEvents: CalendarEvent[], summaryMsg: string) => void;
   onNavigateToGoals: () => void;
   onNavigateToCalendar: (date?: Date) => void;
@@ -67,6 +69,7 @@ export default function AIScheduleController({
   events,
   availability,
   energyProfile,
+  burnoutLimits,
   onApplySchedule,
   onNavigateToGoals,
   onNavigateToCalendar,
@@ -219,6 +222,7 @@ export default function AIScheduleController({
           events,
           availability,
           energyProfile,
+          burnoutLimits,
           currentDate: new Date().toISOString()
         })
       });
@@ -287,14 +291,27 @@ export default function AIScheduleController({
   };
 
   // -------------------------------------------------------------
-  // DYNAMIC AUTONOMOUS WATCHDOG EFFECT
-  // Scans schedule discrepancies continuously without user requests
+  // COORDINATED SENTINEL WATCHDOG EFFECT
+  // Note: When autopilotMode === "full_autonomous", the Global App Orchestrator
+  // handles live self-healing & unified placement to prevent duplicate competing loops.
+  // This controller runs interactive 10s countdown proposals in "copilot_sentinel" mode
+  // and syncs the live autopilot log in "full_autonomous" mode.
   // -------------------------------------------------------------
   useEffect(() => {
     if (!isSentinelActive || autopilotMode === "manual") return;
 
-    const runAutonomousSentinelCheck = async () => {
-      if (isExecutingAutonomousRef.current || isGenerating) return;
+    if (autopilotMode === "full_autonomous") {
+      setRadarPulse((p) => p + 1);
+      setLastScanTime(new Date());
+      try {
+        const saved = localStorage.getItem("ai_autopilot_log");
+        if (saved) setAutopilotLog(JSON.parse(saved));
+      } catch { /* ignore */ }
+      return;
+    }
+
+    const runCopilotSentinelCheck = async () => {
+      if (isExecutingAutonomousRef.current || isGenerating || pendingCountdown !== null) return;
 
       setRadarPulse((p) => p + 1);
       setLastScanTime(new Date());
@@ -303,12 +320,10 @@ export default function AIScheduleController({
       const hasPastOverdue = pastIncompleteEvents.length > 0;
       const hasUnscheduledGoals = unmetGoals.length > 0;
 
-      // If everything is already in perfect harmony, don't disrupt
       if (!hasCollisions && !hasPastOverdue && !hasUnscheduledGoals) {
         return;
       }
 
-      // We have a discrepancy that AI should autonomously fix!
       isExecutingAutonomousRef.current = true;
 
       try {
@@ -317,13 +332,13 @@ export default function AIScheduleController({
 
         if (hasCollisions) {
           selectedAutoMode = "deconflict_and_heal";
-          autoReason = `Detected ${detectedCollisions.length} overlapping collision(s). Deconflicted dynamically.`;
+          autoReason = `Detected ${detectedCollisions.length} overlapping collision(s). Deconflicted dynamically with recovery buffers.`;
         } else if (hasPastOverdue) {
           selectedAutoMode = "catch_up_rebalance";
-          autoReason = `Detected ${pastIncompleteEvents.length} missed/overdue session(s). Rebalanced to upcoming slots.`;
+          autoReason = `Detected ${pastIncompleteEvents.length} missed/overdue session(s). Rebalanced to upcoming active slots.`;
         } else if (hasUnscheduledGoals) {
           selectedAutoMode = "auto_plan_goals";
-          autoReason = `Detected ${unmetGoals.length} goal(s) below weekly target. Auto-planned open slots.`;
+          autoReason = `Detected ${unmetGoals.length} goal(s) below weekly target. Auto-planned open buffered slots.`;
         }
 
         const proposal = await generateProposal(selectedAutoMode, autoReason);
@@ -333,46 +348,21 @@ export default function AIScheduleController({
           return;
         }
 
-        if (autopilotMode === "full_autonomous") {
-          // FULL AUTONOMOUS MODE: Apply dynamically without asking!
-          onApplySchedule(
-            proposal.proposedEvents,
-            `🤖 Autopilot Dynamic Action: ${autoReason}`
-          );
-
-          appendAutopilotLog({
-            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            actionType: hasCollisions ? "deconflict" : hasPastOverdue ? "rebalance_overdue" : "auto_plan_goal",
-            title: hasCollisions ? "Autonomous Collision Deconfliction" : hasPastOverdue ? "Autonomous Catch-Up Rebalance" : "Autonomous Goal Auto-Planning",
-            description: autoReason,
-            badge: "⚡ Hands-Free Auto-Fixed",
-            affectedCount: proposal.stats.sessionsAdded + proposal.stats.sessionsMoved
-          });
-
-          onAddNotification(
-            "🤖 AI Autopilot Self-Healed Schedule",
-            `${autoReason} (${proposal.stats.sessionsAdded} added, ${proposal.stats.sessionsMoved} shifted).`,
-            "motivation"
-          );
-        } else if (autopilotMode === "copilot_sentinel") {
-          // CO-PILOT SENTINEL MODE: 10-Second countdown auto-commit
-          setPendingCountdownProposal(proposal);
-          setPendingCountdown(10);
-        }
+        setPendingCountdownProposal(proposal);
+        setPendingCountdown(10);
       } catch (err) {
-        console.warn("Sentinel autonomous check error:", err);
+        console.warn("Copilot sentinel check error:", err);
       } finally {
         isExecutingAutonomousRef.current = false;
       }
     };
 
-    // Run first check 2 seconds after mounting, then pulse every 15 seconds
     const initialTimer = setTimeout(() => {
-      runAutonomousSentinelCheck();
+      runCopilotSentinelCheck();
     }, 2000);
 
     const interval = setInterval(() => {
-      runAutonomousSentinelCheck();
+      runCopilotSentinelCheck();
     }, 15000);
 
     return () => {
@@ -380,13 +370,14 @@ export default function AIScheduleController({
       clearInterval(interval);
     };
   }, [
-    isSentinelActive, 
-    autopilotMode, 
-    detectedCollisions.length, 
-    pastIncompleteEvents.length, 
-    unmetGoals.length, 
-    events, 
-    goals
+    isSentinelActive,
+    autopilotMode,
+    detectedCollisions.length,
+    pastIncompleteEvents.length,
+    unmetGoals.length,
+    events,
+    goals,
+    pendingCountdown
   ]);
 
   // Countdown timer for Co-Pilot Sentinel mode

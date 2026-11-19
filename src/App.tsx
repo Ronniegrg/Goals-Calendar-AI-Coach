@@ -42,6 +42,7 @@ import {
   findGoalForEvent,
   autonomousSelfHealCalendar,
   handleLifeHappenedToday,
+  runUnifiedAutoScheduler,
   getPriorityScore as getSchedulePriorityScore 
 } from "./lib/scheduleOptimizer";
 import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProfile";
@@ -729,7 +730,7 @@ export default function App() {
 
           // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
           const cleanEventsRaw = localEvents.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
-          const { optimizedEvents: optimizedLocalEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanEventsRaw, localGoalsList);
+          const { optimizedEvents: optimizedLocalEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanEventsRaw, localGoalsList, energyProfile, localAvailability.length > 0 ? localAvailability : data.availability || []);
 
           setGoals(localGoalsList);
           setEvents(optimizedLocalEvents);
@@ -763,7 +764,7 @@ export default function App() {
           // Cloud is newer or initial load
           const cleanCloudEventsRaw = cloudEventsClean.map((e: any) => ({ ...e, title: e.title.replace(" (Auto-Scheduled)", "") }));
           // Deduplicate (max 1 session per goal per day) and strictly align by priority (Critical > Important > Normal)
-          const { optimizedEvents: optimizedCloudEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanCloudEventsRaw, cloudGoalsClean);
+          const { optimizedEvents: optimizedCloudEvents, duplicatesRemoved, priorityAdjusted } = sanitizeAndOptimizeSchedule(cleanCloudEventsRaw, cloudGoalsClean, energyProfile, data.availability || availability);
 
           const cloudMsgs = data.coachMessages || [];
           const cloudSessions: CoachChatSession[] =
@@ -936,265 +937,50 @@ export default function App() {
     return true;
   };
 
-  // 3b. Automated Background Multi-Week Rolling Scheduling Trigger Engine
+  // 3b. Unified Multi-Week Rolling Scheduling Trigger Engine
   const triggerAutoScheduler = (
     currentGoals: Goal[],
     currentEvents: CalendarEvent[],
-    currentAvailability: AvailabilityWindow[]
+    currentAvailability: AvailabilityWindow[],
+    rebuildAutoScheduled = false
   ) => {
     if (currentGoals.length === 0) return;
 
-    const now = new Date();
-    // Filter out goals currently on hold
-    const activeGoals = currentGoals.filter(goal => {
-      if (!goal.isPaused) return true;
-      if (!goal.pauseUntil) return false;
-      return new Date(goal.pauseUntil) < now;
+    const result = runUnifiedAutoScheduler({
+      goals: currentGoals,
+      events: currentEvents,
+      availability: currentAvailability,
+      energyProfile,
+      burnoutLimits,
+      horizonDays: 28,
+      rebuildAutoScheduled
     });
 
-    if (activeGoals.length === 0) return;
+    const hasChanges =
+      result.addedCount > 0 ||
+      result.removedCount > 0 ||
+      result.priorityAdjusted > 0 ||
+      result.slumpAdjusted > 0 ||
+      result.buffersAdded > 0;
 
-    // Prioritize Critical goals (3) > Important goals (2) > Normal goals (1)
-    const sortedGoals = [...activeGoals].sort((a, b) => getSchedulePriorityScore(b.priority) - getSchedulePriorityScore(a.priority));
-
-    // Deduplicate current uncompleted events first (ensures at most 1 session per goal per day)
-    const { deduplicated: deduplicatedEvents, removedCount: dupRemoved } = deduplicateDailyGoalEvents(currentEvents, currentGoals);
-
-    // Safeguard: Retain all valid goal sessions (never purge active uncompleted events simply because of slot placement)
-    let purgedCount = dupRemoved;
-    const validEvents = deduplicatedEvents;
-
-    const newScheduledEvents: CalendarEvent[] = [];
-    let scheduledCount = 0;
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    sortedGoals.forEach(goal => {
-      const goalNameClean = (goal.name || "").trim().toLowerCase();
-      const goalNameLower = goalNameClean;
-      const isDailyGoal = goal.weeklyTarget >= 7;
-      // Strictly 1 session per day per goal
-      const maxSessionsPerDay = 1;
-      const blockDurationHours = (goal.durationMinutes || 60) / 60;
-
-      // Find upcoming uncompleted events for this goal
-      const upcomingGoalEvents = validEvents.filter(evt => {
-        if (evt.completed) return false;
-        const matchedGoal = findGoalForEvent(evt, currentGoals);
-        const isThisGoal = (matchedGoal && matchedGoal.id === goal.id) || (evt.goalId === goal.id) || (evt.title && evt.title.toLowerCase().includes(goalNameClean));
-        return isThisGoal && new Date(evt.start) >= todayStart;
-      }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-
-      // If user intentionally shifted sessions forward, do not back-fill dates before the earliest session
-      const hasShifted = upcomingGoalEvents.some(e => e.notes && (e.notes.includes("Shifted") || e.notes.includes("Delayed")));
-      const earliestAllowedDayStart = hasShifted && upcomingGoalEvents.length > 0
-        ? new Date(new Date(upcomingGoalEvents[0].start).setHours(0, 0, 0, 0))
-        : todayStart;
-
-      // 4-week rolling horizon (28 days starting from today)
-      for (let dayOffset = 0; dayOffset < 28; dayOffset++) {
-        const targetDay = new Date(todayStart);
-        targetDay.setDate(todayStart.getDate() + dayOffset);
-
-        // Skip days prior to earliest allowed day if user intentionally shifted goal agenda forward
-        if (targetDay < earliestAllowedDayStart) {
-          continue;
-        }
-
-        const targetDayString = targetDay.toDateString();
-
-        // Calculate accurate calendar week bounds (Sunday 00:00 to Saturday 23:59) for targetDay
-        const startOfWeek = new Date(targetDay);
-        startOfWeek.setDate(targetDay.getDate() - targetDay.getDay());
-        startOfWeek.setHours(0, 0, 0, 0);
-
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6);
-        endOfWeek.setHours(23, 59, 59, 999);
-
-        // Check sessions in this calendar week for this goal
-        const sessionsInWeek = [...validEvents, ...newScheduledEvents].filter(evt => {
-          const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-          if (!isThisGoal) return false;
-          const evtDate = new Date(evt.start);
-          return evtDate >= startOfWeek && evtDate <= endOfWeek;
-        }).length;
-
-        // For non-daily goals, skip if week quota already met
-        if (!isDailyGoal && sessionsInWeek >= goal.weeklyTarget) {
-          continue;
-        }
-
-        // Check sessions on targetDay (strictly 1 session per goal per day)
-        const sessionsOnTargetDay = [...validEvents, ...newScheduledEvents].filter(evt => {
-          const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-          return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-        }).length;
-
-        if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
-
-        // DYNAMIC INTELLIGENT SPACING (NO FIXED DAYS):
-        // Avoid clustering non-daily goals on consecutive days when there are still enough days remaining in the week!
-        const daysRemainingInWeek = Math.max(1, Math.round((endOfWeek.getTime() - targetDay.getTime()) / (24 * 3600 * 1000)) + 1);
-        const sessionsStillNeeded = goal.weeklyTarget - sessionsInWeek;
-
-        if (!isDailyGoal) {
-          const prevDay = new Date(targetDay);
-          prevDay.setDate(targetDay.getDate() - 1);
-          const prevDayString = prevDay.toDateString();
-
-          const hadSessionYesterday = [...validEvents, ...newScheduledEvents].some(evt => {
-            const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-            return isThisGoal && new Date(evt.start).toDateString() === prevDayString;
-          });
-
-          // Leave natural 1-day breathers between non-daily sessions if week still has open days
-          if (hadSessionYesterday && daysRemainingInWeek > sessionsStillNeeded) {
-            continue;
-          }
-        }
-
-        // RESPECT AVAILABLE HOURS LEFT IN PREFERRED WINDOW (E.G. EVENING):
-        // Calculate total study hours already booked on this targetDay
-        const dayBookedHours = [...validEvents, ...newScheduledEvents]
-          .filter(evt => new Date(evt.start).toDateString() === targetDayString)
-          .reduce((sum, evt) => {
-            return sum + (new Date(evt.end).getTime() - new Date(evt.start).getTime()) / (3600 * 1000);
-          }, 0);
-
-        // Maximum study load per day (3.0 hours max) for non-daily subjects so evenings aren't crammed with 7 subjects!
-        const maxStudyHoursPerDay = 3.0;
-        if (!isDailyGoal && (dayBookedHours + blockDurationHours) > maxStudyHoursPerDay && daysRemainingInWeek > sessionsStillNeeded) {
-          // This day already has enough subjects! Let other open days in the week take this session
-          continue;
-        }
-
-        const dayOfWeek = targetDay.getDay();
-        let availDay = currentAvailability.find(a => a.dayOfWeek === dayOfWeek && a.active);
-        if (!availDay) {
-          availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
-        }
-
-        let [availStartHour] = availDay.startTime.split(":").map(Number);
-        let [availEndHour] = availDay.endTime.split(":").map(Number);
-
-        let prefStart = availStartHour;
-        let prefEnd = availEndHour;
-
-        if (goal.timePreference === TimePreference.EARLY_MORNING) {
-          prefStart = Math.max(availStartHour, 5);
-          prefEnd = Math.min(availEndHour, 8.5);
-        } else if (goal.timePreference === TimePreference.MORNING) {
-          prefStart = Math.max(availStartHour, 8);
-          prefEnd = Math.min(availEndHour, 12.5);
-        } else if (goal.timePreference === TimePreference.AFTERNOON) {
-          prefStart = Math.max(availStartHour, 12);
-          prefEnd = Math.min(availEndHour, 17);
-        } else if (goal.timePreference === TimePreference.EVENING) {
-          prefStart = Math.max(availStartHour, 17);
-          prefEnd = Math.max(availEndHour, 22);
-        } else if (goal.timePreference === TimePreference.NIGHT) {
-          prefStart = Math.max(availStartHour, 21);
-          prefEnd = 24;
-        } else if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart && goal.customTimeEnd) {
-          const [sH, sM] = goal.customTimeStart.split(":").map(Number);
-          const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
-          prefStart = (sH || 0) + (sM || 0) / 60;
-          prefEnd = (eH || 0) + (eM || 0) / 60;
-        }
-
-        if (prefStart >= prefEnd) {
-          prefStart = availStartHour;
-          prefEnd = availEndHour;
-        }
-
-        const isToday = dayOffset === 0;
-        const nowHourDecimal = isToday ? now.getHours() + (now.getMinutes() / 60) + 0.25 : 0;
-
-        let windowsToTry: { start: number; end: number }[] = [];
-        if (!goal.timePreference || goal.timePreference === TimePreference.ANY) {
-          windowsToTry = [
-            { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
-            { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
-          ];
-        } else {
-          windowsToTry = [
-            { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
-            { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
-            { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
-          ];
-        }
-
-        let slotBooked = false;
-
-        for (const win of windowsToTry) {
-          if (slotBooked) break;
-          if (win.start >= win.end) continue;
-
-          for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
-            const slotStart = new Date(targetDay);
-            slotStart.setHours(Math.floor(hrs), Math.round((hrs % 1) * 60), 0, 0);
-
-            if (isToday && slotStart.getTime() <= now.getTime() + 10 * 60 * 1000) {
-              continue;
-            }
-
-            const slotEnd = new Date(slotStart.getTime() + (goal.durationMinutes || 60) * 60 * 1000);
-
-            const overlap = [...validEvents, ...newScheduledEvents].some(evt => {
-              const evtStart = new Date(evt.start);
-              const evtEnd = new Date(evt.end);
-              return slotStart < evtEnd && slotEnd > evtStart;
-            });
-
-            if (!overlap) {
-              newScheduledEvents.push({
-                id: `${goal.id}_sch_${Date.now()}_${scheduledCount}`,
-                title: goal.name,
-                type: goal.type === GoalType.WORKOUT ? "workout" :
-                      goal.type === GoalType.STUDY ? "study" :
-                      goal.type === GoalType.JOB_SEARCH ? "job_search" :
-                      goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-                      goal.type === GoalType.ROUTINE ? "routine" :
-                      "personal",
-                start: slotStart.toISOString(),
-                end: slotEnd.toISOString(),
-                goalId: goal.id,
-                completed: false,
-                icon: goal.icon,
-                notes: `Auto-scheduled session for ${goal.name} (${goal.timePreference || "preferred"} time window)`,
-                subtasks: goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks : undefined,
-                subSteps: goal.subSteps || (goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks.map(s => ({
-                  id: s.id,
-                  title: s.title,
-                  durationMinutes: s.durationMinutes || 15,
-                  completed: s.completed || false,
-                  carryoverNote: s.carryoverNote,
-                  carryoverNoteDate: s.carryoverNoteDate
-                })) : undefined)
-              });
-              scheduledCount++;
-              slotBooked = true;
-              break;
-            }
-          }
-        }
+    if (hasChanges) {
+      if (rebuildAutoScheduled) {
+        setAutopilotUndoSnapshot([...currentEvents]);
       }
-    });
+      setEvents(result.optimizedEvents);
+      syncToCloud(currentGoals, result.optimizedEvents, currentAvailability, notifications, coachMessages);
 
-    const combinedEvents = [...newScheduledEvents, ...validEvents];
-    const { alignedEvents, changedCount, slumpAdjusted, buffersAdded } = alignDailyEventsByPriority(combinedEvents, currentGoals, energyProfile);
-
-    if (newScheduledEvents.length > 0 || purgedCount > 0 || changedCount > 0) {
-      setEvents(alignedEvents);
-      syncToCloud(currentGoals, alignedEvents, currentAvailability, notifications, coachMessages);
-      if (newScheduledEvents.length > 0 || changedCount > 0) {
+      if (result.addedCount > 0 || result.buffersAdded > 0 || result.slumpAdjusted > 0 || rebuildAutoScheduled) {
         const extraDetails: string[] = [];
-        if (slumpAdjusted && slumpAdjusted > 0) extraDetails.push(`${slumpAdjusted} slump-shielded`);
-        if (buffersAdded && buffersAdded > 0) extraDetails.push(`${buffersAdded} recovery buffers`);
+        if (result.addedCount > 0) extraDetails.push(`${result.addedCount} scheduled`);
+        if (result.buffersAdded > 0) extraDetails.push(`${result.buffersAdded} recovery buffers`);
+        if (result.slumpAdjusted > 0) extraDetails.push(`${result.slumpAdjusted} slump-shielded`);
+        if (result.flexedCount > 0) extraDetails.push(`${result.flexedCount} window-flexed`);
+        if (result.urgentGoalsBoosted.length > 0) extraDetails.push(`exam urgency boosted`);
         const detailSuffix = extraDetails.length > 0 ? ` (${extraDetails.join(", ")})` : "";
         triggerSystemNotification(
           "Auto-Scheduler Sync",
-          `⚡ Bio-Energy optimized: Critical goals prioritized, tasks aligned with ${energyProfile.chronotype} rhythms${detailSuffix}!`,
+          `⚡ Unified Bio-Energy & Buffer Optimizer aligned your ${energyProfile.chronotype} schedule${detailSuffix}!`,
           "success"
         );
       }
@@ -1204,74 +990,45 @@ export default function App() {
   useEffect(() => {
     if (!autoScheduleEnabled || goals.length === 0) return;
 
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    const needsScheduling = goals.some(goal => {
-      // Skip goals on hold
-      if (goal.isPaused) {
-        if (!goal.pauseUntil) return false;
-        if (new Date(goal.pauseUntil) >= now) return false;
-      }
-
-      const goalNameLower = goal.name.toLowerCase();
-      const isDailyGoal = goal.weeklyTarget >= 7;
-
-      // Check if this goal has sessions shifted or delayed forward by the user
-      const hasShifted = events.some(e => {
-        const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
-        return isThisGoal && !e.completed && e.notes && (e.notes.includes("Shifted") || e.notes.includes("Delayed"));
+    const timer = setTimeout(() => {
+      const preview = runUnifiedAutoScheduler({
+        goals,
+        events,
+        availability,
+        energyProfile,
+        burnoutLimits,
+        horizonDays: 28,
+        rebuildAutoScheduled: false
       });
 
-      for (let dayOffset = 0; dayOffset < 28; dayOffset++) {
-        // If user intentionally shifted sessions forward, do not force-refill days in the current week
-        if (hasShifted && dayOffset < 7) {
-          continue;
-        }
+      if (
+        preview.addedCount > 0 ||
+        preview.removedCount > 0 ||
+        preview.priorityAdjusted > 0 ||
+        preview.slumpAdjusted > 0 ||
+        preview.buffersAdded > 0
+      ) {
+        setEvents(preview.optimizedEvents);
+        syncToCloud(goals, preview.optimizedEvents, availability, notifications, coachMessages);
 
-        const targetDay = new Date(todayStart);
-        targetDay.setDate(todayStart.getDate() + dayOffset);
-        const targetDayString = targetDay.toDateString();
-
-        const countOnDay = events.filter(e => {
-          const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
-          if (!isThisGoal) return false;
-          return new Date(e.start).toDateString() === targetDayString;
-        }).length;
-
-        if (isDailyGoal && countOnDay === 0) {
-          return true;
-        }
-
-        if (!isDailyGoal) {
-          const startOfWeek = new Date(targetDay);
-          startOfWeek.setDate(targetDay.getDate() - targetDay.getDay());
-          startOfWeek.setHours(0, 0, 0, 0);
-
-          const endOfWeek = new Date(startOfWeek);
-          endOfWeek.setDate(startOfWeek.getDate() + 6);
-          endOfWeek.setHours(23, 59, 59, 999);
-
-          const countInWeek = events.filter(e => {
-            const isThisGoal = e.goalId === goal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
-            if (!isThisGoal) return false;
-            const d = new Date(e.start);
-            return d >= startOfWeek && d <= endOfWeek;
-          }).length;
-
-          if (countInWeek < goal.weeklyTarget) return true;
+        if (preview.addedCount > 0 || preview.buffersAdded > 0 || preview.slumpAdjusted > 0) {
+          const extraDetails: string[] = [];
+          if (preview.addedCount > 0) extraDetails.push(`${preview.addedCount} placed`);
+          if (preview.buffersAdded > 0) extraDetails.push(`${preview.buffersAdded} recovery buffers`);
+          if (preview.slumpAdjusted > 0) extraDetails.push(`${preview.slumpAdjusted} slump-shielded`);
+          if (preview.flexedCount > 0) extraDetails.push(`${preview.flexedCount} flexed`);
+          const detailSuffix = extraDetails.length > 0 ? ` (${extraDetails.join(", ")})` : "";
+          triggerSystemNotification(
+            "Auto-Scheduler Sync",
+            `⚡ Schedule optimized with ${energyProfile.chronotype} energy & buffer guardrails${detailSuffix}.`,
+            "success"
+          );
         }
       }
-      return false;
-    });
+    }, 350);
 
-    if (needsScheduling) {
-      const timer = setTimeout(() => {
-        triggerAutoScheduler(goals, events, availability);
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [goals, events, availability, autoScheduleEnabled]);
+    return () => clearTimeout(timer);
+  }, [goals, events, availability, energyProfile, burnoutLimits, autoScheduleEnabled]);
 
   // 3c. Auto-Resume Goals whose Pause/Hold duration has expired
   useEffect(() => {
@@ -2056,7 +1813,13 @@ export default function App() {
   };
 
   // Timer Session Completion & Extension Handlers
-  const handleCompleteTimerSession = (eventId?: string, goalId?: string, note?: string, sessionTitle?: string) => {
+  const handleCompleteTimerSession = (
+    eventId?: string,
+    goalId?: string,
+    note?: string,
+    sessionTitle?: string,
+    options?: { savedStepKeys?: string[]; sessionStartedAt?: number }
+  ) => {
     queueMicrotask(() => {
       let targetGoal = goalId ? goals.find(item => item.id === goalId) : undefined;
       let targetEvt: CalendarEvent | undefined;
@@ -2132,6 +1895,35 @@ export default function App() {
       let shouldIncrementGoalCount = false;
       const trimmedNote = note && note.trim() ? note.trim() : "";
 
+      const savedKeySet = new Set((options?.savedStepKeys || []).map(k => k.toLowerCase()));
+      const sessionStartMs = options?.sessionStartedAt || 0;
+      const wasStepNoteSavedThisSession = (s: {
+        id: string;
+        title: string;
+        carryoverNote?: string;
+        carryoverNoteDate?: string;
+      }) => {
+        if (!s.carryoverNote || !s.carryoverNote.trim()) return false;
+        const normTitleKey = `title:${s.title.trim().toLowerCase()}`;
+        if (savedKeySet.has(s.id.toLowerCase()) || savedKeySet.has(normTitleKey)) return true;
+        if (sessionStartMs > 0 && s.carryoverNoteDate) {
+          const noteMs = new Date(s.carryoverNoteDate).getTime();
+          if (!Number.isNaN(noteMs) && noteMs >= sessionStartMs) return true;
+        }
+        return false;
+      };
+
+      const cleanStepNotes = <T extends { id: string; title: string; carryoverNote?: string; carryoverNoteDate?: string }>(
+        list?: T[]
+      ): T[] | undefined => {
+        if (!list) return undefined;
+        return list.map(s =>
+          wasStepNoteSavedThisSession(s)
+            ? s
+            : { ...s, carryoverNote: undefined, carryoverNoteDate: undefined }
+        );
+      };
+
       if (targetEvt) {
         const wasCompleted = targetEvt.completed;
         nextEvents = events.map(evt => {
@@ -2140,7 +1932,16 @@ export default function App() {
               ...evt,
               completed: true,
               goalId: targetGoal ? targetGoal.id : evt.goalId,
-              completionNote: trimmedNote || undefined
+              completionNote: trimmedNote || undefined,
+              ...(evt.subtasks ? { subtasks: cleanStepNotes(evt.subtasks) } : {}),
+              ...(evt.subSteps ? { subSteps: cleanStepNotes(evt.subSteps) } : {})
+            };
+          }
+          if (targetGoal && !evt.completed && evt.goalId === targetGoal.id) {
+            return {
+              ...evt,
+              ...(evt.subtasks ? { subtasks: cleanStepNotes(evt.subtasks) } : {}),
+              ...(evt.subSteps ? { subSteps: cleanStepNotes(evt.subSteps) } : {})
             };
           }
           return evt;
@@ -2163,7 +1964,17 @@ export default function App() {
           goalId: targetGoal.id,
           completionNote: trimmedNote || undefined
         };
-        nextEvents = [newEvt, ...events];
+        const updatedExisting = events.map(evt => {
+          if (!evt.completed && evt.goalId === targetGoal!.id) {
+            return {
+              ...evt,
+              ...(evt.subtasks ? { subtasks: cleanStepNotes(evt.subtasks) } : {}),
+              ...(evt.subSteps ? { subSteps: cleanStepNotes(evt.subSteps) } : {})
+            };
+          }
+          return evt;
+        });
+        nextEvents = [newEvt, ...updatedExisting];
         shouldIncrementGoalCount = true;
       }
 
@@ -2174,8 +1985,10 @@ export default function App() {
             return {
               ...g,
               completedCount: shouldIncrementGoalCount ? g.completedCount + 1 : g.completedCount,
-              lastSessionNote: trimmedNote ? trimmedNote : g.lastSessionNote,
-              lastSessionNoteDate: trimmedNote ? new Date().toISOString() : g.lastSessionNoteDate
+              lastSessionNote: undefined,
+              lastSessionNoteDate: undefined,
+              ...(g.subtasks ? { subtasks: cleanStepNotes(g.subtasks) } : {}),
+              ...(g.subSteps ? { subSteps: cleanStepNotes(g.subSteps) } : {})
             };
           }
           return g;
@@ -2289,7 +2102,7 @@ export default function App() {
 
   // Handle Align Priorities & Deduplicate Sessions
   const handleAlignPrioritiesAndDeduplicate = () => {
-    const { optimizedEvents, duplicatesRemoved, quotaExcessRemoved, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, energyProfile);
+    const { optimizedEvents, duplicatesRemoved, quotaExcessRemoved, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, energyProfile, availability);
     if (duplicatesRemoved > 0 || quotaExcessRemoved > 0 || priorityAdjusted > 0 || (slumpAdjusted && slumpAdjusted > 0) || (buffersAdded && buffersAdded > 0)) {
       setEvents(optimizedEvents);
       syncToCloud(goals, optimizedEvents, availability, notifications, coachMessages);
@@ -2314,7 +2127,7 @@ export default function App() {
     }
   };
 
-  // Helper to generate dynamic calendar event sessions for a goal
+  // Helper to generate dynamic calendar event sessions for a goal via Unified Solver
   const generateGoalSessions = (
     goal: Goal,
     existingEvents: CalendarEvent[],
@@ -2322,156 +2135,16 @@ export default function App() {
     availList: AvailabilityWindow[]
   ): CalendarEvent[] => {
     if (neededCount <= 0) return [];
-    const newEvents: CalendarEvent[] = [];
-    let successBooked = 0;
-    const now = new Date();
-    const goalNameLower = goal.name.toLowerCase();
-
-    for (let dayOffset = 0; dayOffset <= 14; dayOffset++) {
-      if (successBooked >= neededCount) break;
-
-      const targetDay = new Date(now);
-      targetDay.setDate(now.getDate() + dayOffset);
-      const dayOfWeek = targetDay.getDay();
-
-      let availDay = availList.find(a => a.dayOfWeek === dayOfWeek && a.active);
-      if (!availDay) {
-        availDay = { dayOfWeek, startTime: "08:00", endTime: "22:00", active: true };
-      }
-
-      // Strictly 1 session per day per goal
-      const maxSessionsPerDay = 1;
-      const targetDayString = targetDay.toDateString();
-
-      const sessionsOnTargetDay = [...existingEvents, ...newEvents].filter(evt => {
-        const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-        return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-      }).length;
-
-      if (sessionsOnTargetDay >= maxSessionsPerDay) continue;
-
-      let [availStartHour] = availDay.startTime.split(":").map(Number);
-      let [availEndHour] = availDay.endTime.split(":").map(Number);
-
-      let prefStart = availStartHour;
-      let prefEnd = availEndHour;
-
-      if (goal.timePreference === TimePreference.EARLY_MORNING) {
-        prefStart = Math.max(availStartHour, 5);
-        prefEnd = Math.min(availEndHour, 8.5);
-      } else if (goal.timePreference === TimePreference.MORNING) {
-        prefStart = Math.max(availStartHour, 8);
-        prefEnd = Math.min(availEndHour, 12.5);
-      } else if (goal.timePreference === TimePreference.AFTERNOON) {
-        prefStart = Math.max(availStartHour, 12);
-        prefEnd = Math.min(availEndHour, 17);
-      } else if (goal.timePreference === TimePreference.EVENING) {
-        prefStart = Math.max(availStartHour, 17);
-        prefEnd = Math.max(availEndHour, 22);
-      } else if (goal.timePreference === TimePreference.NIGHT) {
-        prefStart = Math.max(availStartHour, 21);
-        prefEnd = 24;
-      } else if (goal.timePreference === TimePreference.CUSTOM && goal.customTimeStart && goal.customTimeEnd) {
-        const [sH, sM] = goal.customTimeStart.split(":").map(Number);
-        const [eH, eM] = goal.customTimeEnd.split(":").map(Number);
-        prefStart = (sH || 0) + (sM || 0) / 60;
-        prefEnd = (eH || 0) + (eM || 0) / 60;
-      }
-
-      if (prefStart >= prefEnd) {
-        prefStart = availStartHour;
-        prefEnd = availEndHour;
-      }
-
-      const blockDurationHours = (goal.durationMinutes || 60) / 60;
-      const isToday = dayOffset === 0;
-      const nowHourDecimal = isToday ? now.getHours() + (now.getMinutes() / 60) + 0.25 : 0;
-
-      let windowsToTry: { start: number; end: number }[] = [];
-      if (!goal.timePreference || goal.timePreference === TimePreference.ANY) {
-        windowsToTry = [
-          { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
-          { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
-        ];
-      } else {
-        windowsToTry = [
-          { start: Math.max(prefStart, isToday ? nowHourDecimal : prefStart), end: prefEnd },
-          { start: Math.max(availStartHour, isToday ? nowHourDecimal : availStartHour), end: availEndHour },
-          { start: Math.max(8, isToday ? nowHourDecimal : 8), end: 22 }
-        ];
-      }
-
-      let slotBookedOnDay = false;
-
-      for (const win of windowsToTry) {
-        if (slotBookedOnDay) break;
-        if (win.start >= win.end) continue;
-
-        for (let hrs = win.start; hrs <= win.end - blockDurationHours; hrs += 0.5) {
-          if (successBooked >= neededCount) break;
-
-          const currentDayCount = [...existingEvents, ...newEvents].filter(evt => {
-            const isThisGoal = evt.goalId === goal.id || (evt.title && evt.title.toLowerCase().includes(goalNameLower));
-            return isThisGoal && new Date(evt.start).toDateString() === targetDayString;
-          }).length;
-
-          if (currentDayCount >= maxSessionsPerDay) break;
-
-          const slotStart = new Date(targetDay);
-          slotStart.setHours(Math.floor(hrs), (hrs % 1) * 60, 0, 0);
-
-          if (dayOffset === 0 && slotStart.getTime() <= now.getTime() + 15 * 60 * 1000) {
-            continue;
-          }
-
-          const slotEnd = new Date(slotStart);
-          slotEnd.setMinutes(slotStart.getMinutes() + (goal.durationMinutes || 60));
-
-          const overlap = [...existingEvents, ...newEvents].some(evt => {
-            const evtStart = new Date(evt.start);
-            const evtEnd = new Date(evt.end);
-            return slotStart < evtEnd && slotEnd > evtStart;
-          });
-
-          if (!overlap) {
-            const mappedType =
-              goal.type === GoalType.WORKOUT ? "workout" :
-              goal.type === GoalType.STUDY ? "study" :
-              goal.type === GoalType.JOB_SEARCH ? "job_search" :
-              goal.type === GoalType.SIDE_PROJECT ? "side_project" :
-              goal.type === GoalType.ROUTINE ? "routine" :
-              "personal";
-
-            newEvents.push({
-              id: `e_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-              title: goal.name,
-              type: mappedType,
-              start: slotStart.toISOString(),
-              end: slotEnd.toISOString(),
-              goalId: goal.id,
-              completed: false,
-              notes: `Auto-scheduled session for ${goal.name}`,
-              icon: goal.icon,
-              subtasks: goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks : undefined,
-              subSteps: goal.subSteps || (goal.subtasks && goal.subtasks.length > 0 ? goal.subtasks.map(s => ({
-                id: s.id,
-                title: s.title,
-                durationMinutes: s.durationMinutes || 15,
-                completed: s.completed || false,
-                carryoverNote: s.carryoverNote,
-                carryoverNoteDate: s.carryoverNoteDate
-              })) : undefined)
-            });
-
-            successBooked++;
-            slotBookedOnDay = true;
-            break;
-          }
-        }
-      }
-    }
-
-    return newEvents;
+    const result = runUnifiedAutoScheduler({
+      goals: [goal],
+      events: existingEvents,
+      availability: availList,
+      energyProfile,
+      burnoutLimits,
+      horizonDays: 14,
+      targetGoalId: goal.id
+    });
+    return result.addedEvents.slice(0, neededCount);
   };
 
   // D. Create custom Goal Object
@@ -2841,131 +2514,6 @@ export default function App() {
     }
   };
 
-  const handleSaveGoalReviewNote = (
-    goalId: string,
-    note: string,
-    options?: {
-      advanceChapterId?: string | null;
-      saveToHub?: boolean;
-      chapterTitle?: string;
-      stepId?: string | null;
-      stepTitle?: string | null;
-      alsoSaveToGoal?: boolean;
-    }
-  ) => {
-    const trimmed = note.trim();
-    const targetGoal = goals.find(g => g.id === goalId);
-    if (!targetGoal) return;
-
-    const nowIso = new Date().toISOString();
-    let updatedChapters = targetGoal.chapters;
-    if (options?.advanceChapterId && targetGoal.chapters) {
-      updatedChapters = targetGoal.chapters.map(ch =>
-        ch.id === options.advanceChapterId ? { ...ch, completed: true } : ch
-      );
-    }
-
-    const normStepTitle = (options?.stepTitle || "").trim().toLowerCase();
-    const matchesStep = (s: { id: string; title: string }) =>
-      (options?.stepId && s.id === options.stepId) ||
-      (normStepTitle.length > 0 && s.title.trim().toLowerCase() === normStepTitle);
-
-    const hasStepTarget = Boolean(options?.stepId || options?.stepTitle);
-    const updatedSubtasks = hasStepTarget && trimmed
-      ? targetGoal.subtasks?.map(s =>
-          matchesStep(s)
-            ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso }
-            : s
-        )
-      : targetGoal.subtasks;
-    const updatedSubSteps = hasStepTarget && trimmed
-      ? targetGoal.subSteps?.map(s =>
-          matchesStep(s)
-            ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso }
-            : s
-        )
-      : targetGoal.subSteps;
-
-    let updatedHub = targetGoal.knowledgeHub;
-    if (trimmed && options?.saveToHub !== false) {
-      const currentHub: GoalKnowledgeHub = targetGoal.knowledgeHub || {
-        notes: [],
-        tests: [],
-        flashcards: [],
-        overallMasteryScore: 0
-      };
-      const labelPrefix = options?.stepTitle ? `Step "${options.stepTitle}" Note` : "Review Note — Where to Start Next";
-      const nextNote: StudyArtifactNote = {
-        id: `review_note_${Date.now()}`,
-        title: `${labelPrefix} (${new Date().toLocaleDateString([], { month: "short", day: "numeric" })})`,
-        category: "summary",
-        content: trimmed,
-        chapterTitle: options?.chapterTitle || options?.stepTitle || targetGoal.chapters?.find(c => !c.completed)?.title || undefined,
-        createdAt: nowIso,
-        updatedAt: nowIso
-      };
-      updatedHub = {
-        ...currentHub,
-        notes: [nextNote, ...currentHub.notes]
-      };
-    }
-
-    const shouldUpdateGoalNote = options?.alsoSaveToGoal !== false || !hasStepTarget;
-
-    const nextGoals = goals.map(g => {
-      if (g.id !== goalId) return g;
-      return {
-        ...g,
-        ...(trimmed && shouldUpdateGoalNote ? { lastSessionNote: trimmed, lastSessionNoteDate: nowIso } : {}),
-        ...(updatedChapters ? { chapters: updatedChapters } : {}),
-        ...(updatedSubtasks ? { subtasks: updatedSubtasks } : {}),
-        ...(updatedSubSteps ? { subSteps: updatedSubSteps } : {}),
-        ...(updatedHub ? { knowledgeHub: updatedHub } : {})
-      };
-    });
-
-    const nextEvents = hasStepTarget && trimmed
-      ? events.map(evt => {
-          if (evt.completed || evt.goalId !== goalId) return evt;
-          return {
-            ...evt,
-            ...(evt.subtasks ? {
-              subtasks: evt.subtasks.map(s =>
-                matchesStep(s) ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso } : s
-              )
-            } : {}),
-            ...(evt.subSteps ? {
-              subSteps: evt.subSteps.map(s =>
-                matchesStep(s) ? { ...s, carryoverNote: trimmed, carryoverNoteDate: nowIso } : s
-              )
-            } : {})
-          };
-        })
-      : events;
-
-    setGoals(nextGoals);
-    if (nextEvents !== events) {
-      setEvents(nextEvents);
-    }
-    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
-
-    if (trimmed) {
-      triggerSystemNotification(
-        hasStepTarget ? "📝 Step Carryover Note Saved" : "📝 Review Note Saved",
-        hasStepTarget
-          ? `Saved note for "${targetGoal.name}" → Step "${options?.stepTitle || "Phase"}": "${trimmed}"`
-          : `Saved where to start next for "${targetGoal.name}": "${trimmed}"`,
-        "motivation"
-      );
-    } else if (options?.advanceChapterId) {
-      triggerSystemNotification(
-        "➡️ Moved to Next Section",
-        `Advanced section progress for "${targetGoal.name}".`,
-        "success"
-      );
-    }
-  };
-
   // Atomic batch updater for Digest Next-Week Adjustments & Undo snapshots
   const handleApplyBatchAdjustment = (
     updatedGoals: Goal[],
@@ -2981,43 +2529,41 @@ export default function App() {
     }
   };
 
-  // Helper to schedule missing sessions for a single goal
+  // Helper to schedule missing sessions for a single goal via Unified Solver
   const handleAutoScheduleGoal = (goalId: string) => {
     const targetGoal = goals.find(g => g.id === goalId);
     if (!targetGoal) return;
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    const startOfWeek = new Date(todayStart);
-    startOfWeek.setDate(todayStart.getDate() - todayStart.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
+    const result = runUnifiedAutoScheduler({
+      goals,
+      events,
+      availability,
+      energyProfile,
+      burnoutLimits,
+      horizonDays: 7,
+      targetGoalId: goalId
+    });
 
-    const goalNameLower = targetGoal.name.toLowerCase();
-    const countInWeek = events.filter(e => {
-      const isThisGoal = e.goalId === targetGoal.id || (e.title && e.title.toLowerCase().includes(goalNameLower));
-      if (!isThisGoal) return false;
-      const d = new Date(e.start);
-      return d >= startOfWeek && d <= endOfWeek;
-    }).length;
-
-    const needed = Math.max(1, targetGoal.weeklyTarget - countInWeek);
-    const newSessions = generateGoalSessions(targetGoal, events, needed, availability);
-    if (newSessions.length > 0) {
-      const nextEvents = [...newSessions, ...events];
-      setEvents(nextEvents);
-      syncToCloud(goals, nextEvents, availability, notifications, coachMessages);
+    if (result.addedCount > 0 || result.removedCount > 0 || result.buffersAdded > 0) {
+      setAutopilotUndoSnapshot([...events]);
+      setEvents(result.optimizedEvents);
+      syncToCloud(goals, result.optimizedEvents, availability, notifications, coachMessages);
+      const flexMsg = result.flexedCount > 0 ? ` (${result.flexedCount} flexed to open active window)` : "";
       triggerSystemNotification(
         "Goal Sessions Scheduled",
-        `⚡ Scheduled ${newSessions.length} session(s) for "${targetGoal.name}" on your calendar!`,
+        `⚡ Scheduled ${result.addedCount} buffered session(s) for "${targetGoal.name}"${flexMsg}!`,
         "success"
+      );
+    } else if (result.unplacedReasons.length > 0) {
+      triggerSystemNotification(
+        "Schedule Guardrail Reached",
+        result.unplacedReasons[0],
+        "warning"
       );
     } else {
       triggerSystemNotification(
         "Schedule Info",
-        `"${targetGoal.name}" is already fully scheduled for this week (${countInWeek}/${targetGoal.weeklyTarget} sessions).`,
+        `"${targetGoal.name}" is already optimally scheduled within your active availability.`,
         "success"
       );
     }
@@ -3032,12 +2578,7 @@ export default function App() {
       );
       return;
     }
-    triggerAutoScheduler(goals, events, availability);
-    triggerSystemNotification(
-      "Auto-Scheduler Active",
-      "⚡ Auto-scheduled sessions across your calendar for all active goals!",
-      "success"
-    );
+    triggerAutoScheduler(goals, events, availability, true);
   };
 
   // EE-2. Pause / Hold Goal (Freeze Mode)
@@ -3882,6 +3423,7 @@ export default function App() {
               events={events}
               goals={goals}
               onToggleCompleteEvent={handleToggleEventComplete}
+              onCompleteSession={handleCompleteTimerSession}
               onEditEvent={handleEditEvent}
               onEditGoal={handleEditGoal}
               onNavigateToCalendar={handleNavigateToCalendar}
@@ -3953,6 +3495,7 @@ export default function App() {
             burnoutLimits={burnoutLimits}
             onUpdateBurnoutLimits={handleSetBurnoutLimits}
             onUpdateGoalKnowledgeHub={handleUpdateGoalKnowledgeHub}
+            onOptimizeSchedule={handleAutoScheduleAllGoals}
           />
         )}
 
@@ -3962,9 +3505,11 @@ export default function App() {
             events={events}
             availability={availability}
             energyProfile={energyProfile}
+            burnoutLimits={burnoutLimits}
             externalAutopilotMode={autopilotMode}
             onAutopilotModeChange={handleSetAutopilotMode}
             onApplySchedule={(newEvents, summaryMsg) => {
+              setAutopilotUndoSnapshot([...events]);
               setEvents(newEvents);
               syncToCloud(goals, newEvents, availability, notifications, coachMessages);
               triggerSystemNotification(
@@ -4268,7 +3813,6 @@ export default function App() {
         onCompleteSession={handleCompleteTimerSession}
         onExtendEventDuration={handleExtendEventDuration}
         onUpdateGoalKnowledgeHub={handleUpdateGoalKnowledgeHub}
-        onSaveGoalReviewNote={handleSaveGoalReviewNote}
         onSaveStepCarryoverNote={handleSaveStepCarryoverNote}
       />
 
@@ -4287,7 +3831,7 @@ export default function App() {
             }
 
             // Immediately re-align active schedule with new chronotype & slump preferences
-            const { optimizedEvents, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, newProfile);
+            const { optimizedEvents, priorityAdjusted, slumpAdjusted, buffersAdded } = sanitizeAndOptimizeSchedule(events, goals, newProfile, availability);
             setEvents(optimizedEvents);
             syncToCloud(goals, optimizedEvents, availability, notifications, coachMessages);
 

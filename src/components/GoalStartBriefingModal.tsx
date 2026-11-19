@@ -1,16 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { 
-  Play, 
-  Zap, 
-  StickyNote, 
-  Clock, 
-  CheckCircle2, 
-  X, 
-  Edit3, 
-  Check, 
-  BookOpen, 
-  Layers,
-  Sparkles
+import {
+  Play,
+  Zap,
+  StickyNote,
+  Clock,
+  CheckCircle2,
+  X,
+  Edit3,
+  Check,
+  BookOpen,
+  Layers
 } from "lucide-react";
 import { Goal, CalendarEvent } from "../types";
 
@@ -20,9 +19,7 @@ export interface GoalStartBriefingModalProps {
   goal: Goal;
   event?: CalendarEvent | null;
   isStudyAhead?: boolean;
-  isReviewMode?: boolean;
-  onConfirmStart: (note?: string, startAsReview?: boolean) => void;
-  onUpdateGoalNote?: (goalId: string, updatedNote: string) => void;
+  onConfirmStart: () => void;
   onUpdateStepNote?: (goalId: string, stepId: string, stepTitle: string, updatedNote: string) => void;
 }
 
@@ -32,36 +29,20 @@ export default function GoalStartBriefingModal({
   goal,
   event,
   isStudyAhead = false,
-  isReviewMode = false,
   onConfirmStart,
-  onUpdateGoalNote,
   onUpdateStepNote
 }: GoalStartBriefingModalProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [editedNote, setEditedNote] = useState(goal.lastSessionNote || "");
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editedStepText, setEditedStepText] = useState("");
   const [localStepNotes, setLocalStepNotes] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    setEditedNote(goal.lastSessionNote || "");
-    setIsEditing(false);
     setEditingStepId(null);
     setEditedStepText("");
     setLocalStepNotes({});
   }, [goal, isOpen]);
 
   if (!isOpen) return null;
-
-  const noteText = editedNote.trim();
-  const formattedDate = goal.lastSessionNoteDate 
-    ? new Date(goal.lastSessionNoteDate).toLocaleDateString([], { 
-        month: "short", 
-        day: "numeric", 
-        hour: "2-digit", 
-        minute: "2-digit" 
-      })
-    : null;
 
   // Merge steps from goal.subtasks & goal.subSteps (deduped by id / normalized title)
   const mergedSteps: {
@@ -125,13 +106,6 @@ export default function GoalStartBriefingModal({
   const nextChapter = goal.chapters?.find(c => !c.completed);
   const nextSubtask = goal.subtasks?.find(s => !s.completed) || goal.subSteps?.find(s => !s.completed);
 
-  const handleSaveNote = () => {
-    if (onUpdateGoalNote && editedNote.trim() !== (goal.lastSessionNote || "").trim()) {
-      onUpdateGoalNote(goal.id, editedNote.trim());
-    }
-    setIsEditing(false);
-  };
-
   const handleSaveStepEdit = (stepId: string, stepTitle: string, nextVal: string) => {
     const trimmed = nextVal.trim();
     setLocalStepNotes(prev => ({ ...prev, [stepId]: trimmed }));
@@ -141,16 +115,8 @@ export default function GoalStartBriefingModal({
     setEditingStepId(null);
   };
 
-  const handleStart = (startAsReview: boolean = isReviewMode) => {
-    if (isEditing) {
-      handleSaveNote();
-    }
-    const summaryNote =
-      editedNote.trim() ||
-      (stepsWithNotes.length > 0
-        ? stepsWithNotes.map(s => `${s.title}: ${s.carryoverNote}`).join(" • ")
-        : "");
-    onConfirmStart(summaryNote, startAsReview);
+  const handleStart = () => {
+    onConfirmStart();
     onClose();
   };
 
@@ -179,16 +145,14 @@ export default function GoalStartBriefingModal({
             <div>
               <div className="flex items-center gap-2">
                 <h3 id="briefing_modal_title" className="text-sm font-bold text-slate-900 dark:text-white">
-                  {isReviewMode ? "15m Review Briefing" : isStudyAhead ? "Study Ahead Briefing" : "Where to Start"}
+                  {isStudyAhead ? "Study Ahead Briefing" : "Goal Step Notes"}
                 </h3>
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                  isReviewMode
-                    ? "bg-violet-100 dark:bg-violet-500/20 text-violet-800 dark:text-violet-300"
-                    : isStudyAhead 
+                  isStudyAhead 
                     ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300"
                     : "bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300"
                 }`}>
-                  {isReviewMode ? "15m Review" : stepsWithNotes.length > 0 && !noteText ? `${stepsWithNotes.length} Step Note${stepsWithNotes.length > 1 ? "s" : ""}` : "Saved Note"}
+                  {`${stepsWithNotes.length} Step Note${stepsWithNotes.length === 1 ? "" : "s"}`}
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate max-w-xs">
@@ -222,79 +186,9 @@ export default function GoalStartBriefingModal({
             </div>
             <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 text-[11px] font-medium shrink-0">
               <Clock className="w-3.5 h-3.5 text-slate-400" />
-              <span>{isReviewMode ? "15m review session" : `${durationMins}m target session`}</span>
+              <span>{`${durationMins}m target session`}</span>
             </div>
           </div>
-
-          {/* Prominent Goal Note Box - "Where to Start" */}
-          {(noteText || isEditing || stepsWithNotes.length === 0) && (
-            <div className="rounded-xl border border-amber-300/60 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-2.5 relative shadow-xs">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
-                  <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
-                  <span className="text-xs font-bold uppercase tracking-wider">
-                    Where you left off & where to start:
-                  </span>
-                </div>
-
-                {!isEditing && onUpdateGoalNote && (
-                  <button
-                    type="button"
-                    onClick={() => setIsEditing(true)}
-                    className="flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 hover:underline cursor-pointer"
-                    title="Edit note before starting"
-                  >
-                    <Edit3 className="w-3 h-3" />
-                    <span>Edit Note</span>
-                  </button>
-                )}
-              </div>
-
-              {isEditing ? (
-                <div className="space-y-2 pt-1">
-                  <textarea
-                    value={editedNote}
-                    onChange={(e) => setEditedNote(e.target.value)}
-                    rows={3}
-                    className="w-full text-xs p-2.5 rounded-lg border border-amber-300 dark:border-amber-500/50 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
-                    placeholder="Where should you start this session? (e.g. Chapter 4 quiz, revise formulas...)"
-                    autoFocus
-                  />
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditedNote(goal.lastSessionNote || "");
-                        setIsEditing(false);
-                      }}
-                      className="px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSaveNote}
-                      className="flex items-center gap-1 px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-md text-[11px] font-bold cursor-pointer transition"
-                    >
-                      <Check className="w-3 h-3" />
-                      <span>Save Note</span>
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  <div className="text-sm text-slate-800 dark:text-slate-100 font-medium leading-relaxed italic bg-white/70 dark:bg-black/30 p-3 rounded-lg border border-amber-200/50 dark:border-amber-500/20 whitespace-pre-wrap">
-                    "{noteText}"
-                  </div>
-                  {formattedDate && (
-                    <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 flex items-center gap-1 pt-0.5">
-                      <span>Recorded from previous session on {formattedDate}</span>
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Per-Step Carryover Notes Section */}
           {stepsWithNotes.length > 0 && (
@@ -306,15 +200,6 @@ export default function GoalStartBriefingModal({
                     Step Carryover Notes ({stepsWithNotes.length})
                   </span>
                 </div>
-                {!noteText && !isEditing && onUpdateGoalNote && (
-                  <button
-                    type="button"
-                    onClick={() => setIsEditing(true)}
-                    className="text-[11px] font-semibold text-amber-700 dark:text-amber-300 hover:underline cursor-pointer"
-                  >
-                    + Add Goal Note
-                  </button>
-                )}
               </div>
 
               <div className="space-y-2 max-h-52 overflow-y-auto pr-0.5">
@@ -434,35 +319,13 @@ export default function GoalStartBriefingModal({
           </button>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {!isReviewMode && (
-              <button
-                type="button"
-                id="briefing_start_15m_review_btn"
-                onClick={() => handleStart(true)}
-                className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold bg-violet-600 hover:bg-violet-500 text-white shadow-sm transition active:scale-95 cursor-pointer"
-                title="Start a 15-minute review; prompts to save a carryover note when done"
-              >
-                <Clock className="w-3.5 h-3.5" />
-                <span>Start 15m Review</span>
-              </button>
-            )}
-
             <button
               type="button"
               id="briefing_confirm_start_btn"
-              onClick={() => handleStart(isReviewMode)}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold text-white shadow-md transition active:scale-95 cursor-pointer ${
-                isReviewMode
-                  ? "bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 shadow-violet-900/30"
-                  : "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-900/30"
-              }`}
+              onClick={handleStart}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold text-white shadow-md transition active:scale-95 cursor-pointer bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-900/30"
             >
-              {isReviewMode ? (
-                <>
-                  <Play className="w-4 h-4 fill-white" />
-                  <span>Got it, Start 15m Review</span>
-                </>
-              ) : isStudyAhead ? (
+              {isStudyAhead ? (
                 <>
                   <Zap className="w-4 h-4 fill-amber-300 text-amber-300" />
                   <span>Got it, Study Ahead Now</span>
