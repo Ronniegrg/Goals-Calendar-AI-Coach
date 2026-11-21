@@ -77,7 +77,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [isAddingNote, setIsAddingNote] = useState(false);
   const [isUploadingInNotes, setIsUploadingInNotes] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
-  const [newNoteCategory, setNewNoteCategory] = useState<StudyArtifactNote["category"]>("concept");
+  const [newNoteCategory, setNewNoteCategory] = useState<StudyArtifactNote["category"] | "reading_url">("concept");
   const [newNoteContent, setNewNoteContent] = useState("");
   const [newNoteQuestion, setNewNoteQuestion] = useState("");
   const [newNoteAnswer, setNewNoteAnswer] = useState("");
@@ -87,6 +87,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [newNoteUrl, setNewNoteUrl] = useState("");
   const [newNoteUrlContext, setNewNoteUrlContext] = useState("");
   const [newNoteRequiresLogin, setNewNoteRequiresLogin] = useState(false);
+  const [newNoteAssignReading, setNewNoteAssignReading] = useState(true);
   const [extractOnHubUrlSave, setExtractOnHubUrlSave] = useState(true);
   const [newNoteKeyTerms, setNewNoteKeyTerms] = useState("");
   const [newNoteChapter, setNewNoteChapter] = useState("");
@@ -258,7 +259,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   };
 
   const loginStudyLinks = currentHub.notes.filter(
-    n => n.category === "url" && n.url && isSafeHttpUrl(n.url) && n.requiresLogin
+    n => n.category === "url" && n.url && isSafeHttpUrl(n.url) && (n.requiresLogin || n.isReadingAssignment)
   );
 
   const handleExtractFromUrl = async (params: {
@@ -537,7 +538,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     e.preventDefault();
     const isQA = newNoteCategory === "qa";
     const isDefinition = newNoteCategory === "definition";
-    const isUrl = newNoteCategory === "url";
+    const isReadingUrl = newNoteCategory === "reading_url";
+    const isUrl = newNoteCategory === "url" || isReadingUrl;
     const hasScreenshots = newNoteScreenshots.length > 0;
     if (isQA) {
       if ((!newNoteQuestion.trim() || !newNoteAnswer.trim()) && !hasScreenshots) return;
@@ -573,7 +575,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       } catch {}
     }
 
-    const markLoginRequired = isUrl && (newNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
+    const markLoginRequired = isUrl && !isReadingUrl && (newNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
+    const markReadingAssignment = isReadingUrl ? newNoteAssignReading : false;
 
     const noteId = "note_" + Date.now();
     const note: StudyArtifactNote = {
@@ -585,7 +588,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         : isUrl
         ? (newNoteTitle.trim() || defaultUrlTitle)
         : (newNoteTitle.trim() || "Screenshot Note"),
-      category: newNoteCategory,
+      category: isUrl ? "url" : newNoteCategory,
       content: isQA
         ? `Q: ${trimmedQuestion}\n\nA: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isDefinition
@@ -600,6 +603,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       definition: isDefinition ? trimmedDefinition : undefined,
       url: isUrl ? trimmedUrl : undefined,
       urlNotes: isUrl && trimmedUrlContext ? trimmedUrlContext : undefined,
+      linkSubtype: isReadingUrl ? "website_reading" : isUrl ? "video_resource" : undefined,
+      isReadingAssignment: markReadingAssignment || undefined,
       screenshots: hasScreenshots ? [...newNoteScreenshots] : undefined,
       requiresLogin: isUrl ? markLoginRequired : undefined,
       urlAccessNote: markLoginRequired && !trimmedUrlContext
@@ -643,8 +648,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         requiresLogin: markLoginRequired,
         title: note.title
       });
-    } else if (isUrl && markLoginRequired) {
-      setAiNotice("Link saved! I'll remind you to go study this link when studying, reviewing, or testing.");
+    } else if (isUrl && (markLoginRequired || markReadingAssignment)) {
+      setAiNotice(
+        markReadingAssignment
+          ? "Reading link saved! I'll remind you to read this website when studying, reviewing, or testing."
+          : "Link saved! I'll remind you to go study this link when studying, reviewing, or testing."
+      );
       setTimeout(() => setAiNotice(null), 5000);
     }
   };
@@ -1153,18 +1162,24 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     {newNoteCategory !== "qa" && newNoteCategory !== "definition" && (
                       <div className="md:col-span-2 space-y-1">
                         <label className="text-xs font-medium text-slate-300">
-                          {newNoteCategory === "url" ? "Resource Title (Optional)" : "Artifact Title"}
+                          {newNoteCategory === "reading_url"
+                            ? "Article / Website Title (Optional)"
+                            : newNoteCategory === "url"
+                            ? "Resource Title (Optional)"
+                            : "Artifact Title"}
                         </label>
                         <input
                           type="text"
                           placeholder={
-                            newNoteCategory === "url"
+                            newNoteCategory === "reading_url"
+                              ? "e.g. MDN HTTP Guide or Reading Chapter (auto-detected if blank)"
+                              : newNoteCategory === "url"
                               ? "e.g. CompTIA Security+ DNS Lecture (auto-detected if blank)"
                               : "e.g. DNS Resolution Flow & Troubleshooting Protocol"
                           }
                           value={newNoteTitle}
                           onChange={e => setNewNoteTitle(e.target.value)}
-                          required={newNoteCategory !== "url" && newNoteScreenshots.length === 0}
+                          required={newNoteCategory !== "url" && newNoteCategory !== "reading_url" && newNoteScreenshots.length === 0}
                           className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
                         />
                       </div>
@@ -1180,7 +1195,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                             setIsUploadingInNotes(true);
                             return;
                           }
-                          setNewNoteCategory(e.target.value as StudyArtifactNote["category"]);
+                          setNewNoteCategory(e.target.value as StudyArtifactNote["category"] | "reading_url");
                         }}
                         className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white focus:outline-none focus:border-violet-500"
                       >
@@ -1192,6 +1207,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <option value="qa">Question &amp; Answer</option>
                         <option value="definition">Definition</option>
                         <option value="url">Video / Resource URL</option>
+                        <option value="reading_url">Website Reading Link (Regular URL)</option>
                         <option value="video_upload">Upload Video / Text</option>
                       </select>
                     </div>
@@ -1275,53 +1291,90 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         />
                       </div>
                     </div>
-                  ) : newNoteCategory === "url" ? (
+                  ) : newNoteCategory === "url" || newNoteCategory === "reading_url" ? (
                     <div className="space-y-3">
                       <div className="space-y-1">
                         <label className="text-xs font-medium text-cyan-300 flex items-center gap-1.5">
                           <Link2 className="w-3.5 h-3.5" />
-                          <span>Video or Resource URL</span>
+                          <span>
+                            {newNoteCategory === "reading_url" ? "Website Reading URL" : "Video or Resource URL"}
+                          </span>
                         </label>
-                        <input
-                          type="url"
-                          placeholder="https://www.youtube.com/watch?v=..., Coursera, Udemy, or docs URL"
-                          value={newNoteUrl}
-                          onChange={e => {
-                            const val = e.target.value;
-                            setNewNoteUrl(val);
-                            if (isLikelyLoginProtectedUrl(val)) {
-                              setNewNoteRequiresLogin(true);
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="url"
+                            placeholder={
+                              newNoteCategory === "reading_url"
+                                ? "https://example.com/article, docs, or reading page"
+                                : "https://www.youtube.com/watch?v=..., Coursera, Udemy, or docs URL"
                             }
-                          }}
-                          required
-                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-cyan-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
-                        />
+                            value={newNoteUrl}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setNewNoteUrl(val);
+                              if (newNoteCategory === "url" && isLikelyLoginProtectedUrl(val)) {
+                                setNewNoteRequiresLogin(true);
+                              }
+                            }}
+                            required
+                            className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-900/80 border border-cyan-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                          />
+                          {isSafeHttpUrl(newNoteUrl) && (
+                            <a
+                              href={newNoteUrl.trim()}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                            >
+                              <span>Read</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                        </div>
                       </div>
 
-                      <label className="flex items-center gap-2 text-xs text-amber-300 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={newNoteRequiresLogin}
-                          onChange={e => setNewNoteRequiresLogin(e.target.checked)}
-                          className="rounded border-amber-500 text-amber-500 focus:ring-amber-500"
-                        />
-                        <span>Requires login (remind me to go study this link when studying, reviewing, or testing)</span>
-                      </label>
+                      {newNoteCategory === "reading_url" ? (
+                        <label className="flex items-center gap-2 text-xs text-cyan-300 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={newNoteAssignReading}
+                            onChange={e => setNewNoteAssignReading(e.target.checked)}
+                            className="rounded border-cyan-500 text-cyan-500 focus:ring-cyan-500"
+                          />
+                          <span>Remind me to read this website when studying, reviewing, or testing</span>
+                        </label>
+                      ) : (
+                        <label className="flex items-center gap-2 text-xs text-amber-300 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={newNoteRequiresLogin}
+                            onChange={e => setNewNoteRequiresLogin(e.target.checked)}
+                            className="rounded border-amber-500 text-amber-500 focus:ring-amber-500"
+                          />
+                          <span>Requires login (remind me to go study this link when studying, reviewing, or testing)</span>
+                        </label>
+                      )}
 
                       <div className="space-y-1">
                         <label className="text-xs font-medium text-slate-300">
-                          Lesson Context or Transcript (Optional)
+                          {newNoteCategory === "reading_url"
+                            ? "Reading Highlights or Notes (Optional)"
+                            : "Lesson Context or Transcript (Optional)"}
                         </label>
                         <textarea
                           rows={3}
-                          placeholder="Optional: paste key takeaways or transcript so I can extract notes & quiz questions for login-protected lessons."
+                          placeholder={
+                            newNoteCategory === "reading_url"
+                              ? "Optional: paste key takeaways from the webpage, or leave blank to extract notes directly from the website."
+                              : "Optional: paste key takeaways or transcript so I can extract notes & quiz questions for login-protected lessons."
+                          }
                           value={newNoteUrlContext}
                           onChange={e => setNewNoteUrlContext(e.target.value)}
                           className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                         />
                       </div>
 
-                      {(!newNoteRequiresLogin || newNoteUrlContext.trim().length > 0) && (
+                      {(newNoteCategory === "reading_url" || !newNoteRequiresLogin || newNoteUrlContext.trim().length > 0) && (
                         <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
                           <input
                             type="checkbox"
@@ -1329,7 +1382,11 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                             onChange={e => setExtractOnHubUrlSave(e.target.checked)}
                             className="rounded border-slate-600 text-violet-600 focus:ring-violet-500"
                           />
-                          <span>Extract AI study notes, flashcards &amp; quiz questions from this link</span>
+                          <span>
+                            {newNoteCategory === "reading_url"
+                              ? "Extract AI study notes, flashcards & quiz questions from this website"
+                              : "Extract AI study notes, flashcards & quiz questions from this link"}
+                          </span>
                         </label>
                       )}
                     </div>
@@ -1356,7 +1413,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                           onClick={handleTakeHubScreenshot}
                           disabled={isCapturingHubScreenshot || newNoteScreenshots.length >= 4}
                           className="px-3 py-1.5 rounded-lg bg-slate-900/90 hover:bg-violet-950/60 border border-slate-700/70 hover:border-violet-500/60 text-xs font-medium text-slate-200 inline-flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
-                          title="Capture a screenshot of your screen, window, or browser tab"
+                          title="Capture screen, or snip with Win+Shift+S / Cmd+Shift+4 and paste with Ctrl+V"
                         >
                           {isCapturingHubScreenshot ? (
                             <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin" />
@@ -1387,11 +1444,27 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                           <span>Attach Image</span>
                         </button>
                       </div>
-                      <span className="text-[11px] text-slate-400">
-                        {newNoteScreenshots.length > 0
-                          ? `${newNoteScreenshots.length}/4 screenshots attached`
-                          : "or press Ctrl+V to paste screenshot"}
-                      </span>
+                      {newNoteScreenshots.length > 0 && (
+                        <span className="text-[11px] font-medium text-violet-300 tabular-nums">
+                          {newNoteScreenshots.length}/4 screenshots attached
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                      <span>Snip &amp; paste:</span>
+                      <kbd className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 font-mono text-[10px] text-slate-200">
+                        Win+Shift+S
+                      </kbd>
+                      <span>/</span>
+                      <kbd className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 font-mono text-[10px] text-slate-200">
+                        Cmd+Shift+4
+                      </kbd>
+                      <span>→</span>
+                      <kbd className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 font-mono text-[10px] text-slate-200">
+                        Ctrl+V
+                      </kbd>
+                      <span>to paste</span>
                     </div>
 
                     {hubScreenshotNotice && (
@@ -1672,20 +1745,26 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                           </div>
                         ) : note.category === "url" && note.url && isSafeHttpUrl(note.url) ? (
                           <div className="space-y-2.5">
-                            {note.requiresLogin && (
+                            {(note.requiresLogin || note.isReadingAssignment) && (
                               <div className={`p-2.5 rounded-lg border text-[11px] flex items-center justify-between gap-2 ${
                                 note.reviewCompleted
                                   ? "bg-emerald-950/30 border-emerald-700/35 text-emerald-200"
+                                  : note.linkSubtype === "website_reading"
+                                  ? "bg-cyan-950/35 border-cyan-700/40 text-cyan-200"
                                   : "bg-amber-950/35 border-amber-700/40 text-amber-200"
                               }`}>
                                 <span>
                                   {note.reviewCompleted
                                     ? `Studied${note.studyCount ? ` (${note.studyCount}x)` : ""} — ready for next review`
+                                    : note.linkSubtype === "website_reading"
+                                    ? "Website Reading Assignment"
                                     : "Study / Review Assignment — login required"}
                                 </span>
                                 <span className={`px-1.5 py-0.5 rounded font-semibold uppercase text-[9px] shrink-0 ${
                                   note.reviewCompleted
                                     ? "bg-emerald-500/20 text-emerald-300"
+                                    : note.linkSubtype === "website_reading"
+                                    ? "bg-cyan-500/20 text-cyan-300"
                                     : "bg-amber-500/20 text-amber-300"
                                 }`}>
                                   {note.reviewCompleted ? "Studied ✓" : "Assigned"}
@@ -1707,7 +1786,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               </div>
                             )}
                             <div className="flex flex-wrap items-center gap-2 pt-1">
-                              {note.requiresLogin && (
+                              {(note.requiresLogin || note.isReadingAssignment) && (
                                 <>
                                   <a
                                     href={note.url}
@@ -1715,7 +1794,13 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                     rel="noopener noreferrer"
                                     className="px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors"
                                   >
-                                    <span>{note.reviewCompleted ? "Review Link" : "Go Study Link"}</span>
+                                    <span>
+                                      {note.reviewCompleted
+                                        ? "Review Link"
+                                        : note.linkSubtype === "website_reading"
+                                        ? "Go Read Link"
+                                        : "Go Study Link"}
+                                    </span>
                                     <ExternalLink className="w-3 h-3" />
                                   </a>
                                   <button
@@ -1728,7 +1813,13 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                     }`}
                                   >
                                     <CheckCircle2 className="w-3 h-3" />
-                                    <span>{note.reviewCompleted ? "Assign Again" : "Mark Studied"}</span>
+                                    <span>
+                                      {note.reviewCompleted
+                                        ? "Assign Again"
+                                        : note.linkSubtype === "website_reading"
+                                        ? "Mark Read"
+                                        : "Mark Studied"}
+                                    </span>
                                   </button>
                                 </>
                               )}

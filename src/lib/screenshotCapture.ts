@@ -42,7 +42,7 @@ export async function captureScreenScreenshot(): Promise<ScreenshotCaptureResult
   ) {
     return {
       reason: "unsupported",
-      error: "Direct screen capture isn't supported here. Paste a screenshot (Ctrl+V) or upload an image instead."
+      error: "Direct capture isn't supported here. Snip with Win+Shift+S (Windows) or Cmd+Shift+4 (Mac), then press Ctrl+V to paste—or attach an image."
     };
   }
 
@@ -76,7 +76,7 @@ export async function captureScreenScreenshot(): Promise<ScreenshotCaptureResult
     if (!video.videoWidth || !video.videoHeight) {
       return {
         reason: "error",
-        error: "Captured frame was empty. Try pasting (Ctrl+V) or uploading an image."
+        error: "Captured frame was empty. Snip with Win+Shift+S / Cmd+Shift+4 then press Ctrl+V, or attach an image."
       };
     }
 
@@ -90,17 +90,17 @@ export async function captureScreenScreenshot(): Promise<ScreenshotCaptureResult
       if (msg.includes("policy") || msg.includes("permission") || msg.includes("disallowed") || msg.includes("iframe")) {
         return {
           reason: "blocked",
-          error: "Screen capture is blocked by the browser/preview frame. Press Ctrl+V to paste any screenshot, or choose an image file."
+          error: "Screen capture is blocked by the preview frame. Snip with Win+Shift+S (Win) or Cmd+Shift+4 (Mac) and press Ctrl+V to paste—or attach an image."
         };
       }
       return {
         reason: "cancelled",
-        error: "Screen capture cancelled. You can also press Ctrl+V to paste a screenshot or upload an image."
+        error: "Screen capture cancelled. You can also snip with Win+Shift+S / Cmd+Shift+4 and press Ctrl+V to paste."
       };
     }
     return {
       reason: "error",
-      error: "Could not capture screen. Press Ctrl+V to paste a screenshot or upload an image instead."
+      error: "Could not capture screen. Snip with Win+Shift+S / Cmd+Shift+4 and press Ctrl+V to paste, or attach an image."
     };
   } finally {
     if (stream) {

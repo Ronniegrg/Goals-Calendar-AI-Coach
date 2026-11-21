@@ -178,6 +178,12 @@ export default function App() {
   coachChatSessionsRef.current = coachChatSessions;
   const activeCoachChatIdRef = useRef<string>(activeCoachChatId);
   activeCoachChatIdRef.current = activeCoachChatId;
+  const goalsRef = useRef<Goal[]>(goals);
+  goalsRef.current = goals;
+  const eventsRef = useRef<CalendarEvent[]>(events);
+  eventsRef.current = events;
+  const notificationsRef = useRef<AppNotification[]>(notifications);
+  notificationsRef.current = notifications;
   const [autopilotMode, setAutopilotMode] = useState<AutopilotMode>(() => {
     const saved = localStorage.getItem("ai_autopilot_mode");
     if (saved) return saved as AutopilotMode;
@@ -1488,13 +1494,13 @@ export default function App() {
       });
 
       // 2. Remove / resolve matching upcoming notifications so banner & alerts list won't show "Time to prepare!"
-      setNotifications(prev => {
-        const hasMatching = prev.some(matchesNotification);
-        if (!hasMatching) return prev;
-        const updated = prev.filter(n => !matchesNotification(n));
-        syncToCloud(goals, events, availability, updated, coachMessages);
-        return updated;
-      });
+      const currentNotifications = notificationsRef.current;
+      if (currentNotifications.some(matchesNotification)) {
+        const updated = currentNotifications.filter(n => !matchesNotification(n));
+        notificationsRef.current = updated;
+        setNotifications(updated);
+        syncToCloud(goalsRef.current, eventsRef.current, availability, updated, coachMessages);
+      }
 
       // 3. Mark matching event(s) in notifiedIds so background checker won't re-trigger it
       try {
@@ -1552,12 +1558,10 @@ export default function App() {
       type
     };
 
-    setNotifications(prev => {
-      const updated = [newNotif, ...prev];
-      // Sync immediately with current variables
-      syncToCloud(goals, events, availability, updated, coachMessages);
-      return updated;
-    });
+    const updatedNotifications = [newNotif, ...notificationsRef.current];
+    notificationsRef.current = updatedNotifications;
+    setNotifications(updatedNotifications);
+    syncToCloud(goalsRef.current, eventsRef.current, availability, updatedNotifications, coachMessages);
 
     // Populate on-screen floating toast notification
     setActiveToast({
@@ -1604,104 +1608,101 @@ export default function App() {
 
   // B. Toggle complete state on events
   const handleToggleEventComplete = (id: string) => {
-    let syncTargetEvents: CalendarEvent[] = [];
-    let syncTargetGoals: Goal[] = [];
+    const prevEvents = eventsRef.current;
+    const prevGoals = goalsRef.current;
+    const targetEvt = prevEvents.find(e => e.id === id);
+    if (!targetEvt) return;
 
-    setEvents(prevEvents => {
-      const targetEvt = prevEvents.find(e => e.id === id);
-      if (!targetEvt) return prevEvents;
+    const toggleVal = !targetEvt.completed;
 
-      const toggleVal = !targetEvt.completed;
+    // Find tied goal by goalId OR by title matching
+    const targetGoal = prevGoals.find(g => 
+      (targetEvt.goalId && g.id === targetEvt.goalId) || 
+      (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase()))
+    );
 
-      // Find tied goal by goalId OR by title matching
-      const targetGoal = goals.find(g => 
-        (targetEvt.goalId && g.id === targetEvt.goalId) || 
-        (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase()))
-      );
-
-      let nextGoals = [...goals];
-      if (targetGoal) {
-        nextGoals = goals.map(g => {
-          if (g.id === targetGoal.id) {
-            const countChange = toggleVal ? 1 : -1;
-            return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
-          }
-          return g;
-        });
-      }
-
-      const nextEvents = prevEvents.map(evt => {
-        if (evt.id === id) {
-          return { 
-            ...evt, 
-            completed: toggleVal,
-            goalId: targetGoal ? targetGoal.id : evt.goalId 
-          };
+    let nextGoals = [...prevGoals];
+    if (targetGoal) {
+      nextGoals = prevGoals.map(g => {
+        if (g.id === targetGoal.id) {
+          const countChange = toggleVal ? 1 : -1;
+          return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
         }
-        return evt;
+        return g;
       });
+    }
 
-      if (toggleVal) {
-        const typeLabel = targetEvt.type === "workout" ? "Physical session completed!" : "Intellectual focus block aced!";
-        const sDate = new Date(targetEvt.start);
-        const dateText = sDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-        const timeText = sDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
-        triggerSystemNotification(
-          "Session Achieved!",
-          `Success: "${targetEvt.title}" marked as done. ${typeLabel}`,
-          "success"
-        );
-
-        // Auto-advance spotlight to next remaining uncompleted session for today
-        const todayStr = sDate.toDateString();
-        const remainingToday = nextEvents
-          .filter(e => e.type !== "external" && !e.completed && new Date(e.start).toDateString() === todayStr)
-          .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-
-        const nextTarget = remainingToday[0] || null;
-
-        try {
-          if (nextTarget) {
-            localStorage.setItem("calendar_spotlight_event_id", nextTarget.id);
-            if (nextTarget.goalId) {
-              localStorage.setItem("calendar_spotlight_goal_id", nextTarget.goalId);
-            } else {
-              localStorage.removeItem("calendar_spotlight_goal_id");
-            }
-            window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
-              detail: { eventId: nextTarget.id, goalId: nextTarget.goalId || null }
-            }));
-          } else {
-            localStorage.removeItem("calendar_spotlight_event_id");
-            localStorage.removeItem("calendar_spotlight_goal_id");
-            window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
-              detail: { eventId: null, goalId: null }
-            }));
-          }
-
-          const completedData = {
-            id: targetEvt.id,
-            eventId: targetEvt.id,
-            goalId: targetEvt.goalId || targetGoal?.id,
-            title: targetEvt.title,
-            dateStr: dateText,
-            timeStr: timeText,
-            timestamp: Date.now()
-          };
-          localStorage.setItem("last_completed_session", JSON.stringify(completedData));
-          window.dispatchEvent(new CustomEvent("session_completed_event", { detail: completedData }));
-        } catch {}
+    const nextEvents = prevEvents.map(evt => {
+      if (evt.id === id) {
+        return { 
+          ...evt, 
+          completed: toggleVal,
+          goalId: targetGoal ? targetGoal.id : evt.goalId 
+        };
       }
-
-      setGoals(nextGoals);
-      syncTargetEvents = nextEvents;
-      syncTargetGoals = nextGoals;
-      return nextEvents;
+      return evt;
     });
 
+    eventsRef.current = nextEvents;
+    goalsRef.current = nextGoals;
+    setEvents(nextEvents);
+    setGoals(nextGoals);
+
+    if (toggleVal) {
+      const typeLabel = targetEvt.type === "workout" ? "Physical session completed!" : "Intellectual focus block aced!";
+      const sDate = new Date(targetEvt.start);
+      const dateText = sDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+      const timeText = sDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+      triggerSystemNotification(
+        "Session Achieved!",
+        `Success: "${targetEvt.title}" marked as done. ${typeLabel}`,
+        "success"
+      );
+
+      // Auto-advance spotlight to next remaining uncompleted session for today
+      const todayStr = sDate.toDateString();
+      const remainingToday = nextEvents
+        .filter(e => e.type !== "external" && !e.completed && new Date(e.start).toDateString() === todayStr)
+        .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+      const nextTarget = remainingToday[0] || null;
+
+      try {
+        if (nextTarget) {
+          localStorage.setItem("calendar_spotlight_event_id", nextTarget.id);
+          if (nextTarget.goalId) {
+            localStorage.setItem("calendar_spotlight_goal_id", nextTarget.goalId);
+          } else {
+            localStorage.removeItem("calendar_spotlight_goal_id");
+          }
+          window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+            detail: { eventId: nextTarget.id, goalId: nextTarget.goalId || null }
+          }));
+        } else {
+          localStorage.removeItem("calendar_spotlight_event_id");
+          localStorage.removeItem("calendar_spotlight_goal_id");
+          window.dispatchEvent(new CustomEvent("calendar_target_session_change", {
+            detail: { eventId: null, goalId: null }
+          }));
+        }
+
+        const completedData = {
+          id: targetEvt.id,
+          eventId: targetEvt.id,
+          goalId: targetEvt.goalId || targetGoal?.id,
+          title: targetEvt.title,
+          dateStr: dateText,
+          timeStr: timeText,
+          timestamp: Date.now()
+        };
+        localStorage.setItem("last_completed_session", JSON.stringify(completedData));
+        window.dispatchEvent(new CustomEvent("session_completed_event", { detail: completedData }));
+      } catch {}
+    }
+
     setTimeout(() => {
-      syncToCloud(syncTargetGoals, syncTargetEvents, availability, notifications, coachMessages);
+      syncToCloud(goalsRef.current, eventsRef.current, availability, notificationsRef.current, coachMessages);
     }, 50);
   };
 
@@ -1713,75 +1714,78 @@ export default function App() {
     // Decrement completed aggregates if deleting an already completed event
     if (targetEvt && targetEvt.completed) {
       const targetGoal = goals.find(g => 
-        (targetEvt.goalId && g.id === targetEvt.goalId) ||
+        (targetEvt.goalId && g.id === targetEvt.goalId) || 
         (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase()))
       );
-
       if (targetGoal) {
         nextGoals = goals.map(g => 
           g.id === targetGoal.id ? { ...g, completedCount: Math.max(g.completedCount - 1, 0) } : g
         );
+        goalsRef.current = nextGoals;
         setGoals(nextGoals);
       }
     }
 
-    const nextEvents = events.filter(e => e.id !== id);
+    const nextEvents = events.filter(evt => evt.id !== id);
+    eventsRef.current = nextEvents;
     setEvents(nextEvents);
-    syncToCloud(nextGoals, nextEvents, availability, notifications, coachMessages);
+    syncToCloud(nextGoals, nextEvents, availability, notificationsRef.current, coachMessages);
   };
 
   // CC. Edit existing calendar event attributes
   const handleEditEvent = (id: string, updatedFields: Partial<Omit<CalendarEvent, "id">>) => {
-    let syncTargetEvents: CalendarEvent[] = [];
-    let syncTargetGoals: Goal[] = [];
+    const prevEvents = eventsRef.current;
+    const prevGoals = goalsRef.current;
+    const targetEvt = prevEvents.find(e => e.id === id);
+    let nextGoals = [...prevGoals];
+    let achievedTitle: string | null = null;
 
-    setEvents(prevEvents => {
-      const targetEvt = prevEvents.find(e => e.id === id);
-      let nextGoals = [...goals];
+    if (targetEvt && updatedFields.completed !== undefined && targetEvt.completed !== updatedFields.completed) {
+      const toggleVal = updatedFields.completed;
+      const targetGoal = prevGoals.find(g => 
+        (targetEvt.goalId && g.id === targetEvt.goalId) || 
+        (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase())) ||
+        (updatedFields.title && g.name && updatedFields.title.toLowerCase().includes(g.name.toLowerCase()))
+      );
 
-      if (targetEvt && updatedFields.completed !== undefined && targetEvt.completed !== updatedFields.completed) {
-        const toggleVal = updatedFields.completed;
-        const targetGoal = goals.find(g => 
-          (targetEvt.goalId && g.id === targetEvt.goalId) || 
-          (targetEvt.title && g.name && targetEvt.title.toLowerCase().includes(g.name.toLowerCase())) ||
-          (updatedFields.title && g.name && updatedFields.title.toLowerCase().includes(g.name.toLowerCase()))
-        );
-
-        if (targetGoal) {
-          nextGoals = goals.map(g => {
-            if (g.id === targetGoal.id) {
-              const countChange = toggleVal ? 1 : -1;
-              return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
-            }
-            return g;
-          });
-        }
-
-        if (toggleVal) {
-          triggerSystemNotification(
-            "Session Achieved!",
-            `Success: "${updatedFields.title || targetEvt.title}" marked as done!`,
-            "success"
-          );
-        }
+      if (targetGoal) {
+        nextGoals = prevGoals.map(g => {
+          if (g.id === targetGoal.id) {
+            const countChange = toggleVal ? 1 : -1;
+            return { ...g, completedCount: Math.max(g.completedCount + countChange, 0) };
+          }
+          return g;
+        });
       }
 
-      const nextEvents = prevEvents.map(evt => {
-        if (evt.id === id) {
-          return { ...evt, ...updatedFields } as CalendarEvent;
-        }
-        return evt;
-      });
+      if (toggleVal) {
+        achievedTitle = updatedFields.title || targetEvt.title;
+      }
+    }
 
-      setGoals(nextGoals);
-      syncTargetEvents = nextEvents;
-      syncTargetGoals = nextGoals;
-      return nextEvents;
+    const nextEvents = prevEvents.map(evt => {
+      if (evt.id === id) {
+        return { ...evt, ...updatedFields } as CalendarEvent;
+      }
+      return evt;
     });
 
+    eventsRef.current = nextEvents;
+    goalsRef.current = nextGoals;
+    setEvents(nextEvents);
+    setGoals(nextGoals);
+
+    if (achievedTitle) {
+      triggerSystemNotification(
+        "Session Achieved!",
+        `Success: "${achievedTitle}" marked as done!`,
+        "success"
+      );
+    }
+
     setTimeout(() => {
-      if (syncTargetEvents.length > 0) {
-        syncToCloud(syncTargetGoals, syncTargetEvents, availability, notifications, coachMessages);
+      if (eventsRef.current.length > 0) {
+        syncToCloud(goalsRef.current, eventsRef.current, availability, notificationsRef.current, coachMessages);
       }
     }, 50);
   };
@@ -1791,23 +1795,20 @@ export default function App() {
     if (!updates || updates.length === 0) return;
     const updateMap = new Map(updates.map(u => [u.id, u.fields]));
 
-    let syncTargetEvents: CalendarEvent[] = [];
-    setEvents(prevEvents => {
-      const nextEvents = prevEvents.map(evt => {
-        const fields = updateMap.get(evt.id);
-        if (fields) {
-          return { ...evt, ...fields } as CalendarEvent;
-        }
-        return evt;
-      });
-
-      syncTargetEvents = nextEvents;
-      return nextEvents;
+    const nextEvents = eventsRef.current.map(evt => {
+      const fields = updateMap.get(evt.id);
+      if (fields) {
+        return { ...evt, ...fields } as CalendarEvent;
+      }
+      return evt;
     });
 
+    eventsRef.current = nextEvents;
+    setEvents(nextEvents);
+
     setTimeout(() => {
-      if (syncTargetEvents.length > 0) {
-        syncToCloud(goals, syncTargetEvents, availability, notifications, coachMessages);
+      if (eventsRef.current.length > 0) {
+        syncToCloud(goalsRef.current, eventsRef.current, availability, notificationsRef.current, coachMessages);
       }
     }, 50);
   };

@@ -658,6 +658,7 @@ export default function FocusTimerModal({
   const [liveNoteUrl, setLiveNoteUrl] = useState("");
   const [liveNoteUrlContext, setLiveNoteUrlContext] = useState("");
   const [liveNoteRequiresLogin, setLiveNoteRequiresLogin] = useState(false);
+  const [liveNoteAssignReading, setLiveNoteAssignReading] = useState(true);
   const [extractOnUrlSave, setExtractOnUrlSave] = useState(true);
   const [isExtractingLiveUrl, setIsExtractingLiveUrl] = useState(false);
   const [liveUploadVideoFile, setLiveUploadVideoFile] = useState<File | null>(null);
@@ -665,7 +666,7 @@ export default function FocusTimerModal({
   const [liveUploadTranscriptText, setLiveUploadTranscriptText] = useState("");
   const [isExtractingLiveUpload, setIsExtractingLiveUpload] = useState(false);
   const [liveUploadInputKey, setLiveUploadInputKey] = useState(0);
-  const [liveNoteCategory, setLiveNoteCategory] = useState<StudyArtifactNote["category"] | "video_upload">("concept");
+  const [liveNoteCategory, setLiveNoteCategory] = useState<StudyArtifactNote["category"] | "video_upload" | "reading_url">("concept");
   const liveNoteQuestionRef = useRef<HTMLTextAreaElement>(null);
   const liveNoteTermRef = useRef<HTMLInputElement>(null);
   const liveNoteUrlRef = useRef<HTMLInputElement>(null);
@@ -887,7 +888,7 @@ export default function FocusTimerModal({
   const loginStudyLinks = useMemo(() => {
     if (!activeGoal?.knowledgeHub?.notes) return [];
     return activeGoal.knowledgeHub.notes.filter(
-      n => n.category === "url" && n.url && isSafeHttpUrl(n.url) && n.requiresLogin
+      n => n.category === "url" && n.url && isSafeHttpUrl(n.url) && (n.requiresLogin || n.isReadingAssignment)
     );
   }, [activeGoal?.knowledgeHub?.notes]);
 
@@ -1155,7 +1156,8 @@ export default function FocusTimerModal({
   const handleSaveLiveStudyNote = async () => {
     const isQA = liveNoteCategory === "qa";
     const isDefinition = liveNoteCategory === "definition";
-    const isUrl = liveNoteCategory === "url";
+    const isReadingUrl = liveNoteCategory === "reading_url";
+    const isUrl = liveNoteCategory === "url" || isReadingUrl;
     const isVideoUpload = liveNoteCategory === "video_upload";
     const hasScreenshots = liveNoteScreenshots.length > 0;
     if (!activeGoal) return;
@@ -1295,7 +1297,8 @@ export default function FocusTimerModal({
       } catch {}
     }
 
-    const markLoginRequired = isUrl && (liveNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
+    const markLoginRequired = isUrl && !isReadingUrl && (liveNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
+    const markReadingAssignment = isReadingUrl ? liveNoteAssignReading : false;
 
     const savedNoteId = `note_${Date.now()}`;
     const newNote: StudyArtifactNote = {
@@ -1307,7 +1310,7 @@ export default function FocusTimerModal({
         : isUrl
         ? (liveNoteTitle.trim() || defaultUrlTitle)
         : liveNoteTitle.trim() || `${activeGoal.name} Study Note (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
-      category: liveNoteCategory as StudyArtifactNote["category"],
+      category: isUrl ? "url" : (liveNoteCategory as StudyArtifactNote["category"]),
       content: isQA
         ? `Q: ${trimmedQuestion}\n\nA: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isDefinition
@@ -1322,6 +1325,8 @@ export default function FocusTimerModal({
       definition: isDefinition ? trimmedDefinition : undefined,
       url: isUrl ? trimmedUrl : undefined,
       urlNotes: isUrl && trimmedUrlContext ? trimmedUrlContext : undefined,
+      linkSubtype: isReadingUrl ? "website_reading" : isUrl ? "video_resource" : undefined,
+      isReadingAssignment: markReadingAssignment || undefined,
       screenshots: hasScreenshots ? [...liveNoteScreenshots] : undefined,
       requiresLogin: isUrl ? markLoginRequired : undefined,
       urlAccessNote: markLoginRequired && !trimmedUrlContext
@@ -1412,6 +1417,8 @@ export default function FocusTimerModal({
         ? "Q&A note saved to Goal Study Hub!"
         : isDefinition
         ? "Definition saved to Goal Study Hub!"
+        : isReadingUrl && markReadingAssignment
+        ? "Reading link saved! I'll remind you to read this website when studying, reviewing, or testing."
         : isUrl && markLoginRequired
         ? "Saved! I'll remind you to go study this link when you study, review, or test."
         : isUrl
@@ -1451,7 +1458,7 @@ export default function FocusTimerModal({
       ? (!liveNoteQuestion.trim() || !liveNoteAnswer.trim()) && liveNoteScreenshots.length === 0
       : liveNoteCategory === "definition"
       ? (!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && liveNoteScreenshots.length === 0
-      : liveNoteCategory === "url"
+      : liveNoteCategory === "url" || liveNoteCategory === "reading_url"
       ? !liveNoteUrl.trim()
       : liveNoteCategory === "video_upload"
       ? !liveUploadVideoFile && !liveUploadTranscriptFile && !liveUploadTranscriptText.trim() && liveNoteScreenshots.length === 0
@@ -3604,7 +3611,7 @@ export default function FocusTimerModal({
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-300 mt-0.5">
-                      Login-required {loginStudyLinks.length === 1 ? "lesson" : "lessons"} — open to study or review, then check off:
+                      Assigned {loginStudyLinks.length === 1 ? "link" : "links"} — open to read/study, then check off:
                     </p>
                   </div>
                 </div>
@@ -3660,7 +3667,7 @@ export default function FocusTimerModal({
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold whitespace-nowrap shrink-0 transition-colors"
                     >
-                      <span>{linkNote.reviewCompleted ? "Review" : "Go study"}</span>
+                      <span>{linkNote.reviewCompleted ? "Review" : linkNote.linkSubtype === "website_reading" ? "Go read" : "Go study"}</span>
                       <ExternalLink className="w-3 h-3 shrink-0" />
                     </a>
                   </div>
@@ -3738,7 +3745,7 @@ export default function FocusTimerModal({
                 </label>
                 <select
                   value={liveNoteCategory}
-                  onChange={(e) => setLiveNoteCategory(e.target.value as StudyArtifactNote["category"] | "video_upload")}
+                  onChange={(e) => setLiveNoteCategory(e.target.value as StudyArtifactNote["category"] | "video_upload" | "reading_url")}
                   className="flex-1 min-w-0 text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
                 >
                   <option value="concept">Concept Breakdown</option>
@@ -3749,17 +3756,22 @@ export default function FocusTimerModal({
                   <option value="qa">Question &amp; Answer</option>
                   <option value="definition">Definition</option>
                   <option value="url">Video / Resource URL</option>
+                  <option value="reading_url">Website Reading Link (Regular URL)</option>
                   <option value="video_upload">Upload Video / Text</option>
                 </select>
               </div>
 
-              {liveNoteCategory !== "qa" && liveNoteCategory !== "definition" && liveNoteCategory !== "url" && (
+              {liveNoteCategory !== "qa" && liveNoteCategory !== "definition" && (
                 <input
                   ref={liveNoteTitleRef}
                   type="text"
                   placeholder={
                     liveNoteCategory === "video_upload"
                       ? "Lesson title (Optional — e.g. Week 2 Lecture)"
+                      : liveNoteCategory === "reading_url"
+                      ? "Article / Website title (Optional — auto-detected if blank)"
+                      : liveNoteCategory === "url"
+                      ? "Resource title (Optional — auto-detected if blank)"
                       : "Note title (e.g. Chapter 3 DNS & Port 53)"
                   }
                   value={liveNoteTitle}
@@ -3842,50 +3854,90 @@ export default function FocusTimerModal({
                   />
                 </div>
               </div>
-            ) : liveNoteCategory === "url" ? (
+            ) : liveNoteCategory === "url" || liveNoteCategory === "reading_url" ? (
               <div className="space-y-2.5">
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-cyan-600 dark:text-cyan-300 flex items-center gap-1.5">
                     <Link2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>Video or Resource URL</span>
+                    <span>
+                      {liveNoteCategory === "reading_url" ? "Website Reading URL" : "Video or Resource URL"}
+                    </span>
                   </label>
-                  <input
-                    ref={liveNoteUrlRef}
-                    type="url"
-                    placeholder="https://www.youtube.com/watch?v=..., Coursera, Udemy, or docs link"
-                    value={liveNoteUrl}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setLiveNoteUrl(val);
-                      if (isLikelyLoginProtectedUrl(val)) {
-                        setLiveNoteRequiresLogin(true);
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={liveNoteUrlRef}
+                      type="url"
+                      placeholder={
+                        liveNoteCategory === "reading_url"
+                          ? "https://example.com/article, documentation, or reading page"
+                          : "https://www.youtube.com/watch?v=..., Coursera, Udemy, or docs link"
                       }
-                    }}
-                    className="w-full text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-cyan-300 dark:border-cyan-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500"
-                  />
+                      value={liveNoteUrl}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setLiveNoteUrl(val);
+                        if (liveNoteCategory === "url" && isLikelyLoginProtectedUrl(val)) {
+                          setLiveNoteRequiresLogin(true);
+                        }
+                      }}
+                      className="flex-1 min-w-0 text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-cyan-300 dark:border-cyan-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                    />
+                    {isSafeHttpUrl(liveNoteUrl) && (
+                      <a
+                        href={liveNoteUrl.trim()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                        title="Open website to read now"
+                      >
+                        <span>Read</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                  </div>
                 </div>
-                <label className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={liveNoteRequiresLogin}
-                    onChange={(e) => setLiveNoteRequiresLogin(e.target.checked)}
-                    className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                  />
-                  <span>Requires login (remind me to go study this link when studying, reviewing, or testing)</span>
-                </label>
+
+                {liveNoteCategory === "reading_url" ? (
+                  <label className="flex items-center gap-2 text-xs text-cyan-700 dark:text-cyan-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={liveNoteAssignReading}
+                      onChange={(e) => setLiveNoteAssignReading(e.target.checked)}
+                      className="rounded border-cyan-400 text-cyan-600 focus:ring-cyan-500"
+                    />
+                    <span>Remind me to read this website when studying, reviewing, or testing</span>
+                  </label>
+                ) : (
+                  <label className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={liveNoteRequiresLogin}
+                      onChange={(e) => setLiveNoteRequiresLogin(e.target.checked)}
+                      className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Requires login (remind me to go study this link when studying, reviewing, or testing)</span>
+                  </label>
+                )}
+
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                    Lesson Context or Transcript (Optional)
+                    {liveNoteCategory === "reading_url"
+                      ? "Reading Highlights or Notes (Optional)"
+                      : "Lesson Context or Transcript (Optional)"}
                   </label>
                   <textarea
                     rows={2}
-                    placeholder="Optional: paste key points or transcript so I can quiz you on login-protected lessons."
+                    placeholder={
+                      liveNoteCategory === "reading_url"
+                        ? "Optional: jot down key points from the website or leave blank to extract from the page."
+                        : "Optional: paste key points or transcript so I can quiz you on login-protected lessons."
+                    }
                     value={liveNoteUrlContext}
                     onChange={(e) => setLiveNoteUrlContext(e.target.value)}
                     className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500 custom-scrollbar"
                   />
                 </div>
-                {(!liveNoteRequiresLogin || liveNoteUrlContext.trim().length > 0) && (
+                {(liveNoteCategory === "reading_url" || !liveNoteRequiresLogin || liveNoteUrlContext.trim().length > 0) && (
                   <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -3893,7 +3945,11 @@ export default function FocusTimerModal({
                       onChange={(e) => setExtractOnUrlSave(e.target.checked)}
                       className="rounded border-slate-400 text-violet-600 focus:ring-violet-500"
                     />
-                    <span>Extract study notes &amp; quiz questions from this link</span>
+                    <span>
+                      {liveNoteCategory === "reading_url"
+                        ? "Extract study notes & quiz questions from this website"
+                        : "Extract study notes & quiz questions from this link"}
+                    </span>
                   </label>
                 )}
               </div>
@@ -3969,7 +4025,7 @@ export default function FocusTimerModal({
                     onClick={handleTakeLiveScreenshot}
                     disabled={isCapturingScreenshot || liveNoteScreenshots.length >= 4}
                     className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-white/5 hover:bg-violet-50 dark:hover:bg-violet-500/15 border border-slate-200 dark:border-white/12 hover:border-violet-400/50 text-slate-700 dark:text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
-                    title="Capture a screenshot of your screen, window, or browser tab"
+                    title="Capture screen, or snip with Win+Shift+S / Cmd+Shift+4 and paste with Ctrl+V"
                   >
                     {isCapturingScreenshot ? (
                       <Loader2 className="w-3.5 h-3.5 text-violet-500 animate-spin shrink-0" />
@@ -4002,11 +4058,27 @@ export default function FocusTimerModal({
                   </button>
                 </div>
 
-                <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                  {liveNoteScreenshots.length > 0
-                    ? `${liveNoteScreenshots.length}/4 attached · Ctrl+V to paste`
-                    : "or press Ctrl+V to paste screenshot"}
-                </span>
+                {liveNoteScreenshots.length > 0 && (
+                  <span className="text-[11px] font-medium text-violet-600 dark:text-violet-300 tabular-nums">
+                    {liveNoteScreenshots.length}/4 attached
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                <span>Snip &amp; paste:</span>
+                <kbd className="px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-white/8 border border-slate-300/70 dark:border-white/12 font-mono text-[10px] text-slate-700 dark:text-slate-200">
+                  Win+Shift+S
+                </kbd>
+                <span>/</span>
+                <kbd className="px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-white/8 border border-slate-300/70 dark:border-white/12 font-mono text-[10px] text-slate-700 dark:text-slate-200">
+                  Cmd+Shift+4
+                </kbd>
+                <span>→</span>
+                <kbd className="px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-white/8 border border-slate-300/70 dark:border-white/12 font-mono text-[10px] text-slate-700 dark:text-slate-200">
+                  Ctrl+V
+                </kbd>
+                <span>to paste</span>
               </div>
 
               {screenshotFallbackNotice && (
@@ -4094,6 +4166,8 @@ export default function FocusTimerModal({
                       ? "Save Definition"
                       : liveNoteCategory === "url"
                       ? (extractOnUrlSave && (!liveNoteRequiresLogin || liveNoteUrlContext.trim().length > 0) ? "Save & Extract" : "Save Link")
+                      : liveNoteCategory === "reading_url"
+                      ? (extractOnUrlSave ? "Save & Extract" : "Save Reading Link")
                       : liveNoteCategory === "video_upload"
                       ? "Extract & Save"
                       : "Save Note"}

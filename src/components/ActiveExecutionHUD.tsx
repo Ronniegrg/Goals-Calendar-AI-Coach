@@ -127,7 +127,9 @@ export default function ActiveExecutionHUD({
   };
 
   useEffect(() => {
-    const handleToggleCompact = () => toggleCompact();
+    const handleToggleCompact = () => {
+      queueMicrotask(() => toggleCompact());
+    };
     window.addEventListener("toggle_hud_compact", handleToggleCompact);
     return () => window.removeEventListener("toggle_hud_compact", handleToggleCompact);
   }, []);
@@ -178,13 +180,15 @@ export default function ActiveExecutionHUD({
     const handleTargetChange = (e: any) => {
       const eventId = e.detail?.eventId || null;
       const goalId = e.detail?.goalId || null;
-      setTargetedEventId(eventId);
-      setTargetedGoalId(goalId);
-      // Clear manual goal override so the targeted calendar session/goal (React) takes immediate priority
-      setSelectedGoalId(null);
       try {
         localStorage.removeItem("hud_selected_goal_id");
       } catch {}
+      queueMicrotask(() => {
+        setTargetedEventId(eventId);
+        setTargetedGoalId(goalId);
+        // Clear manual goal override so the targeted calendar session/goal (React) takes immediate priority
+        setSelectedGoalId(null);
+      });
     };
 
     window.addEventListener("calendar_target_session_change" as any, handleTargetChange);
@@ -200,29 +204,31 @@ export default function ActiveExecutionHUD({
       const completedEvtId = detail.eventId || detail.id;
       const completedGoalId = detail.goalId;
 
-      // Clear targeted event if it's the one that finished
-      if (completedEvtId && targetedEventId === completedEvtId) {
-        setTargetedEventId(null);
-        try {
-          localStorage.removeItem("calendar_spotlight_event_id");
-        } catch {}
-      }
+      queueMicrotask(() => {
+        // Clear targeted event if it's the one that finished
+        if (completedEvtId && targetedEventId === completedEvtId) {
+          setTargetedEventId(null);
+          try {
+            localStorage.removeItem("calendar_spotlight_event_id");
+          } catch {}
+        }
 
-      // Clear targeted goal if it's the one that finished
-      if (completedGoalId && targetedGoalId === completedGoalId) {
-        setTargetedGoalId(null);
-        try {
-          localStorage.removeItem("calendar_spotlight_goal_id");
-        } catch {}
-      }
+        // Clear targeted goal if it's the one that finished
+        if (completedGoalId && targetedGoalId === completedGoalId) {
+          setTargetedGoalId(null);
+          try {
+            localStorage.removeItem("calendar_spotlight_goal_id");
+          } catch {}
+        }
 
-      // Also reset manual goal picker if the finished goal was selected
-      if (selectedGoalId && (selectedGoalId === completedGoalId || selectedGoalId === targetedGoalId)) {
-        setSelectedGoalId(null);
-      }
+        // Also reset manual goal picker if the finished goal was selected
+        if (selectedGoalId && (selectedGoalId === completedGoalId || selectedGoalId === targetedGoalId)) {
+          setSelectedGoalId(null);
+        }
 
-      // Immediately refresh the ticking time to force HUD re-evaluation
-      setTickerNow(Date.now());
+        // Immediately refresh the ticking time to force HUD re-evaluation
+        setTickerNow(Date.now());
+      });
     };
 
     window.addEventListener("session_completed_event" as any, handleSessionCompleted);

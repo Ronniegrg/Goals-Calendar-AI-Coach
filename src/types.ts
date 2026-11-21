@@ -119,6 +119,8 @@ export interface StudyArtifactNote {
   definition?: string;
   url?: string;
   urlNotes?: string;
+  linkSubtype?: "video_resource" | "website_reading";
+  isReadingAssignment?: boolean;
   sourceFileName?: string;
   screenshots?: string[];
   requiresLogin?: boolean;
