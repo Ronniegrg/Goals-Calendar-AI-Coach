@@ -42,11 +42,21 @@ import {
   ExternalLink,
   BookOpen,
   FileText,
-  StickyNote
+  StickyNote,
+  HelpCircle,
+  Link2,
+  ClipboardCheck,
+  Award,
+  RefreshCw,
+  Upload,
+  Video,
+  Camera,
+  ImagePlus
 } from "lucide-react";
-import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote } from "../types";
+import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote, KnowledgeTestArtifact, GoalStepType } from "../types";
 import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
 import { GoalKnowledgeHubModal } from "./GoalKnowledgeHubModal";
+import { captureScreenScreenshot, extractImagesFromClipboardEvent, readImageFileAsDataUrl } from "../lib/screenshotCapture";
 
 export interface ActiveTimerData {
   title: string;
@@ -544,17 +554,24 @@ function resolveAndBalanceSubSteps(
 
   let steps: SessionSubStep[] | undefined = rawSubSteps && rawSubSteps.length > 0 ? [...rawSubSteps] : undefined;
 
-  // Enrich rawSubSteps with carryover notes stored on targetGoal if missing
+  // Enrich rawSubSteps with carryover notes & step metadata stored on targetGoal if missing
   if (steps && targetGoal) {
     const goalPool = [...(targetGoal.subtasks || []), ...(targetGoal.subSteps || [])];
     steps = steps.map(s => {
-      if (s.carryoverNote) return s;
       const match = goalPool.find(
-        g => (g.id === s.id || g.title.trim().toLowerCase() === s.title.trim().toLowerCase()) && g.carryoverNote
+        g => (g.id === s.id || g.title.trim().toLowerCase() === s.title.trim().toLowerCase())
       );
-      return match
-        ? { ...s, carryoverNote: match.carryoverNote, carryoverNoteDate: match.carryoverNoteDate }
-        : s;
+      if (!match) return s;
+      return {
+        ...s,
+        stepType: s.stepType ?? match.stepType,
+        assignedLinkNoteId: s.assignedLinkNoteId ?? match.assignedLinkNoteId,
+        assignedLinkUrl: s.assignedLinkUrl ?? match.assignedLinkUrl,
+        assignedLinkTitle: s.assignedLinkTitle ?? match.assignedLinkTitle,
+        lastTestScore: s.lastTestScore ?? match.lastTestScore,
+        carryoverNote: s.carryoverNote ?? match.carryoverNote,
+        carryoverNoteDate: s.carryoverNoteDate ?? match.carryoverNoteDate
+      };
     });
   }
 
@@ -567,6 +584,11 @@ function resolveAndBalanceSubSteps(
         );
         return {
           ...s,
+          stepType: s.stepType ?? matchTask?.stepType,
+          assignedLinkNoteId: s.assignedLinkNoteId ?? matchTask?.assignedLinkNoteId,
+          assignedLinkUrl: s.assignedLinkUrl ?? matchTask?.assignedLinkUrl,
+          assignedLinkTitle: s.assignedLinkTitle ?? matchTask?.assignedLinkTitle,
+          lastTestScore: s.lastTestScore ?? matchTask?.lastTestScore,
           carryoverNote: s.carryoverNote ?? matchTask?.carryoverNote,
           carryoverNoteDate: s.carryoverNoteDate ?? matchTask?.carryoverNoteDate
         };
@@ -577,6 +599,11 @@ function resolveAndBalanceSubSteps(
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
         completed: s.completed || false,
+        stepType: s.stepType,
+        assignedLinkNoteId: s.assignedLinkNoteId,
+        assignedLinkUrl: s.assignedLinkUrl,
+        assignedLinkTitle: s.assignedLinkTitle,
+        lastTestScore: s.lastTestScore,
         carryoverNote: s.carryoverNote,
         carryoverNoteDate: s.carryoverNoteDate
       }));
@@ -623,9 +650,43 @@ export default function FocusTimerModal({
   const [showLiveNotes, setShowLiveNotes] = useState(false);
   const [liveNoteTitle, setLiveNoteTitle] = useState("");
   const [liveNoteContent, setLiveNoteContent] = useState("");
-  const [liveNoteCategory, setLiveNoteCategory] = useState<StudyArtifactNote["category"]>("concept");
+  const [liveNoteQuestion, setLiveNoteQuestion] = useState("");
+  const [liveNoteAnswer, setLiveNoteAnswer] = useState("");
+  const [liveNoteExplanation, setLiveNoteExplanation] = useState("");
+  const [liveNoteTerm, setLiveNoteTerm] = useState("");
+  const [liveNoteDefinition, setLiveNoteDefinition] = useState("");
+  const [liveNoteUrl, setLiveNoteUrl] = useState("");
+  const [liveNoteUrlContext, setLiveNoteUrlContext] = useState("");
+  const [liveNoteRequiresLogin, setLiveNoteRequiresLogin] = useState(false);
+  const [extractOnUrlSave, setExtractOnUrlSave] = useState(true);
+  const [isExtractingLiveUrl, setIsExtractingLiveUrl] = useState(false);
+  const [liveUploadVideoFile, setLiveUploadVideoFile] = useState<File | null>(null);
+  const [liveUploadTranscriptFile, setLiveUploadTranscriptFile] = useState<File | null>(null);
+  const [liveUploadTranscriptText, setLiveUploadTranscriptText] = useState("");
+  const [isExtractingLiveUpload, setIsExtractingLiveUpload] = useState(false);
+  const [liveUploadInputKey, setLiveUploadInputKey] = useState(0);
+  const [liveNoteCategory, setLiveNoteCategory] = useState<StudyArtifactNote["category"] | "video_upload">("concept");
+  const liveNoteQuestionRef = useRef<HTMLTextAreaElement>(null);
+  const liveNoteTermRef = useRef<HTMLInputElement>(null);
+  const liveNoteUrlRef = useRef<HTMLInputElement>(null);
+  const liveNoteTitleRef = useRef<HTMLInputElement>(null);
+  const liveScreenshotFileInputRef = useRef<HTMLInputElement>(null);
+  const [liveNoteScreenshots, setLiveNoteScreenshots] = useState<string[]>([]);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
+  const [screenshotFallbackNotice, setScreenshotFallbackNotice] = useState<string | null>(null);
+  const [lightboxScreenshotUrl, setLightboxScreenshotUrl] = useState<string | null>(null);
   const [noteSavedFeedback, setNoteSavedFeedback] = useState<string | null>(null);
   const [showKnowledgeHubModal, setShowKnowledgeHubModal] = useState(false);
+  const [knowledgeHubInitialTab, setKnowledgeHubInitialTab] = useState<"notes" | "tester" | "flashcards" | "overview">("notes");
+
+  // Embedded Self Test Step Runner State
+  const [showSelfTestPanel, setShowSelfTestPanel] = useState(false);
+  const [activeSelfTest, setActiveSelfTest] = useState<KnowledgeTestArtifact | null>(null);
+  const [selfTestAnswers, setSelfTestAnswers] = useState<Record<string, number>>({});
+  const [selfTestSubmitted, setSelfTestSubmitted] = useState(false);
+  const [isGeneratingSelfTest, setIsGeneratingSelfTest] = useState(false);
+  const [selfTestError, setSelfTestError] = useState<string | null>(null);
+  const [reviewedCustomStepLinkIds, setReviewedCustomStepLinkIds] = useState<Record<string, boolean>>({});
 
   const [timerState, setTimerState] = useState<ActiveTimerData | null>(() => {
     try {
@@ -808,8 +869,296 @@ export default function FocusTimerModal({
     onUpdateGoalChapters(activeGoal.id, updated);
   };
 
-  const handleSaveLiveStudyNote = () => {
-    if (!activeGoal || !liveNoteContent.trim()) return;
+  const isSafeHttpUrl = (raw?: string) => {
+    if (!raw) return false;
+    try {
+      const parsed = new URL(raw.trim());
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  };
+
+  const isLikelyLoginProtectedUrl = (raw?: string) => {
+    if (!raw) return false;
+    return /(?:coursera\.org|udemy\.com|edx\.org|pluralsight\.com|linkedin\.com\/learning|skillshare\.com|codecademy\.com|datacamp\.com|frontendmasters\.com|egghead\.io|laracasts\.com|oreilly\.com)/i.test(raw);
+  };
+
+  const loginStudyLinks = useMemo(() => {
+    if (!activeGoal?.knowledgeHub?.notes) return [];
+    return activeGoal.knowledgeHub.notes.filter(
+      n => n.category === "url" && n.url && isSafeHttpUrl(n.url) && n.requiresLogin
+    );
+  }, [activeGoal?.knowledgeHub?.notes]);
+
+  const persistGoalKnowledgeHub = (goalId: string, updatedHub: GoalKnowledgeHub) => {
+    if (onUpdateGoalKnowledgeHub) {
+      onUpdateGoalKnowledgeHub(goalId, updatedHub);
+    }
+    try {
+      const raw = localStorage.getItem("cached_goals");
+      if (raw) {
+        const cached: Goal[] = JSON.parse(raw);
+        const next = cached.map(g => g.id === goalId ? { ...g, knowledgeHub: updatedHub } : g);
+        localStorage.setItem("cached_goals", JSON.stringify(next));
+      }
+    } catch {}
+  };
+
+  const handleToggleLiveLinkAssignment = (noteId: string) => {
+    if (!activeGoal?.knowledgeHub) return;
+    const nowIso = new Date().toISOString();
+    const updatedNotes = activeGoal.knowledgeHub.notes.map(n => {
+      if (n.id !== noteId) return n;
+      const nextDone = !n.reviewCompleted;
+      return {
+        ...n,
+        reviewCompleted: nextDone,
+        lastStudiedAt: nextDone ? nowIso : n.lastStudiedAt,
+        studyCount: nextDone ? (n.studyCount || 0) + 1 : n.studyCount,
+        updatedAt: nowIso
+      };
+    });
+    persistGoalKnowledgeHub(activeGoal.id, {
+      ...activeGoal.knowledgeHub,
+      notes: updatedNotes
+    });
+  };
+
+  const goalLinkOptions = useMemo(() => {
+    const notesLinks = (activeGoal?.knowledgeHub?.notes || [])
+      .filter(n => n.category === "url" && n.url && isSafeHttpUrl(n.url))
+      .map(n => ({
+        id: n.id,
+        title: n.title,
+        url: n.url!,
+        requiresLogin: Boolean(n.requiresLogin),
+        reviewCompleted: Boolean(n.reviewCompleted),
+        studyCount: n.studyCount || 0
+      }));
+    if (activeGoal?.resourceLink && isSafeHttpUrl(activeGoal.resourceLink)) {
+      notesLinks.push({
+        id: "goal_portal",
+        title: activeGoal.resourceLabel || "Course Portal",
+        url: activeGoal.resourceLink,
+        requiresLogin: true,
+        reviewCompleted: false,
+        studyCount: 0
+      });
+    }
+    return notesLinks;
+  }, [activeGoal?.knowledgeHub?.notes, activeGoal?.resourceLink, activeGoal?.resourceLabel]);
+
+  const buildStudyMaterialContext = () => {
+    const notes = activeGoal?.knowledgeHub?.notes || [];
+    if (notes.length === 0) return "";
+    return notes
+      .slice(0, 14)
+      .map((n, idx) => {
+        if (n.category === "qa") {
+          return `${idx + 1}. [Q&A] Q: ${n.question || n.title} | A: ${n.answer || n.content}${n.explanation ? ` | Explanation: ${n.explanation}` : ""}`;
+        }
+        if (n.category === "definition") {
+          return `${idx + 1}. [Definition] ${n.term || n.title}: ${n.definition || n.content}`;
+        }
+        if (n.category === "url") {
+          return `${idx + 1}. [Resource: ${n.title}] ${n.urlNotes || n.content || ""}`;
+        }
+        return `${idx + 1}. [${n.category}] ${n.title}: ${(n.content || "").slice(0, 400)}`;
+      })
+      .join("\n");
+  };
+
+  const handleLoadOrGenerateSelfTest = async (forceNew = false) => {
+    setSelfTestError(null);
+    const existingTests = activeGoal?.knowledgeHub?.tests || [];
+
+    if (!forceNew && existingTests.length > 0) {
+      const assignedUrl = activeStepInfo?.assignedLinkUrl;
+      const matching = (assignedUrl && existingTests.find(t => t.sourceUrl === assignedUrl))
+        || existingTests[0];
+      if (matching && matching.questions && matching.questions.length > 0) {
+        setActiveSelfTest({
+          ...matching,
+          questions: matching.questions.map(q => ({ ...q, userSelectedIndex: undefined }))
+        });
+        setSelfTestAnswers({});
+        setSelfTestSubmitted(false);
+        return;
+      }
+    }
+
+    setIsGeneratingSelfTest(true);
+    try {
+      const studyMaterialContext = buildStudyMaterialContext();
+      const activeChapter = activeGoal?.chapters?.find(c => !c.completed)?.title || "";
+      const res = await fetch("/api/coach/generate-knowledge-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalTitle: activeGoal?.name || timerState?.title || "Study Session",
+          goalCategory: activeGoal?.category || timerState?.category || "Study",
+          chapterTitle: activeChapter || activeStepInfo?.title || "",
+          examTitle: activeGoal?.targetExamTitle || "",
+          difficulty: "medium",
+          assignedLinkTitle: activeStepInfo?.assignedLinkTitle || "",
+          studyMaterialContext,
+          questionCount: 4
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.test?.questions?.length) {
+        setSelfTestError("Could not generate multiple-choice questions right now. Try again in a moment.");
+        return;
+      }
+      const newTest: KnowledgeTestArtifact = {
+        ...data.test,
+        sourceUrl: activeStepInfo?.assignedLinkUrl || undefined
+      };
+      setActiveSelfTest(newTest);
+      setSelfTestAnswers({});
+      setSelfTestSubmitted(false);
+
+      if (activeGoal) {
+        const currentHub: GoalKnowledgeHub = activeGoal.knowledgeHub || {
+          notes: [],
+          tests: [],
+          flashcards: [],
+          overallMasteryScore: 0
+        };
+        persistGoalKnowledgeHub(activeGoal.id, {
+          ...currentHub,
+          tests: [newTest, ...currentHub.tests]
+        });
+      }
+    } catch {
+      setSelfTestError("Network issue while creating your Self Test quiz.");
+    } finally {
+      setIsGeneratingSelfTest(false);
+    }
+  };
+
+  const handleSubmitSelfTest = () => {
+    if (!activeSelfTest || !activeSelfTest.questions.length) return;
+    const total = activeSelfTest.questions.length;
+    const correctCount = activeSelfTest.questions.filter(
+      q => selfTestAnswers[q.id] === q.correctIndex
+    ).length;
+    const scorePct = Math.round((correctCount / total) * 100);
+    const nowIso = new Date().toISOString();
+
+    const completedTest: KnowledgeTestArtifact = {
+      ...activeSelfTest,
+      completedAt: nowIso,
+      lastScore: scorePct,
+      lastScoreFraction: `${correctCount}/${total}`,
+      attemptsCount: (activeSelfTest.attemptsCount || 0) + 1,
+      questions: activeSelfTest.questions.map(q => ({
+        ...q,
+        userSelectedIndex: selfTestAnswers[q.id]
+      }))
+    };
+    setActiveSelfTest(completedTest);
+    setSelfTestSubmitted(true);
+
+    if (activeStepInfo) {
+      updateTimerState(prev => {
+        if (!prev?.subSteps) return prev;
+        return {
+          ...prev,
+          subSteps: prev.subSteps.map(s =>
+            s.id === activeStepInfo.id ? { ...s, lastTestScore: scorePct } : s
+          )
+        };
+      });
+    }
+
+    if (activeGoal) {
+      const currentHub: GoalKnowledgeHub = activeGoal.knowledgeHub || {
+        notes: [],
+        tests: [],
+        flashcards: [],
+        overallMasteryScore: 0
+      };
+      const exists = currentHub.tests.some(t => t.id === completedTest.id);
+      const nextTests = exists
+        ? currentHub.tests.map(t => (t.id === completedTest.id ? completedTest : t))
+        : [completedTest, ...currentHub.tests];
+      const scored = nextTests.filter(t => typeof t.lastScore === "number");
+      const avgScore = scored.length > 0
+        ? Math.round(scored.reduce((sum, t) => sum + (t.lastScore || 0), 0) / scored.length)
+        : scorePct;
+      persistGoalKnowledgeHub(activeGoal.id, {
+        ...currentHub,
+        tests: nextTests,
+        lastTestedAt: nowIso,
+        overallMasteryScore: avgScore
+      });
+    }
+  };
+
+  const handleTakeLiveScreenshot = async () => {
+    if (isCapturingScreenshot) return;
+    if (liveNoteScreenshots.length >= 4) {
+      setScreenshotFallbackNotice("Maximum 4 screenshots per note. Save or remove one first.");
+      setTimeout(() => setScreenshotFallbackNotice(null), 3500);
+      return;
+    }
+    setIsCapturingScreenshot(true);
+    setScreenshotFallbackNotice(null);
+    const result = await captureScreenScreenshot();
+    setIsCapturingScreenshot(false);
+    if (result.dataUrl) {
+      setLiveNoteScreenshots(prev => [...prev, result.dataUrl!].slice(0, 4));
+      setNoteSavedFeedback("Screenshot attached! Save note whenever you're ready.");
+      setTimeout(() => setNoteSavedFeedback(null), 3000);
+    } else if (result.error) {
+      setScreenshotFallbackNotice(result.error);
+      setTimeout(() => setScreenshotFallbackNotice(null), 6000);
+    }
+  };
+
+  const handleUploadLiveScreenshotFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setScreenshotFallbackNotice(null);
+    const remaining = Math.max(0, 4 - liveNoteScreenshots.length);
+    if (remaining === 0) {
+      setScreenshotFallbackNotice("Maximum 4 screenshots per note.");
+      setTimeout(() => setScreenshotFallbackNotice(null), 3500);
+      return;
+    }
+    const added: string[] = [];
+    for (let i = 0; i < Math.min(files.length, remaining); i += 1) {
+      try {
+        const dataUrl = await readImageFileAsDataUrl(files[i]);
+        added.push(dataUrl);
+      } catch {
+        // Ignore invalid files
+      }
+    }
+    if (added.length > 0) {
+      setLiveNoteScreenshots(prev => [...prev, ...added].slice(0, 4));
+    }
+  };
+
+  const handleLiveNotesPaste = async (e: React.ClipboardEvent) => {
+    const pastedImages = await extractImagesFromClipboardEvent(e);
+    if (pastedImages.length > 0) {
+      e.preventDefault();
+      setScreenshotFallbackNotice(null);
+      setLiveNoteScreenshots(prev => [...prev, ...pastedImages].slice(0, 4));
+      setNoteSavedFeedback("Screenshot pasted from clipboard!");
+      setTimeout(() => setNoteSavedFeedback(null), 3000);
+    }
+  };
+
+  const handleSaveLiveStudyNote = async () => {
+    const isQA = liveNoteCategory === "qa";
+    const isDefinition = liveNoteCategory === "definition";
+    const isUrl = liveNoteCategory === "url";
+    const isVideoUpload = liveNoteCategory === "video_upload";
+    const hasScreenshots = liveNoteScreenshots.length > 0;
+    if (!activeGoal) return;
 
     const currentHub: GoalKnowledgeHub = activeGoal.knowledgeHub || {
       notes: [],
@@ -818,38 +1167,309 @@ export default function FocusTimerModal({
       overallMasteryScore: 0
     };
 
+    const activeChapter = activeGoal.chapters?.find(c => !c.completed)?.title || undefined;
+
+    if (isVideoUpload) {
+      if (!liveUploadVideoFile && !liveUploadTranscriptFile && !liveUploadTranscriptText.trim()) {
+        if (hasScreenshots) {
+          const screenshotNote: StudyArtifactNote = {
+            id: `note_${Date.now()}`,
+            title: liveNoteTitle.trim() || `${activeGoal.name} Lecture Screenshot`,
+            category: "summary",
+            content: "Attached lecture screenshot",
+            screenshots: [...liveNoteScreenshots],
+            chapterTitle: activeChapter,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          persistGoalKnowledgeHub(activeGoal.id, {
+            ...currentHub,
+            notes: [screenshotNote, ...currentHub.notes]
+          });
+          setNoteSavedFeedback("Screenshot note saved to Goal Study Hub!");
+          setLiveNoteTitle("");
+          setLiveNoteScreenshots([]);
+          setScreenshotFallbackNotice(null);
+          setTimeout(() => setNoteSavedFeedback(null), 4000);
+          return;
+        }
+        setNoteSavedFeedback("Please select a downloaded video/audio file, upload a transcript, paste text, or attach a screenshot.");
+        setTimeout(() => setNoteSavedFeedback(null), 4000);
+        return;
+      }
+
+      setIsExtractingLiveUpload(true);
+      setNoteSavedFeedback(
+        liveUploadVideoFile
+          ? `Analyzing "${liveUploadVideoFile.name}"${liveUploadTranscriptText.trim() || liveUploadTranscriptFile ? " + text" : ""}... Larger videos may take 30–90s.`
+          : "Extracting study notes & quiz questions from your lecture text..."
+      );
+
+      try {
+        const formData = new FormData();
+        if (liveUploadVideoFile) formData.append("video", liveUploadVideoFile);
+        if (liveUploadTranscriptFile) formData.append("transcriptFile", liveUploadTranscriptFile);
+        if (liveUploadTranscriptText.trim()) formData.append("transcriptText", liveUploadTranscriptText.trim());
+        if (liveNoteTitle.trim()) formData.append("lessonTitle", liveNoteTitle.trim());
+        formData.append("goalTitle", activeGoal.name);
+        formData.append("goalCategory", activeGoal.category || "General");
+        formData.append("chapterTitle", activeChapter || "");
+        formData.append("mode", "both");
+        formData.append("questionCount", "5");
+
+        const res = await fetch("/api/coach/extract-from-upload", {
+          method: "POST",
+          body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setNoteSavedFeedback(data?.error || "Could not extract study notes or quiz from that upload.");
+          setTimeout(() => setNoteSavedFeedback(null), 5000);
+          return;
+        }
+
+        const rawExtractedNotes: StudyArtifactNote[] = Array.isArray(data.notes) ? data.notes : [];
+        const extractedNotes = hasScreenshots && rawExtractedNotes.length > 0
+          ? rawExtractedNotes.map((n, idx) => (idx === 0 ? { ...n, screenshots: [...liveNoteScreenshots] } : n))
+          : rawExtractedNotes;
+        const extractedCards = Array.isArray(data.flashcards) ? data.flashcards : [];
+        const extractedTests = data.test ? [data.test, ...currentHub.tests] : currentHub.tests;
+
+        persistGoalKnowledgeHub(activeGoal.id, {
+          ...currentHub,
+          notes: [...extractedNotes, ...currentHub.notes],
+          flashcards: [...extractedCards, ...currentHub.flashcards],
+          tests: extractedTests
+        });
+
+        const parts: string[] = [];
+        if (extractedNotes.length > 0) parts.push(`${extractedNotes.length} notes`);
+        if (extractedCards.length > 0) parts.push(`${extractedCards.length} flashcards`);
+        if (data.test) parts.push(`${data.test.questions?.length || 0} quiz Qs`);
+        setNoteSavedFeedback(
+          `Extracted ${parts.join(", ") || "study material"} from "${data.extractedTitle || "your lecture"}"!`
+        );
+        setLiveUploadVideoFile(null);
+        setLiveUploadTranscriptFile(null);
+        setLiveUploadTranscriptText("");
+        setLiveNoteTitle("");
+        setLiveNoteScreenshots([]);
+        setScreenshotFallbackNotice(null);
+        setLiveUploadInputKey(k => k + 1);
+        setTimeout(() => setNoteSavedFeedback(null), 6000);
+      } catch {
+        setNoteSavedFeedback("Upload failed or timed out. Check file size (max 250 MB) or include transcript text.");
+        setTimeout(() => setNoteSavedFeedback(null), 5000);
+      } finally {
+        setIsExtractingLiveUpload(false);
+      }
+      return;
+    }
+
+    if (isQA) {
+      if ((!liveNoteQuestion.trim() || !liveNoteAnswer.trim()) && !hasScreenshots) return;
+    } else if (isDefinition) {
+      if ((!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && !hasScreenshots) return;
+    } else if (isUrl) {
+      if (!liveNoteUrl.trim() || !isSafeHttpUrl(liveNoteUrl)) {
+        setNoteSavedFeedback("Please enter a valid http:// or https:// URL.");
+        setTimeout(() => setNoteSavedFeedback(null), 3500);
+        return;
+      }
+    } else if (!liveNoteContent.trim() && !hasScreenshots) {
+      return;
+    }
+
+    const trimmedQuestion = liveNoteQuestion.trim() || (isQA && hasScreenshots ? "Screenshot Question" : "");
+    const trimmedAnswer = liveNoteAnswer.trim() || (isQA && hasScreenshots ? "See attached screenshot" : "");
+    const trimmedExplanation = liveNoteExplanation.trim();
+    const trimmedTerm = liveNoteTerm.trim() || (isDefinition && hasScreenshots ? "Screenshot Term" : "");
+    const trimmedDefinition = liveNoteDefinition.trim() || (isDefinition && hasScreenshots ? "See attached screenshot" : "");
+    const trimmedUrl = liveNoteUrl.trim();
+    const trimmedUrlContext = liveNoteUrlContext.trim();
+
+    let defaultUrlTitle = trimmedUrl;
+    if (isUrl) {
+      try {
+        defaultUrlTitle = new URL(trimmedUrl).hostname.replace(/^www\./, "");
+      } catch {}
+    }
+
+    const markLoginRequired = isUrl && (liveNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
+
+    const savedNoteId = `note_${Date.now()}`;
     const newNote: StudyArtifactNote = {
-      id: `note_${Date.now()}`,
-      title: liveNoteTitle.trim() || `${activeGoal.name} Study Note (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
-      category: liveNoteCategory,
-      content: liveNoteContent.trim(),
-      chapterTitle: activeGoal.chapters?.find(c => !c.completed)?.title || undefined,
+      id: savedNoteId,
+      title: isQA
+        ? trimmedQuestion
+        : isDefinition
+        ? trimmedTerm
+        : isUrl
+        ? (liveNoteTitle.trim() || defaultUrlTitle)
+        : liveNoteTitle.trim() || `${activeGoal.name} Study Note (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+      category: liveNoteCategory as StudyArtifactNote["category"],
+      content: isQA
+        ? `Q: ${trimmedQuestion}\n\nA: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
+        : isDefinition
+        ? `${trimmedTerm}: ${trimmedDefinition}`
+        : isUrl
+        ? (trimmedUrlContext ? `${trimmedUrl}\n\n${trimmedUrlContext}` : trimmedUrl)
+        : (liveNoteContent.trim() || "Attached screenshot"),
+      question: isQA ? trimmedQuestion : undefined,
+      answer: isQA ? trimmedAnswer : undefined,
+      explanation: isQA && trimmedExplanation ? trimmedExplanation : undefined,
+      term: isDefinition ? trimmedTerm : undefined,
+      definition: isDefinition ? trimmedDefinition : undefined,
+      url: isUrl ? trimmedUrl : undefined,
+      urlNotes: isUrl && trimmedUrlContext ? trimmedUrlContext : undefined,
+      screenshots: hasScreenshots ? [...liveNoteScreenshots] : undefined,
+      requiresLogin: isUrl ? markLoginRequired : undefined,
+      urlAccessNote: markLoginRequired && !trimmedUrlContext
+        ? "This link requires signing in. Open it directly to study and review."
+        : undefined,
+      chapterTitle: activeChapter,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
-    const updatedHub: GoalKnowledgeHub = {
+    const baseHub: GoalKnowledgeHub = {
       ...currentHub,
       notes: [newNote, ...currentHub.notes]
     };
 
-    if (onUpdateGoalKnowledgeHub) {
-      onUpdateGoalKnowledgeHub(activeGoal.id, updatedHub);
+    persistGoalKnowledgeHub(activeGoal.id, baseHub);
+
+    const shouldExtract = isUrl && extractOnUrlSave && (!markLoginRequired || trimmedUrlContext.length > 0);
+
+    if (shouldExtract) {
+      setIsExtractingLiveUrl(true);
+      setNoteSavedFeedback("Link saved. Extracting study notes & quiz questions...");
+      try {
+        const res = await fetch("/api/coach/extract-from-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: trimmedUrl,
+            goalTitle: activeGoal.name,
+            goalCategory: activeGoal.category || "General",
+            chapterTitle: activeChapter || "",
+            userNotes: trimmedUrlContext,
+            mode: "both"
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setNoteSavedFeedback(data?.error || "Link saved, but could not extract notes from this URL.");
+        } else {
+          const isRestricted = data.accessStatus === "restricted" || (data.accessStatus === "partial_public" && (!data.test || !data.notes?.length));
+          const updatedNotesList = baseHub.notes.map(n =>
+            n.id === savedNoteId
+              ? {
+                  ...n,
+                  title: data.extractedTitle && !liveNoteTitle.trim() ? data.extractedTitle : n.title,
+                  requiresLogin: isRestricted ? true : n.requiresLogin,
+                  urlAccessNote: isRestricted ? (data.accessNote || "Login required — study this link directly.") : n.urlAccessNote
+                }
+              : n
+          );
+          const extractedNotes: StudyArtifactNote[] = Array.isArray(data.notes) ? data.notes : [];
+          const extractedCards = Array.isArray(data.flashcards) ? data.flashcards : [];
+          const extractedTests = data.test ? [data.test, ...baseHub.tests] : baseHub.tests;
+
+          persistGoalKnowledgeHub(activeGoal.id, {
+            ...baseHub,
+            notes: [...extractedNotes, ...updatedNotesList],
+            flashcards: [...extractedCards, ...baseHub.flashcards],
+            tests: extractedTests
+          });
+
+          const summaryParts: string[] = [];
+          if (extractedNotes.length > 0) summaryParts.push(`${extractedNotes.length} notes`);
+          if (data.test) summaryParts.push(`${data.test.questions?.length || 0} quiz Qs`);
+          const prefix = summaryParts.length > 0 ? `Extracted ${summaryParts.join(" & ")}! ` : "Link saved. ";
+          setNoteSavedFeedback(`${prefix}${data.accessNote || ""}`.trim());
+        }
+      } catch {
+        setNoteSavedFeedback("Link saved, but URL extraction failed. Open Hub to retry.");
+      } finally {
+        setIsExtractingLiveUrl(false);
+        setLiveNoteUrl("");
+        setLiveNoteUrlContext("");
+        setLiveNoteRequiresLogin(false);
+        setLiveNoteTitle("");
+        setLiveNoteScreenshots([]);
+        setScreenshotFallbackNotice(null);
+        setTimeout(() => setNoteSavedFeedback(null), 5000);
+        requestAnimationFrame(() => {
+          liveNoteUrlRef.current?.focus();
+        });
+      }
+      return;
     }
 
-    try {
-      const raw = localStorage.getItem("cached_goals");
-      if (raw) {
-        const cached: Goal[] = JSON.parse(raw);
-        const next = cached.map(g => g.id === activeGoal.id ? { ...g, knowledgeHub: updatedHub } : g);
-        localStorage.setItem("cached_goals", JSON.stringify(next));
-      }
-    } catch {}
-
-    setNoteSavedFeedback("Note saved to Goal Study Hub! 📝");
+    setNoteSavedFeedback(
+      isQA
+        ? "Q&A note saved to Goal Study Hub!"
+        : isDefinition
+        ? "Definition saved to Goal Study Hub!"
+        : isUrl && markLoginRequired
+        ? "Saved! I'll remind you to go study this link when you study, review, or test."
+        : isUrl
+        ? "URL saved to Goal Study Hub!"
+        : "Note saved to Goal Study Hub!"
+    );
     setLiveNoteContent("");
+    setLiveNoteQuestion("");
+    setLiveNoteAnswer("");
+    setLiveNoteExplanation("");
+    setLiveNoteTerm("");
+    setLiveNoteDefinition("");
+    setLiveNoteUrl("");
+    setLiveNoteUrlContext("");
+    setLiveNoteRequiresLogin(false);
     setLiveNoteTitle("");
-    setTimeout(() => setNoteSavedFeedback(null), 3000);
+    setLiveNoteScreenshots([]);
+    setScreenshotFallbackNotice(null);
+    setTimeout(() => setNoteSavedFeedback(null), 4000);
+    requestAnimationFrame(() => {
+      if (isQA) {
+        liveNoteQuestionRef.current?.focus();
+      } else if (isDefinition) {
+        liveNoteTermRef.current?.focus();
+      } else if (isUrl) {
+        liveNoteUrlRef.current?.focus();
+      } else {
+        liveNoteTitleRef.current?.focus();
+      }
+    });
+  };
+
+  const isLiveNoteSaveDisabled =
+    isExtractingLiveUrl ||
+    isExtractingLiveUpload ||
+    (liveNoteCategory === "qa"
+      ? (!liveNoteQuestion.trim() || !liveNoteAnswer.trim()) && liveNoteScreenshots.length === 0
+      : liveNoteCategory === "definition"
+      ? (!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && liveNoteScreenshots.length === 0
+      : liveNoteCategory === "url"
+      ? !liveNoteUrl.trim()
+      : liveNoteCategory === "video_upload"
+      ? !liveUploadVideoFile && !liveUploadTranscriptFile && !liveUploadTranscriptText.trim() && liveNoteScreenshots.length === 0
+      : !liveNoteContent.trim() && liveNoteScreenshots.length === 0);
+
+  const liveNoteSaveShortcutRef = useRef<{
+    canTrigger: boolean;
+    disabled: boolean;
+    save: () => Promise<void>;
+  }>({
+    canTrigger: false,
+    disabled: true,
+    save: handleSaveLiveStudyNote
+  });
+  liveNoteSaveShortcutRef.current = {
+    canTrigger: Boolean(showLiveNotes && !showKnowledgeHubModal),
+    disabled: isLiveNoteSaveDisabled,
+    save: handleSaveLiveStudyNote
   };
 
   // Request browser desktop notification permission on mount
@@ -1349,12 +1969,42 @@ export default function FocusTimerModal({
   const currentSessionId = timerState ? `${timerState.goalId}_${timerState.eventId}_${timerState.title}` : null;
   const previousSessionIdRef = useRef<string | null>(null);
 
+  const previousActiveStepKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (currentSessionId !== previousSessionIdRef.current) {
       previousSessionIdRef.current = currentSessionId;
       previousStepIndexRef.current = activeStepInfo?.index ?? 0;
+      setActiveSelfTest(null);
+      setSelfTestAnswers({});
+      setSelfTestSubmitted(false);
+      setSelfTestError(null);
+      setReviewedCustomStepLinkIds({});
+      previousActiveStepKeyRef.current = null;
     }
   }, [currentSessionId, activeStepInfo?.index]);
+
+  useEffect(() => {
+    const stepKey = activeStepInfo ? `${currentSessionId || "no_session"}_${activeStepInfo.id}_${activeStepInfo.index}` : null;
+    if (!stepKey || stepKey === previousActiveStepKeyRef.current) return;
+    previousActiveStepKeyRef.current = stepKey;
+
+    const isSelfTestStep = Boolean(
+      activeStepInfo && (activeStepInfo.stepType === "self_test" || /self[\s_-]*test/i.test(activeStepInfo.title || ""))
+    );
+
+    setActiveSelfTest(null);
+    setSelfTestAnswers({});
+    setSelfTestSubmitted(false);
+    setSelfTestError(null);
+
+    if (isSelfTestStep) {
+      setShowSelfTestPanel(true);
+      handleLoadOrGenerateSelfTest(false);
+    } else {
+      setShowSelfTestPanel(false);
+    }
+  }, [currentSessionId, activeStepInfo?.id, activeStepInfo?.index, activeStepInfo?.stepType, activeStepInfo?.title]);
 
   useEffect(() => {
     if (!activeStepInfo || !timerState?.isRunning) return;
@@ -1638,13 +2288,23 @@ export default function FocusTimerModal({
     if (propOnClose) propOnClose();
   };
 
-  // Keyboard Shortcuts: Space to Play/Pause, M for Ambient Soundscape toggle
+  // Keyboard Shortcuts: Ctrl/Cmd+Enter to Save Study Note, Space to Play/Pause, M for Ambient Soundscape toggle
   useEffect(() => {
     if (!timerState?.isOpen) return;
 
     const handleTimerHotkeys = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.code === "Enter")) {
+        if (liveNoteSaveShortcutRef.current.canTrigger) {
+          e.preventDefault();
+          if (!liveNoteSaveShortcutRef.current.disabled) {
+            void liveNoteSaveShortcutRef.current.save();
+          }
+          return;
+        }
+      }
+
       const activeTag = (document.activeElement?.tagName || "").toLowerCase();
-      if (activeTag === "input" || activeTag === "textarea") return;
+      if (activeTag === "input" || activeTag === "textarea" || activeTag === "select") return;
 
       if (e.code === "Space") {
         e.preventDefault();
@@ -2099,7 +2759,8 @@ export default function FocusTimerModal({
       id: `step_${Date.now()}_${idx}`,
       title: s.title,
       durationMinutes: Number(s.durationMinutes) || 10,
-      description: s.description || ""
+      description: s.description || "",
+      stepType: s.stepType
     }));
     setDraftSubSteps(steps);
     const totalMins = steps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
@@ -2190,7 +2851,26 @@ export default function FocusTimerModal({
       {
         id: `step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         title: `Phase ${prev.length + 1}`,
-        durationMinutes: 15
+        durationMinutes: 15,
+        stepType: "study"
+      }
+    ]);
+  };
+
+  const handleDraftAddSelfTestPhase = () => {
+    const pendingLoginLink = loginStudyLinks.find(l => !l.reviewCompleted) || loginStudyLinks[0] || goalLinkOptions[0];
+    setDraftSubSteps((prev) => [
+      ...prev,
+      {
+        id: `step_test_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        title: "Self Test: Material MCQs & Link Review",
+        durationMinutes: 10,
+        stepType: "self_test",
+        ...(pendingLoginLink ? {
+          assignedLinkNoteId: pendingLoginLink.id,
+          assignedLinkUrl: pendingLoginLink.url,
+          assignedLinkTitle: pendingLoginLink.title
+        } : {})
       }
     ]);
   };
@@ -2392,126 +3072,134 @@ export default function FocusTimerModal({
 
   return (
     <div id="focus_timer_modal_backdrop" className="fixed inset-0 bg-slate-900/60 dark:bg-[#020205]/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
-      <div id="focus_timer_modal_card" className="bg-white dark:bg-[#0f111a] border border-slate-200 dark:border-white/12 text-slate-900 dark:text-white rounded-3xl shadow-2xl w-full max-w-md p-5 sm:p-6 relative overflow-hidden max-h-[95vh] overflow-y-auto">
+      <div id="focus_timer_modal_card" className="bg-white dark:bg-[#0f111a] border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white rounded-3xl shadow-2xl w-full max-w-md sm:max-w-lg p-5 sm:p-6 relative overflow-hidden max-h-[95vh] overflow-y-auto">
         {/* Glow accent matching color */}
         <div 
-          className="absolute -top-24 -left-24 w-64 h-64 rounded-full blur-3xl opacity-20 pointer-events-none"
+          className="absolute -top-24 -left-24 w-64 h-64 rounded-full blur-3xl opacity-15 pointer-events-none"
           style={{ backgroundColor: timerState.color }}
         />
 
         {/* Modal Header */}
-        <div className="flex items-start justify-between relative z-10 mb-3">
-          <div>
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-300 font-mono border border-slate-200 dark:border-white/10">
-                {timerState.category || "Focus Session"}
+        <div className="relative z-10 mb-4 space-y-2.5">
+          {/* Top Utility Bar: Unboxed Status Metadata + Single-Line Controls */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-xs min-w-0 tabular-nums">
+              <span className="font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 shrink-0">
+                {timerState.category || "Focus"}
               </span>
-              <span className={`text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1 ${
+              <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+              <span className={`inline-flex items-center gap-1.5 font-semibold whitespace-nowrap truncate ${
                 timerState.isCompleted
-                  ? "bg-amber-100 dark:bg-amber-500/25 text-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-400/50 animate-pulse"
-                  : timerState.isRunning 
-                  ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-950 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30 animate-pulse" 
+                  ? "text-amber-600 dark:text-amber-300"
+                  : timerState.isRunning
+                  ? "text-emerald-600 dark:text-emerald-400"
                   : isPartialSession
-                  ? "bg-amber-100 dark:bg-amber-500/20 text-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30"
+                  ? "text-amber-600 dark:text-amber-300"
                   : timerState.timeRemaining === timerState.totalSec
-                  ? "bg-indigo-50 dark:bg-indigo-500/20 text-indigo-950 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30"
-                  : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-400"
+                  ? "text-indigo-600 dark:text-indigo-300"
+                  : "text-slate-600 dark:text-slate-400"
               }`}>
                 {timerState.isCompleted ? (
                   <>
-                    <BellRing className="w-3 h-3 text-amber-600 dark:text-amber-300 animate-bounce" />
-                    TIME IS UP!
+                    <BellRing className="w-3.5 h-3.5 shrink-0" />
+                    <span>Time is up</span>
                   </>
                 ) : timerState.isRunning ? (
                   <>
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                    IN PROGRESS
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                    <span>In progress</span>
                   </>
                 ) : isPartialSession ? (
                   <>
-                    <Pause className="w-3 h-3 text-amber-600 dark:text-amber-300 fill-current" />
-                    PAUSED ({timeSpentMins}m studied)
+                    <Pause className="w-3 h-3 fill-current shrink-0" />
+                    <span>Paused · {timeSpentMins}m studied</span>
                   </>
                 ) : timerState.timeRemaining === timerState.totalSec ? (
                   <>
-                    <Clock className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
-                    READY TO START
+                    <Clock className="w-3.5 h-3.5 shrink-0" />
+                    <span>Ready</span>
                   </>
                 ) : (
-                  "PAUSED"
+                  <span>Paused</span>
                 )}
               </span>
             </div>
-            <h3 className="text-base sm:text-lg font-black text-slate-950 dark:text-white leading-tight flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: timerState.color }} />
-              <span className="truncate max-w-[200px] sm:max-w-[240px]">{timerState.title}</span>
-            </h3>
-          </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* Live Study Notes / Scratchpad Toggle */}
-            <button
-              type="button"
-              onClick={() => setShowLiveNotes(!showLiveNotes)}
-              className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                showLiveNotes 
-                  ? "bg-violet-600 text-white border-violet-500 shadow-md shadow-violet-900/40" 
-                  : "bg-violet-950/40 hover:bg-violet-900/60 text-violet-300 border-violet-700/50"
-              }`}
-              title="Take live study notes, scratchpad, or cheat sheet entries during this session"
-            >
-              <FileText className="w-3.5 h-3.5 text-violet-300" />
-              <span>{showLiveNotes ? "Hide Notes" : "📝 Study Notes"}</span>
-              {activeGoal?.knowledgeHub?.notes && activeGoal.knowledgeHub.notes.length > 0 && (
-                <span className="w-4 h-4 rounded-full bg-violet-700/60 text-[10px] flex items-center justify-center font-mono">
-                  {activeGoal.knowledgeHub.notes.length}
-                </span>
-              )}
-            </button>
-
-            {/* Knowledge Hub Trigger */}
-            {activeGoal && (
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Live Study Notes / Scratchpad Toggle */}
               <button
                 type="button"
-                onClick={() => setShowKnowledgeHubModal(true)}
-                className="p-2 rounded-xl bg-indigo-950/40 hover:bg-indigo-900/60 border border-indigo-700/40 text-indigo-300 hover:text-white transition cursor-pointer flex items-center gap-1"
-                title="Open Study Materials, Cheat Sheets & Knowledge Tester Hub"
+                onClick={() => setShowLiveNotes(!showLiveNotes)}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 tabular-nums ${
+                  showLiveNotes
+                    ? "bg-violet-600 text-white border-violet-500 shadow-sm"
+                    : "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/10"
+                }`}
+                title="Take live study notes during this session"
               >
-                <BookOpen className="w-4 h-4 text-indigo-400" />
+                <FileText className="w-3.5 h-3.5 shrink-0" />
+                <span>{showLiveNotes ? "Hide Notes" : "Notes"}</span>
+                {activeGoal?.knowledgeHub?.notes && activeGoal.knowledgeHub.notes.length > 0 && (
+                  <span className={`text-[11px] font-mono ${showLiveNotes ? "text-violet-200" : "text-slate-400"}`}>
+                    {activeGoal.knowledgeHub.notes.length}
+                  </span>
+                )}
               </button>
-            )}
 
-            {/* Audio Settings Toggle Button */}
-            <button
-              type="button"
-              onClick={() => setShowAudioSettings(!showAudioSettings)}
-              className={`p-2 rounded-xl transition cursor-pointer flex items-center gap-1 ${
-                showAudioSettings 
-                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30" 
-                  : soundEnabled 
-                  ? "bg-white/10 hover:bg-white/20 text-indigo-300" 
-                  : "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25"
-              }`}
-              title="Bell Chime Sound Settings"
-            >
-              {soundEnabled ? <BellRing className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-            <button
-              type="button"
-              onClick={handleMinimize}
-              className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer"
-              title="Minimize to bottom bar"
-            >
-              <Minimize2 className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleClose}
-              className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer"
-              title="Close Modal (saves in-progress time)"
-            >
-              <X className="w-5 h-5" />
-            </button>
+              {/* Knowledge Hub Trigger */}
+              {activeGoal && (
+                <button
+                  type="button"
+                  onClick={() => setShowKnowledgeHubModal(true)}
+                  className="p-2 rounded-lg bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer shrink-0"
+                  title="Open Study Materials & Knowledge Hub"
+                >
+                  <BookOpen className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* Audio Settings Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setShowAudioSettings(!showAudioSettings)}
+                className={`p-2 rounded-lg border transition-colors cursor-pointer shrink-0 ${
+                  showAudioSettings
+                    ? "bg-indigo-600 text-white border-indigo-500"
+                    : soundEnabled
+                    ? "bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300"
+                    : "bg-rose-50 dark:bg-rose-500/15 border-rose-200 dark:border-rose-500/30 text-rose-500 dark:text-rose-400"
+                }`}
+                title="Bell Chime Sound Settings"
+              >
+                {soundEnabled ? <BellRing className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleMinimize}
+                className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
+                title="Minimize to bottom bar"
+              >
+                <Minimize2 className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleClose}
+                className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
+                title="Close Modal (saves in-progress time)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Session Heading */}
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: timerState.color }} />
+            <h3 className="text-lg font-bold tracking-tight text-slate-950 dark:text-white truncate">
+              {timerState.title}
+            </h3>
           </div>
         </div>
 
@@ -2894,107 +3582,522 @@ export default function FocusTimerModal({
           </div>
         )}
 
-        {/* IN-SESSION STUDY NOTES & SCRATCHPAD PANEL */}
-        {showLiveNotes && (
-          <div className="mb-4 p-3.5 bg-[#121324] border border-violet-500/40 rounded-2xl animate-fade-in space-y-3 shadow-xl shadow-violet-950/40">
-            <div className="flex items-center justify-between border-b border-violet-900/30 pb-2">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-violet-600/20 border border-violet-500/30 rounded-lg text-violet-300">
-                  <FileText className="w-4 h-4" />
-                </span>
-                <div>
-                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                    <span>Live Study Notes & Scratchpad</span>
-                    {activeGoal && (
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-violet-950/80 text-violet-300 border border-violet-800 font-mono">
-                        {activeGoal.name}
+        {/* Study & Review Assignment Links Banner */}
+        {loginStudyLinks.length > 0 && (() => {
+          const pendingLinksCount = loginStudyLinks.filter(l => !l.reviewCompleted).length;
+          return (
+            <div className="mb-3 p-3 bg-cyan-950/35 border border-cyan-500/35 rounded-xl text-xs space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2 min-w-0">
+                  <Link2 className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-semibold text-cyan-200">
+                        Study &amp; Review {loginStudyLinks.length === 1 ? "Assignment" : "Assignments"}
+                      </p>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                        pendingLinksCount > 0
+                          ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                          : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      }`}>
+                        {pendingLinksCount > 0 ? `${pendingLinksCount} to study` : "All studied ✓"}
                       </span>
-                    )}
-                  </h4>
-                  <p className="text-[10px] text-slate-400">
-                    Jot down key takeaways, code syntax, or cheat sheet notes while studying. Saves to your Goal Knowledge Hub.
-                  </p>
+                    </div>
+                    <p className="text-[11px] text-slate-300 mt-0.5">
+                      Login-required {loginStudyLinks.length === 1 ? "lesson" : "lessons"} — open to study or review, then check off:
+                    </p>
+                  </div>
                 </div>
-              </div>
-
-              <div className="flex items-center gap-1.5">
                 {activeGoal && (
                   <button
                     type="button"
                     onClick={() => setShowKnowledgeHubModal(true)}
-                    className="px-2.5 py-1 bg-violet-900/40 hover:bg-violet-800/60 border border-violet-700/50 text-violet-200 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                    className="text-[11px] font-medium text-cyan-300 hover:text-cyan-200 whitespace-nowrap shrink-0 underline cursor-pointer"
                   >
-                    <BookOpen className="w-3 h-3 text-amber-300" />
-                    <span>Open Hub</span>
+                    Open Hub
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowLiveNotes(false)}
-                  className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-white/10"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
+
+              <div className="space-y-1.5">
+                {loginStudyLinks.map(linkNote => (
+                  <div
+                    key={linkNote.id}
+                    className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border transition-colors ${
+                      linkNote.reviewCompleted
+                        ? "bg-emerald-950/25 border-emerald-700/30"
+                        : "bg-slate-900/70 border-cyan-500/25"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleToggleLiveLinkAssignment(linkNote.id)}
+                      className="flex items-center gap-2 min-w-0 text-left cursor-pointer group"
+                      title={linkNote.reviewCompleted ? "Click to assign for review again" : "Mark assignment as studied"}
+                    >
+                      <span className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border transition-colors ${
+                        linkNote.reviewCompleted
+                          ? "bg-emerald-500 border-emerald-500 text-white"
+                          : "border-cyan-400/60 group-hover:border-cyan-300"
+                      }`}>
+                        {linkNote.reviewCompleted && <Check className="w-3 h-3" />}
+                      </span>
+                      <span className={`text-[11px] font-medium truncate ${
+                        linkNote.reviewCompleted ? "line-through text-slate-400" : "text-slate-100"
+                      }`}>
+                        {linkNote.title}
+                      </span>
+                      {(linkNote.studyCount || 0) > 0 && (
+                        <span className="text-[10px] text-slate-400 shrink-0 tabular-nums">
+                          ({linkNote.studyCount}x)
+                        </span>
+                      )}
+                    </button>
+
+                    <a
+                      href={linkNote.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold whitespace-nowrap shrink-0 transition-colors"
+                    >
+                      <span>{linkNote.reviewCompleted ? "Review" : "Go study"}</span>
+                      <ExternalLink className="w-3 h-3 shrink-0" />
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* IN-SESSION STUDY NOTES & SCRATCHPAD PANEL */}
+        {showLiveNotes && (
+          <div
+            onPaste={handleLiveNotesPaste}
+            className="mb-4 p-4 bg-slate-50 dark:bg-[#141724] border border-slate-200 dark:border-white/10 rounded-2xl animate-fade-in space-y-3.5"
+          >
+            {/* Panel Header */}
+            <div className="space-y-1 pb-3 border-b border-slate-200 dark:border-white/10">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileText className="w-4 h-4 text-violet-500 dark:text-violet-400 shrink-0" />
+                  <h4 className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                    Study Notes
+                  </h4>
+                  {activeGoal && (
+                    <>
+                      <span className="text-slate-300 dark:text-slate-600 shrink-0" aria-hidden="true">·</span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                        {activeGoal.name}
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {activeGoal && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setKnowledgeHubInitialTab("notes");
+                        setShowKnowledgeHubModal(true);
+                      }}
+                      className="px-2.5 py-1 bg-white dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <BookOpen className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+                      <span>Open Hub</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowLiveNotes(false)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/70 dark:hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
+                    title="Close notes"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Save notes, Q&amp;As, or definitions directly to your Goal Knowledge Hub.
+              </p>
             </div>
 
             {noteSavedFeedback && (
-              <div className="p-2 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs font-semibold flex items-center gap-2 animate-fadeIn">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <div className="px-3 py-2 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-700 dark:text-emerald-300 text-xs font-medium flex items-center gap-2 animate-fadeIn">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
                 <span>{noteSavedFeedback}</span>
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <input
-                type="text"
-                placeholder="Note title (e.g. Chapter 3 DNS & Port 53 notes)"
-                value={liveNoteTitle}
-                onChange={(e) => setLiveNoteTitle(e.target.value)}
-                className="sm:col-span-2 text-xs px-2.5 py-1.5 bg-slate-900 border border-slate-700/60 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
-              />
-              <select
-                value={liveNoteCategory}
-                onChange={(e) => setLiveNoteCategory(e.target.value as any)}
-                className="text-xs px-2 py-1.5 bg-slate-900 border border-slate-700/60 rounded-lg text-white focus:outline-none focus:border-violet-500"
-              >
-                <option value="concept">Concept Breakdown</option>
-                <option value="cheat_sheet">Cheat Sheet</option>
-                <option value="code_snippet">Code Snippet / Command</option>
-                <option value="summary">Summary</option>
-                <option value="formula">Formula / Algorithm</option>
-              </select>
+            {/* Note Type & Title Inputs */}
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-2.5">
+                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">
+                  Note Type
+                </label>
+                <select
+                  value={liveNoteCategory}
+                  onChange={(e) => setLiveNoteCategory(e.target.value as StudyArtifactNote["category"] | "video_upload")}
+                  className="flex-1 min-w-0 text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
+                >
+                  <option value="concept">Concept Breakdown</option>
+                  <option value="cheat_sheet">Cheat Sheet</option>
+                  <option value="code_snippet">Code Snippet / Command</option>
+                  <option value="summary">Summary</option>
+                  <option value="formula">Formula / Algorithm</option>
+                  <option value="qa">Question &amp; Answer</option>
+                  <option value="definition">Definition</option>
+                  <option value="url">Video / Resource URL</option>
+                  <option value="video_upload">Upload Video / Text</option>
+                </select>
+              </div>
+
+              {liveNoteCategory !== "qa" && liveNoteCategory !== "definition" && liveNoteCategory !== "url" && (
+                <input
+                  ref={liveNoteTitleRef}
+                  type="text"
+                  placeholder={
+                    liveNoteCategory === "video_upload"
+                      ? "Lesson title (Optional — e.g. Week 2 Lecture)"
+                      : "Note title (e.g. Chapter 3 DNS & Port 53)"
+                  }
+                  value={liveNoteTitle}
+                  onChange={(e) => setLiveNoteTitle(e.target.value)}
+                  className="w-full text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                />
+              )}
             </div>
 
-            <textarea
-              rows={4}
-              placeholder="Type your notes here while studying... bullet points, key definitions, equations, or code syntax."
-              value={liveNoteContent}
-              onChange={(e) => setLiveNoteContent(e.target.value)}
-              className="w-full text-xs p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-white font-mono placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
-            />
+            {liveNoteCategory === "qa" ? (
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-amber-600 dark:text-amber-300 flex items-center gap-1.5">
+                    <HelpCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Question</span>
+                  </label>
+                  <textarea
+                    ref={liveNoteQuestionRef}
+                    rows={2}
+                    placeholder="Type your study question..."
+                    value={liveNoteQuestion}
+                    onChange={(e) => setLiveNoteQuestion(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-amber-300 dark:border-amber-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-amber-500 custom-scrollbar"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-emerald-600 dark:text-emerald-300 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Answer</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Type the answer..."
+                    value={liveNoteAnswer}
+                    onChange={(e) => setLiveNoteAnswer(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-emerald-300 dark:border-emerald-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-emerald-500 custom-scrollbar"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+                    <span>Answer Explanation (Optional)</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Optional: explain why this is the answer..."
+                    value={liveNoteExplanation}
+                    onChange={(e) => setLiveNoteExplanation(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+                  />
+                </div>
+              </div>
+            ) : liveNoteCategory === "definition" ? (
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-sky-600 dark:text-sky-300 flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                    <span>Term / Concept</span>
+                  </label>
+                  <input
+                    ref={liveNoteTermRef}
+                    type="text"
+                    placeholder="Type the term or concept..."
+                    value={liveNoteTerm}
+                    onChange={(e) => setLiveNoteTerm(e.target.value)}
+                    className="w-full text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-sky-300 dark:border-sky-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-emerald-600 dark:text-emerald-300 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 shrink-0" />
+                    <span>Definition</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="Type the definition or explanation..."
+                    value={liveNoteDefinition}
+                    onChange={(e) => setLiveNoteDefinition(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-emerald-300 dark:border-emerald-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-emerald-500 custom-scrollbar"
+                  />
+                </div>
+              </div>
+            ) : liveNoteCategory === "url" ? (
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-cyan-600 dark:text-cyan-300 flex items-center gap-1.5">
+                    <Link2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Video or Resource URL</span>
+                  </label>
+                  <input
+                    ref={liveNoteUrlRef}
+                    type="url"
+                    placeholder="https://www.youtube.com/watch?v=..., Coursera, Udemy, or docs link"
+                    value={liveNoteUrl}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setLiveNoteUrl(val);
+                      if (isLikelyLoginProtectedUrl(val)) {
+                        setLiveNoteRequiresLogin(true);
+                      }
+                    }}
+                    className="w-full text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-cyan-300 dark:border-cyan-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={liveNoteRequiresLogin}
+                    onChange={(e) => setLiveNoteRequiresLogin(e.target.checked)}
+                    className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                  />
+                  <span>Requires login (remind me to go study this link when studying, reviewing, or testing)</span>
+                </label>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Lesson Context or Transcript (Optional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Optional: paste key points or transcript so I can quiz you on login-protected lessons."
+                    value={liveNoteUrlContext}
+                    onChange={(e) => setLiveNoteUrlContext(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500 custom-scrollbar"
+                  />
+                </div>
+                {(!liveNoteRequiresLogin || liveNoteUrlContext.trim().length > 0) && (
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={extractOnUrlSave}
+                      onChange={(e) => setExtractOnUrlSave(e.target.checked)}
+                      className="rounded border-slate-400 text-violet-600 focus:ring-violet-500"
+                    />
+                    <span>Extract study notes &amp; quiz questions from this link</span>
+                  </label>
+                )}
+              </div>
+            ) : liveNoteCategory === "video_upload" ? (
+              <div key={liveUploadInputKey} className="space-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className="block p-2.5 rounded-lg bg-white dark:bg-[#0b0e18] border border-dashed border-cyan-400 dark:border-cyan-600/50 hover:border-cyan-500 transition cursor-pointer">
+                    <span className="text-[11px] font-semibold text-cyan-600 dark:text-cyan-300 flex items-center gap-1.5 mb-0.5">
+                      <Video className="w-3.5 h-3.5 shrink-0" />
+                      <span>Downloaded Video / Audio</span>
+                    </span>
+                    <input
+                      type="file"
+                      accept="video/*,audio/*,.mp4,.mov,.webm,.mkv,.m4v,.mp3,.wav,.m4a"
+                      onChange={(e) => setLiveUploadVideoFile(e.target.files?.[0] || null)}
+                      className="sr-only"
+                    />
+                    <span className="text-[11px] text-slate-600 dark:text-slate-300 block truncate">
+                      {liveUploadVideoFile
+                        ? `${liveUploadVideoFile.name} (${(liveUploadVideoFile.size / (1024 * 1024)).toFixed(1)} MB)`
+                        : "Choose MP4, MOV, WebM, MKV (up to 250 MB)"}
+                    </span>
+                  </label>
 
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[10px] text-slate-400">
-                {activeGoal?.knowledgeHub?.notes?.length || 0} note(s) saved in this goal's hub
-              </span>
+                  <label className="block p-2.5 rounded-lg bg-white dark:bg-[#0b0e18] border border-dashed border-slate-300 dark:border-white/15 hover:border-violet-500 transition cursor-pointer">
+                    <span className="text-[11px] font-semibold text-violet-600 dark:text-violet-300 flex items-center gap-1.5 mb-0.5">
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                      <span>Transcript File (Optional)</span>
+                    </span>
+                    <input
+                      type="file"
+                      accept=".txt,.vtt,.srt,.md,text/plain,text/vtt"
+                      onChange={(e) => setLiveUploadTranscriptFile(e.target.files?.[0] || null)}
+                      className="sr-only"
+                    />
+                    <span className="text-[11px] text-slate-600 dark:text-slate-300 block truncate">
+                      {liveUploadTranscriptFile
+                        ? liveUploadTranscriptFile.name
+                        : "Optional: .txt, .vtt, .srt, or .md"}
+                    </span>
+                  </label>
+                </div>
 
-              <div className="flex items-center gap-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Lecture Transcript or Text (Optional)
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="Optional: paste downloaded captions, transcript, or notes alongside (or instead of) the video..."
+                    value={liveUploadTranscriptText}
+                    onChange={(e) => setLiveUploadTranscriptText(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500 custom-scrollbar"
+                  />
+                </div>
+              </div>
+            ) : (
+              <textarea
+                rows={4}
+                placeholder="Type your notes here while studying... bullet points, definitions, equations, or code."
+                value={liveNoteContent}
+                onChange={(e) => setLiveNoteContent(e.target.value)}
+                className="w-full text-xs p-3 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white font-mono placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+              />
+            )}
+
+            {/* Universal Screenshot Capture & Attachment Strip (All Note Types) */}
+            <div className="space-y-2 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleTakeLiveScreenshot}
+                    disabled={isCapturingScreenshot || liveNoteScreenshots.length >= 4}
+                    className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-white/5 hover:bg-violet-50 dark:hover:bg-violet-500/15 border border-slate-200 dark:border-white/12 hover:border-violet-400/50 text-slate-700 dark:text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+                    title="Capture a screenshot of your screen, window, or browser tab"
+                  >
+                    {isCapturingScreenshot ? (
+                      <Loader2 className="w-3.5 h-3.5 text-violet-500 animate-spin shrink-0" />
+                    ) : (
+                      <Camera className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+                    )}
+                    <span>{isCapturingScreenshot ? "Capturing..." : "Screenshot"}</span>
+                  </button>
+
+                  <input
+                    ref={liveScreenshotFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => {
+                      void handleUploadLiveScreenshotFiles(e.target.files);
+                      e.target.value = "";
+                    }}
+                    className="sr-only"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => liveScreenshotFileInputRef.current?.click()}
+                    disabled={liveNoteScreenshots.length >= 4}
+                    className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 border border-slate-200 dark:border-white/12 text-slate-600 dark:text-slate-300 text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+                    title="Attach a saved screenshot or image file"
+                  >
+                    <ImagePlus className="w-3.5 h-3.5 text-cyan-500 dark:text-cyan-400 shrink-0" />
+                    <span>Image</span>
+                  </button>
+                </div>
+
+                <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                  {liveNoteScreenshots.length > 0
+                    ? `${liveNoteScreenshots.length}/4 attached · Ctrl+V to paste`
+                    : "or press Ctrl+V to paste screenshot"}
+                </span>
+              </div>
+
+              {screenshotFallbackNotice && (
+                <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-700 dark:text-amber-300">
+                  {screenshotFallbackNotice}
+                </div>
+              )}
+
+              {liveNoteScreenshots.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {liveNoteScreenshots.map((src, idx) => (
+                    <div
+                      key={`${idx}_${src.slice(0, 32)}`}
+                      className="relative group rounded-lg overflow-hidden border border-slate-200 dark:border-white/15 bg-black/40 aspect-video"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setLightboxScreenshotUrl(src)}
+                        className="w-full h-full block cursor-zoom-in"
+                        title="Click to preview full size"
+                      >
+                        <img
+                          src={src}
+                          alt={`Note screenshot ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLiveNoteScreenshots(prev => prev.filter((_, i) => i !== idx))
+                        }
+                        className="absolute top-1 right-1 p-1 rounded-full bg-black/75 hover:bg-rose-600 text-white opacity-85 group-hover:opacity-100 transition-colors cursor-pointer"
+                        title="Remove screenshot"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-200 dark:border-white/10">
+              <div className="flex items-center gap-1.5 min-w-0 text-xs text-slate-500 dark:text-slate-400">
+                <span className="tabular-nums whitespace-nowrap">
+                  {activeGoal?.knowledgeHub?.notes?.length || 0} saved in hub
+                </span>
+                <span className="hidden sm:inline text-slate-400 dark:text-slate-500 whitespace-nowrap">
+                  · Ctrl+Enter to save
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowLiveNotes(false)}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                  className="px-3 py-2 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-200/60 dark:hover:bg-white/5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   Collapse
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveLiveStudyNote}
-                  disabled={!liveNoteContent.trim()}
-                  className="px-4 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                  disabled={isLiveNoteSaveDisabled}
+                  title="Save (Ctrl + Enter)"
+                  className="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>Save Note to Hub</span>
+                  {isExtractingLiveUrl || isExtractingLiveUpload ? (
+                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                  ) : liveNoteCategory === "video_upload" ? (
+                    <Upload className="w-3.5 h-3.5 shrink-0" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>
+                    {isExtractingLiveUpload
+                      ? "Analyzing..."
+                      : isExtractingLiveUrl
+                      ? "Extracting..."
+                      : liveNoteCategory === "qa"
+                      ? "Save Q&A"
+                      : liveNoteCategory === "definition"
+                      ? "Save Definition"
+                      : liveNoteCategory === "url"
+                      ? (extractOnUrlSave && (!liveNoteRequiresLogin || liveNoteUrlContext.trim().length > 0) ? "Save & Extract" : "Save Link")
+                      : liveNoteCategory === "video_upload"
+                      ? "Extract & Save"
+                      : "Save Note"}
+                  </span>
                 </button>
               </div>
             </div>
@@ -3003,17 +4106,17 @@ export default function FocusTimerModal({
 
         {/* Quick helper banner to open notes scratchpad if collapsed */}
         {!showLiveNotes && (
-          <div className="mb-3 p-2 bg-gradient-to-r from-violet-950/30 to-indigo-950/20 border border-violet-800/30 rounded-xl flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs text-violet-200">
-              <FileText className="w-3.5 h-3.5 text-violet-400 shrink-0" />
-              <span className="text-[11px]">Taking notes or need cheat sheets during this session?</span>
+          <div className="mb-3 px-3 py-2 bg-slate-50 dark:bg-[#141724] border border-slate-200 dark:border-white/10 rounded-xl flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 min-w-0">
+              <FileText className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+              <span className="truncate">Need to jot down notes, Q&amp;As, or definitions?</span>
             </div>
             <button
               type="button"
               onClick={() => setShowLiveNotes(true)}
-              className="px-2.5 py-1 rounded-lg bg-violet-600/30 hover:bg-violet-600 border border-violet-500/40 text-violet-200 hover:text-white text-[10px] font-bold transition cursor-pointer"
+              className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              📝 Take Study Notes
+              Take Notes
             </button>
           </div>
         )}
@@ -3079,121 +4182,416 @@ export default function FocusTimerModal({
             </div>
 
             {/* Active Phase Focus Pill Banner */}
-            <div className="bg-indigo-950/40 border border-indigo-500/25 p-2.5 rounded-xl space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="p-1.5 bg-indigo-600/30 border border-indigo-400/40 rounded-lg text-indigo-300 shrink-0">
-                    <Flame className="w-4 h-4 text-amber-400" />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-indigo-300 bg-indigo-500/20 px-1.5 py-0.2 rounded font-mono">
-                        Phase {activeStepInfo.index + 1}
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        {formatTime(activeStepInfo.stepRemainingSec)} left in phase
-                      </span>
-                    </div>
-                    <h4 className="text-xs font-bold text-white truncate drop-shadow-xs">
-                      {activeStepInfo.title}
-                    </h4>
-                    {activeStepInfo.description && (
-                      <p className="text-[10px] text-slate-400 truncate max-w-[200px] sm:max-w-[240px]">
-                        {activeStepInfo.description}
-                      </p>
-                    )}
-                  </div>
-                </div>
+            {(() => {
+              const isSelfTestPhase = activeStepInfo.stepType === "self_test" || /self[\s_-]*test/i.test(activeStepInfo.title || "");
+              const assignedNoteObj = activeStepInfo.assignedLinkNoteId
+                ? activeGoal?.knowledgeHub?.notes?.find(n => n.id === activeStepInfo.assignedLinkNoteId)
+                : undefined;
+              const stepLinkUrl = assignedNoteObj?.url || (isSafeHttpUrl(activeStepInfo.assignedLinkUrl) ? activeStepInfo.assignedLinkUrl : undefined);
+              const stepLinkTitle = assignedNoteObj?.title || activeStepInfo.assignedLinkTitle || "Assigned Study Link";
+              const linksToPrompt = stepLinkUrl
+                ? [{
+                    id: assignedNoteObj?.id || `step_link_${activeStepInfo.id}`,
+                    title: stepLinkTitle,
+                    url: stepLinkUrl,
+                    isSavedNote: Boolean(assignedNoteObj),
+                    reviewCompleted: assignedNoteObj ? Boolean(assignedNoteObj.reviewCompleted) : Boolean(reviewedCustomStepLinkIds[activeStepInfo.id]),
+                    studyCount: assignedNoteObj?.studyCount || 0
+                  }]
+                : loginStudyLinks.map(l => ({
+                    id: l.id,
+                    title: l.title,
+                    url: l.url!,
+                    isSavedNote: true,
+                    reviewCompleted: Boolean(l.reviewCompleted),
+                    studyCount: l.studyCount || 0
+                  }));
 
-                {/* Step Note + Next Phase Controls */}
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (editingStepNoteId === activeStepInfo.id) {
-                        setEditingStepNoteId(null);
-                      } else {
+              return (
+                <div className={`border p-2.5 rounded-xl space-y-2 ${
+                  isSelfTestPhase
+                    ? "bg-violet-950/45 border-violet-500/40"
+                    : "bg-indigo-950/40 border-indigo-500/25"
+                }`}>
+                  <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`p-1.5 border rounded-lg shrink-0 ${
+                        isSelfTestPhase
+                          ? "bg-violet-600/35 border-violet-400/50 text-violet-200"
+                          : "bg-indigo-600/30 border-indigo-400/40 text-indigo-300"
+                      }`}>
+                        {isSelfTestPhase ? (
+                          <ClipboardCheck className="w-4 h-4 text-violet-300" />
+                        ) : (
+                          <Flame className="w-4 h-4 text-amber-400" />
+                        )}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded font-mono ${
+                            isSelfTestPhase
+                              ? "text-violet-200 bg-violet-500/30"
+                              : "text-indigo-300 bg-indigo-500/20"
+                          }`}>
+                            {isSelfTestPhase ? `Self Test · Phase ${activeStepInfo.index + 1}` : `Phase ${activeStepInfo.index + 1}`}
+                          </span>
+                          <span className="text-[10px] text-slate-300 font-mono">
+                            {formatTime(activeStepInfo.stepRemainingSec)} left in phase
+                          </span>
+                          {typeof activeStepInfo.lastTestScore === "number" && (
+                            <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+                              Score: {activeStepInfo.lastTestScore}%
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="text-xs font-bold text-white truncate drop-shadow-xs">
+                          {activeStepInfo.title}
+                        </h4>
+                        {activeStepInfo.description && (
+                          <p className="text-[10px] text-slate-400 truncate max-w-[200px] sm:max-w-[240px]">
+                            {activeStepInfo.description}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Step Self Test + Note + Next Phase Controls */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {isSelfTestPhase && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextOpen = !showSelfTestPanel;
+                            setShowSelfTestPanel(nextOpen);
+                            if (nextOpen && !activeSelfTest && !isGeneratingSelfTest) {
+                              handleLoadOrGenerateSelfTest(false);
+                            }
+                          }}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border transition flex items-center gap-1 cursor-pointer ${
+                            showSelfTestPanel
+                              ? "bg-violet-600 text-white border-violet-400"
+                              : "bg-violet-600/35 hover:bg-violet-600 border-violet-400/50 text-violet-100"
+                          }`}
+                        >
+                          <ClipboardCheck className="w-3.5 h-3.5" />
+                          <span>{showSelfTestPanel ? "Hide Self Test" : "Take Self Test"}</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (editingStepNoteId === activeStepInfo.id) {
+                            setEditingStepNoteId(null);
+                          } else {
+                            setEditingStepNoteId(activeStepInfo.id);
+                            setEditingStepNoteText(activeStepInfo.carryoverNote || "");
+                          }
+                        }}
+                        className={`px-2 py-1.5 rounded-xl text-[10px] font-bold border transition flex items-center gap-1 cursor-pointer ${
+                          activeStepInfo.carryoverNote || editingStepNoteId === activeStepInfo.id
+                            ? "bg-amber-500/20 border-amber-400/45 text-amber-200 hover:bg-amber-500/30"
+                            : "bg-white/5 hover:bg-amber-500/15 border-white/10 text-slate-300 hover:text-amber-200"
+                        }`}
+                        title={activeStepInfo.carryoverNote ? "Edit carryover note for this step" : "Add carryover note for this step"}
+                      >
+                        <StickyNote className="w-3 h-3 text-amber-400" />
+                        <span>{activeStepInfo.carryoverNote ? "Step Note" : "+ Note"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleCompleteCurrentSubStep}
+                        className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-400/40 text-indigo-200 hover:text-white rounded-xl text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
+                        title={activeStepInfo.isLastStep ? "Finish Session" : "Mark phase complete & advance to next phase"}
+                      >
+                        <span>{activeStepInfo.isLastStep ? "Finish" : "Next Phase"}</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Embedded Self Test Step Runner (Login Link Review + Material MCQs) */}
+                  {isSelfTestPhase && showSelfTestPanel && (
+                    <div className="pt-2 border-t border-violet-500/25 space-y-3 animate-fade-in">
+                      {/* 1. Login Link Reading / Review Prompt */}
+                      {linksToPrompt.length > 0 && (
+                        <div className="p-2.5 rounded-xl bg-cyan-950/35 border border-cyan-500/30 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-cyan-200 flex items-center gap-1.5">
+                              <Link2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              <span>Review or read this login-required link as part of your test:</span>
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {linksToPrompt.map(lk => (
+                              <div
+                                key={lk.id}
+                                className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] ${
+                                  lk.reviewCompleted
+                                    ? "bg-emerald-950/25 border-emerald-700/35"
+                                    : "bg-slate-900/75 border-cyan-500/25"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (lk.isSavedNote) {
+                                      handleToggleLiveLinkAssignment(lk.id);
+                                    } else {
+                                      setReviewedCustomStepLinkIds(prev => ({
+                                        ...prev,
+                                        [activeStepInfo.id]: !prev[activeStepInfo.id]
+                                      }));
+                                    }
+                                  }}
+                                  className="flex items-center gap-2 min-w-0 text-left cursor-pointer group"
+                                >
+                                  <span className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border ${
+                                    lk.reviewCompleted
+                                      ? "bg-emerald-500 border-emerald-500 text-white"
+                                      : "border-cyan-400/60 group-hover:border-cyan-300"
+                                  }`}>
+                                    {lk.reviewCompleted && <Check className="w-3 h-3" />}
+                                  </span>
+                                  <span className={`font-medium truncate ${
+                                    lk.reviewCompleted ? "line-through text-slate-400" : "text-slate-100"
+                                  }`}>
+                                    {lk.title}
+                                  </span>
+                                </button>
+                                <a
+                                  href={lk.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[10px] font-semibold whitespace-nowrap shrink-0"
+                                >
+                                  <span>{lk.reviewCompleted ? "Reviewed ↗" : "Go read / review ↗"}</span>
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2. Multiple Choice Questions on Material */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-violet-500/30 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-[11px] font-bold text-violet-200 flex items-center gap-1.5">
+                            <Award className="w-3.5 h-3.5 text-amber-400" />
+                            <span>
+                              {activeSelfTest ? activeSelfTest.title : "Multiple-Choice Self Test"}
+                            </span>
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {activeGoal && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setKnowledgeHubInitialTab("tester");
+                                  setShowKnowledgeHubModal(true);
+                                }}
+                                className="px-2 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/35 text-cyan-200 border border-cyan-500/35 text-[10px] font-semibold flex items-center gap-1 cursor-pointer"
+                                title="Upload a downloaded video & transcript text to generate notes and quiz questions"
+                              >
+                                <Upload className="w-3 h-3" />
+                                <span>Upload Video / Text</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleLoadOrGenerateSelfTest(true)}
+                              disabled={isGeneratingSelfTest}
+                              className="px-2 py-1 rounded-lg bg-violet-500/20 hover:bg-violet-500/35 text-violet-200 border border-violet-400/35 text-[10px] font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            >
+                              {isGeneratingSelfTest ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3 h-3" />
+                              )}
+                              <span>New Questions</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {selfTestError && (
+                          <p className="text-[11px] text-rose-300 bg-rose-950/30 border border-rose-500/30 rounded-lg p-2">
+                            {selfTestError}
+                          </p>
+                        )}
+
+                        {isGeneratingSelfTest ? (
+                          <div className="py-5 text-center space-y-2 text-xs text-slate-300">
+                            <Loader2 className="w-5 h-5 animate-spin text-violet-400 mx-auto" />
+                            <p>Building multiple-choice questions from your study material...</p>
+                          </div>
+                        ) : activeSelfTest && activeSelfTest.questions.length > 0 ? (
+                          <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                            {activeSelfTest.questions.map((q, qIdx) => {
+                              const picked = selfTestAnswers[q.id];
+                              return (
+                                <div key={q.id} className="p-2.5 rounded-lg bg-white/[0.03] border border-white/10 space-y-2 text-xs">
+                                  <p className="font-semibold text-slate-100 leading-snug">
+                                    {qIdx + 1}. {q.question}
+                                  </p>
+                                  <div className="space-y-1">
+                                    {q.options.map((opt, optIdx) => {
+                                      const isSelected = picked === optIdx;
+                                      const isCorrectOpt = optIdx === q.correctIndex;
+                                      let optionStyle = "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10";
+                                      if (selfTestSubmitted) {
+                                        if (isCorrectOpt) {
+                                          optionStyle = "bg-emerald-500/20 border-emerald-400/60 text-emerald-200 font-semibold";
+                                        } else if (isSelected && !isCorrectOpt) {
+                                          optionStyle = "bg-rose-500/20 border-rose-400/60 text-rose-200";
+                                        } else {
+                                          optionStyle = "bg-white/[0.02] border-white/5 text-slate-500";
+                                        }
+                                      } else if (isSelected) {
+                                        optionStyle = "bg-violet-600/30 border-violet-400 text-white font-semibold";
+                                      }
+
+                                      return (
+                                        <button
+                                          key={optIdx}
+                                          type="button"
+                                          disabled={selfTestSubmitted}
+                                          onClick={() => setSelfTestAnswers(prev => ({ ...prev, [q.id]: optIdx }))}
+                                          className={`w-full text-left px-2.5 py-1.5 rounded-lg border text-[11px] transition flex items-center gap-2 cursor-pointer disabled:cursor-default ${optionStyle}`}
+                                        >
+                                          <span className="font-mono text-[10px] opacity-75 shrink-0">
+                                            {String.fromCharCode(65 + optIdx)}.
+                                          </span>
+                                          <span className="flex-1">{opt}</span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  {selfTestSubmitted && q.explanation && (
+                                    <p className="text-[10.5px] text-slate-300 bg-black/30 px-2.5 py-1.5 rounded border border-white/10 leading-snug">
+                                      {q.explanation}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-center py-3">
+                            <button
+                              type="button"
+                              onClick={() => handleLoadOrGenerateSelfTest(false)}
+                              className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer"
+                            >
+                              Load Multiple-Choice Questions
+                            </button>
+                          </div>
+                        )}
+
+                        {activeSelfTest && activeSelfTest.questions.length > 0 && (
+                          <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-white/10">
+                            {selfTestSubmitted ? (
+                              <>
+                                <span className="text-xs font-bold text-emerald-300">
+                                  Score: {activeSelfTest.lastScoreFraction} ({activeSelfTest.lastScore}%)
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleLoadOrGenerateSelfTest(true)}
+                                    className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-slate-200 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    Retry / New Quiz
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setShowSelfTestPanel(false);
+                                      handleCompleteCurrentSubStep();
+                                    }}
+                                    className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer"
+                                  >
+                                    {activeStepInfo.isLastStep ? "Finish Session ✓" : "Complete & Next Phase →"}
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-[10px] text-slate-400">
+                                  {Object.keys(selfTestAnswers).length}/{activeSelfTest.questions.length} answered
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={Object.keys(selfTestAnswers).length < activeSelfTest.questions.length}
+                                  onClick={handleSubmitSelfTest}
+                                  className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Submit Answers
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Active Step Inline Note Editor or Saved Note Callout */}
+                  {editingStepNoteId === activeStepInfo.id ? (
+                    <div className="space-y-1.5 pt-1.5 border-t border-white/10">
+                      <textarea
+                        rows={2}
+                        autoFocus
+                        value={editingStepNoteText}
+                        onChange={(e) => setEditingStepNoteText(e.target.value)}
+                        placeholder={`Session carryover note for "${activeStepInfo.title}"...`}
+                        className="w-full text-[11px] p-2 rounded-lg bg-slate-950/80 border border-amber-500/45 text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                      />
+                      <div className="flex items-center justify-between gap-2">
+                        {activeStepInfo.carryoverNote ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSaveModalStepNote(activeStepInfo.id, activeStepInfo.title, "")}
+                            className="text-[10px] font-semibold text-rose-400 hover:text-rose-300 cursor-pointer"
+                          >
+                            Clear Note
+                          </button>
+                        ) : <span />}
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setEditingStepNoteId(null)}
+                            className="px-2 py-0.5 text-[10px] text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveModalStepNote(activeStepInfo.id, activeStepInfo.title, editingStepNoteText)}
+                            className="px-2.5 py-0.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Save Step Note</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : activeStepInfo.carryoverNote ? (
+                    <div
+                      onClick={() => {
                         setEditingStepNoteId(activeStepInfo.id);
                         setEditingStepNoteText(activeStepInfo.carryoverNote || "");
-                      }
-                    }}
-                    className={`px-2 py-1.5 rounded-xl text-[10px] font-bold border transition flex items-center gap-1 cursor-pointer ${
-                      activeStepInfo.carryoverNote || editingStepNoteId === activeStepInfo.id
-                        ? "bg-amber-500/20 border-amber-400/45 text-amber-200 hover:bg-amber-500/30"
-                        : "bg-white/5 hover:bg-amber-500/15 border-white/10 text-slate-300 hover:text-amber-200"
-                    }`}
-                    title={activeStepInfo.carryoverNote ? "Edit carryover note for this step" : "Add carryover note for this step"}
-                  >
-                    <StickyNote className="w-3 h-3 text-amber-400" />
-                    <span>{activeStepInfo.carryoverNote ? "Step Note" : "+ Note"}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleCompleteCurrentSubStep}
-                    className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-400/40 text-indigo-200 hover:text-white rounded-xl text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
-                    title={activeStepInfo.isLastStep ? "Finish Session" : "Mark phase complete & advance to next phase"}
-                  >
-                    <span>{activeStepInfo.isLastStep ? "Finish" : "Next Phase"}</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Active Step Inline Note Editor or Saved Note Callout */}
-              {editingStepNoteId === activeStepInfo.id ? (
-                <div className="space-y-1.5 pt-1.5 border-t border-white/10">
-                  <textarea
-                    rows={2}
-                    autoFocus
-                    value={editingStepNoteText}
-                    onChange={(e) => setEditingStepNoteText(e.target.value)}
-                    placeholder={`Session carryover note for "${activeStepInfo.title}"...`}
-                    className="w-full text-[11px] p-2 rounded-lg bg-slate-950/80 border border-amber-500/45 text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
-                  />
-                  <div className="flex items-center justify-between gap-2">
-                    {activeStepInfo.carryoverNote ? (
-                      <button
-                        type="button"
-                        onClick={() => handleSaveModalStepNote(activeStepInfo.id, activeStepInfo.title, "")}
-                        className="text-[10px] font-semibold text-rose-400 hover:text-rose-300 cursor-pointer"
-                      >
-                        Clear Note
-                      </button>
-                    ) : <span />}
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setEditingStepNoteId(null)}
-                        className="px-2 py-0.5 text-[10px] text-slate-400 hover:text-white cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSaveModalStepNote(activeStepInfo.id, activeStepInfo.title, editingStepNoteText)}
-                        className="px-2.5 py-0.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
-                      >
-                        <Check className="w-3 h-3" />
-                        <span>Save Step Note</span>
-                      </button>
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-200/95 flex items-start justify-between gap-2 cursor-pointer hover:bg-amber-500/15 transition"
+                      title="Click to edit carryover note for this step"
+                    >
+                      <span className="italic leading-snug break-words">📝 "{activeStepInfo.carryoverNote}"</span>
+                      <span className="text-[9px] text-amber-300 underline font-bold shrink-0">Edit</span>
                     </div>
-                  </div>
+                  ) : null}
                 </div>
-              ) : activeStepInfo.carryoverNote ? (
-                <div
-                  onClick={() => {
-                    setEditingStepNoteId(activeStepInfo.id);
-                    setEditingStepNoteText(activeStepInfo.carryoverNote || "");
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-200/95 flex items-start justify-between gap-2 cursor-pointer hover:bg-amber-500/15 transition"
-                  title="Click to edit carryover note for this step"
-                >
-                  <span className="italic leading-snug break-words">📝 "{activeStepInfo.carryoverNote}"</span>
-                  <span className="text-[9px] text-amber-300 underline font-bold shrink-0">Edit</span>
-                </div>
-              ) : null}
-            </div>
+              );
+            })()}
 
             {/* Expandable Full Steps List */}
             {showSubStepsEditor && (
@@ -3228,10 +4626,15 @@ export default function FocusTimerModal({
                               {step.index + 1}
                             </span>
                           )}
-                          <div className="min-w-0 truncate">
+                          <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
                             <span className={`truncate ${isDone ? "line-through text-slate-500" : ""}`}>
                               {step.title}
                             </span>
+                            {(step.stepType === "self_test" || /self[\s_-]*test/i.test(step.title || "")) && (
+                              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded bg-violet-500/25 text-violet-200 border border-violet-400/35 shrink-0">
+                                Self Test
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -3739,105 +5142,172 @@ export default function FocusTimerModal({
                 </div>
 
                 {/* Custom Phase Rows List */}
-                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                  {draftSubSteps.map((step, idx) => (
-                    <div key={step.id || idx} className="p-2 bg-black/40 border border-white/10 rounded-xl flex items-center gap-2">
-                      <div className="flex flex-col items-center justify-center">
-                        <button
-                          type="button"
-                          disabled={idx === 0}
-                          onClick={() => handleDraftMovePhase(idx, -1)}
-                          className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
-                          title="Move Phase Up"
-                        >
-                          <ArrowUp className="w-3 h-3" />
-                        </button>
-                        <span className="text-[10px] font-mono font-bold text-indigo-300">{idx + 1}</span>
-                        <button
-                          type="button"
-                          disabled={idx === draftSubSteps.length - 1}
-                          onClick={() => handleDraftMovePhase(idx, 1)}
-                          className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
-                          title="Move Phase Down"
-                        >
-                          <ArrowDown className="w-3 h-3" />
-                        </button>
-                      </div>
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {draftSubSteps.map((step, idx) => {
+                    const isSelfTestStepRow = step.stepType === "self_test";
+                    return (
+                      <div key={step.id || idx} className={`p-2 rounded-xl border space-y-1.5 ${
+                        isSelfTestStepRow
+                          ? "bg-violet-950/30 border-violet-500/40"
+                          : "bg-black/40 border-white/10"
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          <div className="flex flex-col items-center justify-center">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => handleDraftMovePhase(idx, -1)}
+                              className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
+                              title="Move Phase Up"
+                            >
+                              <ArrowUp className="w-3 h-3" />
+                            </button>
+                            <span className="text-[10px] font-mono font-bold text-indigo-300">{idx + 1}</span>
+                            <button
+                              type="button"
+                              disabled={idx === draftSubSteps.length - 1}
+                              onClick={() => handleDraftMovePhase(idx, 1)}
+                              className="text-slate-500 hover:text-slate-200 disabled:opacity-20 cursor-pointer p-0.5"
+                              title="Move Phase Down"
+                            >
+                              <ArrowDown className="w-3 h-3" />
+                            </button>
+                          </div>
 
-                      <div className="flex-1 min-w-0">
-                        <input
-                          type="text"
-                          value={step.title}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, title: val } : s));
-                          }}
-                          placeholder={`Phase ${idx + 1} Title`}
-                          className="w-full text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-medium"
-                        />
-                      </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextType: GoalStepType = isSelfTestStepRow ? "study" : "self_test";
+                              setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, stepType: nextType } : s));
+                            }}
+                            className={`px-2 py-1 rounded-lg border text-[10px] font-bold transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                              isSelfTestStepRow
+                                ? "bg-violet-600/35 text-violet-200 border-violet-400/50"
+                                : "bg-white/5 text-slate-400 hover:text-violet-300 border-white/10"
+                            }`}
+                            title="Switch between Study phase and Self Test phase"
+                          >
+                            <ClipboardCheck className="w-3 h-3" />
+                            <span>{isSelfTestStepRow ? "Test" : "Study"}</span>
+                          </button>
 
-                      {/* Duration Controls */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const cur = Number(step.durationMinutes) || 10;
-                            const next = Math.max(1, cur - 5);
-                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
-                          }}
-                          className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
-                        >
-                          -
-                        </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max="300"
-                          value={step.durationMinutes}
-                          onChange={(e) => {
-                            const val = Math.max(1, Number(e.target.value) || 1);
-                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: val } : s));
-                          }}
-                          className="w-11 text-xs bg-white/5 border border-white/10 rounded-lg px-1 py-1 text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
-                        />
-                        <span className="text-[10px] font-mono text-slate-400">m</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const cur = Number(step.durationMinutes) || 10;
-                            const next = Math.min(300, cur + 5);
-                            setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
-                          }}
-                          className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
-                        >
-                          +
-                        </button>
-                      </div>
+                          <div className="flex-1 min-w-0">
+                            <input
+                              type="text"
+                              value={step.title}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, title: val } : s));
+                              }}
+                              placeholder={isSelfTestStepRow ? "Self Test Title" : `Phase ${idx + 1} Title`}
+                              className="w-full text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-medium"
+                            />
+                          </div>
 
-                      <button
-                        type="button"
-                        onClick={() => handleDraftRemovePhase(idx)}
-                        className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
-                        title="Delete Phase"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
+                          {/* Duration Controls */}
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(step.durationMinutes) || 10;
+                                const next = Math.max(1, cur - 5);
+                                setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
+                              }}
+                              className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              max="300"
+                              value={step.durationMinutes}
+                              onChange={(e) => {
+                                const val = Math.max(1, Number(e.target.value) || 1);
+                                setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: val } : s));
+                              }}
+                              className="w-11 text-xs bg-white/5 border border-white/10 rounded-lg px-1 py-1 text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
+                            />
+                            <span className="text-[10px] font-mono text-slate-400">m</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(step.durationMinutes) || 10;
+                                const next = Math.min(300, cur + 5);
+                                setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, durationMinutes: next } : s));
+                              }}
+                              className="w-6 h-6 bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white rounded-lg flex items-center justify-center text-xs font-bold cursor-pointer transition border border-white/5"
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleDraftRemovePhase(idx)}
+                            className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
+                            title="Delete Phase"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        {isSelfTestStepRow && (
+                          <div className="pl-7 flex items-center gap-2 text-[10px]">
+                            <Link2 className="w-3 h-3 text-cyan-400 shrink-0" />
+                            <select
+                              value={step.assignedLinkNoteId || ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const picked = goalLinkOptions.find(l => l.id === val);
+                                setDraftSubSteps(draftSubSteps.map((s, i) =>
+                                  i === idx
+                                    ? {
+                                        ...s,
+                                        assignedLinkNoteId: picked?.id,
+                                        assignedLinkUrl: picked?.url,
+                                        assignedLinkTitle: picked?.title
+                                      }
+                                    : s
+                                ));
+                              }}
+                              className="flex-1 px-2 py-1 rounded-md bg-slate-950 border border-violet-500/30 text-slate-200 focus:outline-none focus:border-cyan-400"
+                            >
+                              <option value="">Auto: prompt any pending login-required links + MCQs</option>
+                              {goalLinkOptions.map(l => (
+                                <option key={l.id} value={l.id}>
+                                  {l.requiresLogin ? "🔒 " : "🔗 "}Review: {l.title}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {/* Add Phase & Duration Balance Summary */}
                 <div className="space-y-2 pt-1.5 border-t border-white/10">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={handleDraftAddPhase}
-                      className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
-                    >
-                      <Plus className="w-3 h-3 text-emerald-400" />
-                      <span>+ Add Phase</span>
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleDraftAddPhase}
+                        className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3 text-emerald-400" />
+                        <span>+ Add Phase</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDraftAddSelfTestPhase}
+                        className="px-2.5 py-1 bg-violet-600/25 hover:bg-violet-600/45 border border-violet-400/40 text-violet-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <ClipboardCheck className="w-3 h-3 text-violet-300" />
+                        <span>+ Self Test</span>
+                      </button>
+                    </div>
 
                     {/* Phase Sum vs Timer Target Calculation */}
                     {(() => {
@@ -4244,6 +5714,7 @@ export default function FocusTimerModal({
         <GoalKnowledgeHubModal
           goal={activeGoal}
           isOpen={showKnowledgeHubModal}
+          initialTab={knowledgeHubInitialTab}
           onClose={() => setShowKnowledgeHubModal(false)}
           onUpdateKnowledgeHub={(goalId, updatedHub) => {
             if (onUpdateGoalKnowledgeHub) {
@@ -4259,6 +5730,33 @@ export default function FocusTimerModal({
             } catch {}
           }}
         />
+      )}
+
+      {/* Fullscreen Screenshot Lightbox Preview */}
+      {lightboxScreenshotUrl && (
+        <div
+          onClick={() => setLightboxScreenshotUrl(null)}
+          className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-4xl max-h-[90vh] flex flex-col items-end gap-2"
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxScreenshotUrl(null)}
+              className="px-3 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-white/15 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Close Preview</span>
+            </button>
+            <img
+              src={lightboxScreenshotUrl}
+              alt="Screenshot preview"
+              className="max-w-full max-h-[82vh] rounded-xl border border-white/15 shadow-2xl object-contain bg-black"
+            />
+          </div>
+        </div>
       )}
     </div>
   );

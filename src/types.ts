@@ -40,11 +40,18 @@ export interface UserEnergyProfile {
   maxDailyDeepFocusHours: number; // cognitive load ceiling (e.g. 4.0 hours)
 }
 
+export type GoalStepType = "study" | "review" | "self_test";
+
 export interface SubTask {
   id: string;
   title: string;
   completed: boolean;
   durationMinutes?: number;
+  stepType?: GoalStepType;
+  assignedLinkNoteId?: string;
+  assignedLinkUrl?: string;
+  assignedLinkTitle?: string;
+  lastTestScore?: number;
   carryoverNote?: string;
   carryoverNoteDate?: string;
 }
@@ -55,6 +62,11 @@ export interface SessionSubStep {
   durationMinutes: number;
   description?: string;
   completed?: boolean;
+  stepType?: GoalStepType;
+  assignedLinkNoteId?: string;
+  assignedLinkUrl?: string;
+  assignedLinkTitle?: string;
+  lastTestScore?: number;
   carryoverNote?: string;
   carryoverNoteDate?: string;
 }
@@ -98,8 +110,22 @@ export interface Goal {
 export interface StudyArtifactNote {
   id: string;
   title: string;
-  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula";
+  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "qa" | "definition" | "url";
   content: string; // Markdown or formatted text
+  question?: string;
+  answer?: string;
+  explanation?: string;
+  term?: string;
+  definition?: string;
+  url?: string;
+  urlNotes?: string;
+  sourceFileName?: string;
+  screenshots?: string[];
+  requiresLogin?: boolean;
+  urlAccessNote?: string;
+  reviewCompleted?: boolean;
+  lastStudiedAt?: string;
+  studyCount?: number;
   chapterId?: string;
   chapterTitle?: string;
   keyTerms?: string[];
@@ -121,6 +147,8 @@ export interface KnowledgeTestArtifact {
   id: string;
   title: string;
   chapterTitle?: string;
+  sourceUrl?: string;
+  sourceFileName?: string;
   createdAt: string;
   questions: KnowledgeQuestion[];
   completedAt?: string;
@@ -222,6 +250,7 @@ export interface CustomSessionTemplate {
     title: string;
     durationMinutes: number;
     description?: string;
+    stepType?: GoalStepType;
   }[];
   createdAt: number;
   updatedAt?: number;

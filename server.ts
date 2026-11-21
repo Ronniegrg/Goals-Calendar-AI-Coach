@@ -1,8 +1,11 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import os from "os";
+import crypto from "crypto";
+import multer from "multer";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { FileState, GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import dotenv from "dotenv";
 import {
   buildUnifiedScheduleProposal,
@@ -1275,8 +1278,14 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
     goalCategory = "General",
     chapterTitle = "",
     examTitle = "",
-    difficulty = "medium"
+    difficulty = "medium",
+    studyMaterialContext = "",
+    assignedLinkTitle = "",
+    questionCount = 4
   } = req.body;
+  const clampedCount = Math.min(6, Math.max(3, Number(questionCount) || 4));
+  const safeContext = typeof studyMaterialContext === "string" ? studyMaterialContext.trim().slice(0, 8000) : "";
+  const safeAssignedTitle = typeof assignedLinkTitle === "string" ? assignedLinkTitle.trim().slice(0, 200) : "";
 
   function generateFallbackTest(title: string, category: string, chapter: string, diff: string) {
     const topic = chapter || title;
@@ -1458,7 +1467,7 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
         title: topic ? `${topic} Knowledge Assessment` : `${title} Mastery Test`,
         chapterTitle: chapter || undefined,
         createdAt: new Date().toISOString(),
-        questions,
+        questions: questions.slice(0, clampedCount),
         attemptsCount: 0
       }
     };
@@ -1466,7 +1475,8 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
 
   try {
     const systemPrompt = `You are a professional test author and technical certification exam creator.
-Create a rigorous, highly educational 4-question multiple choice diagnostic assessment for the user's study goal.
+Create a rigorous, highly educational ${clampedCount}-question multiple choice diagnostic assessment for the user's study goal.
+${safeContext ? "Prioritize testing concepts, terms, definitions, and Q&A ideas present in the student's provided study material context while also ensuring conceptually accurate technical depth." : ""}
 Each question must have:
 - Exactly 4 plausible options (1 correct, 3 realistic distractors).
 - A 0-indexed 'correctIndex' (0, 1, 2, or 3).
@@ -1489,12 +1499,13 @@ Return valid JSON in this EXACT schema:
 }
 Return ONLY valid JSON. No markdown ticks outside the JSON.`;
 
-    const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nChapter/Topic: "${chapterTitle || 'Core Focus'}"\nTarget Exam: "${examTitle || 'Certification'}"\nTarget Difficulty: "${difficulty}"`;
+    const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nChapter/Topic: "${chapterTitle || 'Core Focus'}"\nTarget Exam: "${examTitle || 'Certification'}"\nTarget Difficulty: "${difficulty}"${safeAssignedTitle ? `\nAssigned Reading/Lesson Topic: "${safeAssignedTitle}"` : ""}${safeContext ? `\n\nStudent's Study Material Notes:\n"""\n${safeContext}\n"""` : ""}`;
 
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-4-hydrogen",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
+      timeoutMs: 8000,
       config: {
         systemInstruction: systemPrompt,
         temperature: 0.35,
@@ -1530,6 +1541,819 @@ Return ONLY valid JSON. No markdown ticks outside the JSON.`;
     console.warn("Knowledge test generation notice:", err?.message || err);
     return res.json(generateFallbackTest(goalTitle, goalCategory, chapterTitle, difficulty));
   }
+});
+
+// 5d. GOAL KNOWLEDGE HUB - EXTRACT NOTES & TEST FROM VIDEO / RESOURCE URL
+function validatePublicStudyUrl(rawUrl: string): { valid: boolean; normalizedUrl?: string; reason?: string } {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) {
+    return { valid: false, reason: "Please provide a valid URL." };
+  }
+  const trimmed = rawUrl.trim();
+  if (trimmed.length > 2048) {
+    return { valid: false, reason: "URL is too long." };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { valid: false, reason: "Invalid URL format. Include https:// or http://." };
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { valid: false, reason: "Only http:// and https:// URLs are supported." };
+  }
+  if (parsed.username || parsed.password) {
+    return { valid: false, reason: "URLs containing embedded credentials are not allowed." };
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    !hostname ||
+    hostname === "localhost" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".localhost") ||
+    hostname === "metadata.google.internal"
+  ) {
+    return { valid: false, reason: "Local and internal network URLs are not allowed." };
+  }
+  // Block private / loopback / link-local IPv4 and IPv6 ranges
+  if (
+    /^127\./.test(hostname) ||
+    /^10\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    /^169\.254\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
+    /^(fc|fd|fe80):/i.test(hostname)
+  ) {
+    return { valid: false, reason: "Private or link-local IP addresses are not allowed." };
+  }
+  return { valid: true, normalizedUrl: parsed.toString() };
+}
+
+function getCanonicalYouTubeUrl(urlStr: string): string | null {
+  try {
+    const parsed = new URL(urlStr);
+    const host = parsed.hostname.toLowerCase();
+    let videoId: string | null = null;
+    if (host === "youtu.be" || host === "www.youtu.be") {
+      videoId = parsed.pathname.split("/").filter(Boolean)[0] || null;
+    } else if (
+      host === "youtube.com" ||
+      host === "www.youtube.com" ||
+      host === "m.youtube.com" ||
+      host === "music.youtube.com" ||
+      host === "www.youtube-nocookie.com"
+    ) {
+      if (parsed.pathname === "/watch") {
+        videoId = parsed.searchParams.get("v");
+      } else {
+        const match = parsed.pathname.match(/^\/(?:shorts|embed|live|v)\/([A-Za-z0-9_-]{6,20})/);
+        if (match) videoId = match[1];
+      }
+    }
+    if (videoId && /^[A-Za-z0-9_-]{6,20}$/.test(videoId)) {
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+  } catch {}
+  return null;
+}
+
+function parseJsonFromModelText(raw: string): any | null {
+  if (!raw) return null;
+  const cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+app.post("/api/coach/extract-from-url", async (req, res) => {
+  const {
+    url = "",
+    goalTitle = "Study Session",
+    goalCategory = "General",
+    chapterTitle = "",
+    userNotes = "",
+    mode = "both"
+  } = req.body || {};
+
+  const validation = validatePublicStudyUrl(url);
+  if (!validation.valid || !validation.normalizedUrl) {
+    return res.status(400).json({ error: validation.reason || "Invalid URL." });
+  }
+
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    return res.status(503).json({
+      error: "AI extraction requires a configured Gemini API key. Check Settings > Secrets."
+    });
+  }
+
+  const targetUrl = validation.normalizedUrl;
+  const canonicalYoutubeUrl = getCanonicalYouTubeUrl(targetUrl);
+  const safeUserNotes = typeof userNotes === "string" ? userNotes.trim().slice(0, 8000) : "";
+  const isPaywalledPlatformHint = /(?:coursera\.org|udemy\.com|edx\.org|pluralsight\.com|linkedin\.com\/learning)/i.test(targetUrl);
+
+  const ai = getAi();
+  const extractionSchema = {
+    type: Type.OBJECT,
+    properties: {
+      extractedTitle: { type: Type.STRING, description: "Concise title of the video, lecture, or article." },
+      accessStatus: {
+        type: Type.STRING,
+        description: "Must be one of: 'full', 'partial_public', or 'restricted'."
+      },
+      accessNote: {
+        type: Type.STRING,
+        description: "Clear note explaining what content was accessed, or if a login wall restricted full lecture video access."
+      },
+      studyNotes: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            category: { type: Type.STRING, description: "One of: concept, summary, qa, definition" },
+            content: { type: Type.STRING },
+            question: { type: Type.STRING },
+            answer: { type: Type.STRING },
+            term: { type: Type.STRING },
+            definition: { type: Type.STRING },
+            keyTerms: { type: Type.ARRAY, items: { type: Type.STRING } }
+          },
+          required: ["title", "category", "content"]
+        }
+      },
+      flashcards: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            front: { type: Type.STRING },
+            back: { type: Type.STRING }
+          },
+          required: ["front", "back"]
+        }
+      },
+      testTitle: { type: Type.STRING },
+      questions: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question: { type: Type.STRING },
+            options: { type: Type.ARRAY, items: { type: Type.STRING } },
+            correctIndex: { type: Type.INTEGER },
+            explanation: { type: Type.STRING },
+            difficulty: { type: Type.STRING }
+          },
+          required: ["question", "options", "correctIndex", "explanation"]
+        }
+      }
+    },
+    required: ["extractedTitle", "accessStatus", "accessNote", "studyNotes", "questions"]
+  };
+
+  const extractionInstructions = `You are a study assistant extracting accurate study materials from a learning link for a student's goal "${goalTitle}" (${goalCategory}${chapterTitle ? `, Chapter: ${chapterTitle}` : ""}).
+${safeUserNotes ? `\nThe user also provided these lesson notes/transcript context:\n"""\n${safeUserNotes}\n"""\n` : ""}
+Task (mode="${mode}"):
+1. Extract high-yield study notes (mix of concise summary/concept notes plus key Q&A and Definition items if appropriate), 3-4 active recall flashcards, and 4 rigorous multiple-choice test questions (each with 4 plausible options, 0-based correctIndex 0..3, explanation, and difficulty easy|medium|hard).
+2. Be strictly honest about URL accessibility:
+   - If you can access the full video or public page content, set accessStatus="full" and explain briefly in accessNote.
+   - If the link points to a paywalled/logged-in platform (such as an authenticated Coursera or Udemy lecture) where only public syllabus/course overview info or the user's pasted notes were accessible, set accessStatus="partial_public" and explicitly state in accessNote that the private lecture video requires login, so extraction used the accessible public course info${safeUserNotes ? " and the notes you provided" : ""}.
+   - If the URL could not be accessed at all and no user notes were provided, set accessStatus="restricted", leave studyNotes and questions empty, and explain clearly in accessNote so the user can paste a summary or transcript.`;
+
+  try {
+    let rawParsed: any = null;
+    let groundingSources: { uri: string; title: string }[] = [];
+
+    if (canonicalYoutubeUrl) {
+      try {
+        const ytResult = await ai.models.generateContent({
+          model: "gemini-4-hydrogen",
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { fileData: { fileUri: canonicalYoutubeUrl } },
+                { text: `${extractionInstructions}\n\nAnalyze this YouTube video (${canonicalYoutubeUrl}) and generate the structured JSON study notes, flashcards, and quiz questions.` }
+              ]
+            }
+          ],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: extractionSchema
+          }
+        });
+        rawParsed = parseJsonFromModelText(ytResult.text || "");
+      } catch (ytErr: any) {
+        console.warn("YouTube direct fileData extraction fallback to URL context:", ytErr?.message || ytErr);
+      }
+    }
+
+    if (!rawParsed) {
+      const urlPrompt = `${extractionInstructions}
+
+Target URL: ${targetUrl}
+${isPaywalledPlatformHint ? "Note: This domain often requires user sign-in for individual lecture videos. Check what public content is visible on the page or search results without fabricating unseen private lecture details." : ""}
+
+Return ONLY valid JSON matching this schema:
+{
+  "extractedTitle": "string",
+  "accessStatus": "full" | "partial_public" | "restricted",
+  "accessNote": "string",
+  "studyNotes": [
+    {
+      "title": "string",
+      "category": "concept" | "summary" | "qa" | "definition",
+      "content": "string",
+      "question": "optional string for qa",
+      "answer": "optional string for qa",
+      "term": "optional string for definition",
+      "definition": "optional string for definition",
+      "keyTerms": ["string"]
+    }
+  ],
+  "flashcards": [{ "front": "string", "back": "string" }],
+  "testTitle": "string",
+  "questions": [
+    {
+      "question": "string",
+      "options": ["A", "B", "C", "D"],
+      "correctIndex": 0,
+      "explanation": "string",
+      "difficulty": "easy" | "medium" | "hard"
+    }
+  ]
+}`;
+
+      const webResult = await ai.models.generateContent({
+        model: "gemini-4-hydrogen",
+        contents: urlPrompt,
+        config: {
+          tools: [{ urlContext: {} }, { googleSearch: {} }]
+        }
+      });
+
+      const chunks = webResult.candidates?.[0]?.groundingMetadata?.groundingChunks;
+      if (Array.isArray(chunks)) {
+        groundingSources = chunks
+          .map((c: any) => (c?.web?.uri ? { uri: c.web.uri, title: c.web.title || c.web.uri } : null))
+          .filter(Boolean) as { uri: string; title: string }[];
+      }
+
+      rawParsed = parseJsonFromModelText(webResult.text || "");
+
+      // If the tool-grounded call returned prose instead of JSON, structure it cleanly with responseSchema
+      if (!rawParsed && webResult.text && webResult.text.trim().length > 20) {
+        const formatResult = await ai.models.generateContent({
+          model: "gemini-4-hydrogen",
+          contents: `Convert the following extracted study analysis for URL "${targetUrl}" into the exact JSON structure. Preserve honest accessStatus and accessNote.\n\nAnalysis:\n${webResult.text}`,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: extractionSchema
+          }
+        });
+        rawParsed = parseJsonFromModelText(formatResult.text || "");
+      }
+    }
+
+    if (!rawParsed) {
+      return res.status(502).json({
+        error: "Could not extract structured study material from that URL. Try pasting a brief transcript or lesson outline in the optional notes box."
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    const baseTs = Date.now();
+    const extractedTitle = typeof rawParsed.extractedTitle === "string" && rawParsed.extractedTitle.trim()
+      ? rawParsed.extractedTitle.trim()
+      : (canonicalYoutubeUrl ? "YouTube Video Study Guide" : new URL(targetUrl).hostname);
+
+    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "definition"]);
+    const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
+    const notes = rawNotes
+      .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
+      .slice(0, 6)
+      .map((n: any, idx: number) => {
+        const cat = allowedCategories.has(n.category) ? n.category : "summary";
+        const isQA = cat === "qa" && n.question && n.answer;
+        const isDef = cat === "definition" && n.term && n.definition;
+        return {
+          id: `note_${baseTs}_${idx}`,
+          title: isQA
+            ? String(n.question).trim()
+            : isDef
+            ? String(n.term).trim()
+            : String(n.title || extractedTitle).trim(),
+          category: cat,
+          content: isQA
+            ? `Q: ${String(n.question).trim()}\n\nA: ${String(n.answer).trim()}${n.explanation ? `\n\nExplanation: ${String(n.explanation).trim()}` : ""}`
+            : isDef
+            ? `${String(n.term).trim()}: ${String(n.definition).trim()}`
+            : String(n.content || "").trim(),
+          question: isQA ? String(n.question).trim() : undefined,
+          answer: isQA ? String(n.answer).trim() : undefined,
+          explanation: isQA && n.explanation ? String(n.explanation).trim() : undefined,
+          term: isDef ? String(n.term).trim() : undefined,
+          definition: isDef ? String(n.definition).trim() : undefined,
+          url: targetUrl,
+          chapterTitle: chapterTitle || undefined,
+          keyTerms: Array.isArray(n.keyTerms) ? n.keyTerms.map(String).slice(0, 8) : undefined,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+      });
+
+    const flashcards = Array.isArray(rawParsed.flashcards)
+      ? rawParsed.flashcards
+          .filter((f: any) => f && f.front && f.back)
+          .slice(0, 6)
+          .map((f: any, idx: number) => ({
+            id: `fc_${baseTs}_${idx}`,
+            front: String(f.front).trim(),
+            back: String(f.back).trim(),
+            chapterTitle: chapterTitle || undefined,
+            mastered: false
+          }))
+      : [];
+
+    const rawQuestions = Array.isArray(rawParsed.questions) ? rawParsed.questions : [];
+    const formattedQuestions = rawQuestions
+      .filter((q: any) => q && q.question && Array.isArray(q.options) && q.options.length >= 2)
+      .slice(0, 6)
+      .map((q: any, idx: number) => {
+        const opts = q.options.slice(0, 4).map(String);
+        while (opts.length < 4) opts.push("None of the above");
+        const cIdx = typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex < opts.length ? q.correctIndex : 0;
+        const diff = q.difficulty === "easy" || q.difficulty === "hard" ? q.difficulty : "medium";
+        return {
+          id: `q_${baseTs}_${idx}`,
+          question: String(q.question).trim(),
+          options: opts,
+          correctIndex: cIdx,
+          explanation: String(q.explanation || "Review the source material for details.").trim(),
+          difficulty: diff
+        };
+      });
+
+    const test = formattedQuestions.length > 0
+      ? {
+          id: `test_${baseTs}`,
+          title: String(rawParsed.testTitle || `${extractedTitle} Quiz`).trim(),
+          chapterTitle: chapterTitle || undefined,
+          sourceUrl: targetUrl,
+          createdAt: nowIso,
+          questions: formattedQuestions,
+          attemptsCount: 0
+        }
+      : null;
+
+    return res.json({
+      extractedTitle,
+      accessStatus: rawParsed.accessStatus || (canonicalYoutubeUrl ? "full" : "partial_public"),
+      accessNote: rawParsed.accessNote || "Extracted study materials from the provided URL.",
+      notes,
+      flashcards,
+      test,
+      sources: groundingSources.slice(0, 5)
+    });
+  } catch (err: any) {
+    console.error("URL extraction error:", err?.message || err);
+    const msg = String(err?.message || "");
+    if (/PERMISSION_DENIED|API_KEY_INVALID|403|400/.test(msg) && /key|api/i.test(msg)) {
+      return res.status(502).json({
+        error: "Gemini API key error. Please check your key in Settings > Secrets."
+      });
+    }
+    return res.status(500).json({
+      error: "Failed to extract notes or quiz questions from that URL. If the lesson requires login (such as Coursera or Udemy), paste a quick summary or transcript in the notes field."
+    });
+  }
+});
+
+// 5e. GOAL KNOWLEDGE HUB - EXTRACT NOTES & TEST FROM DOWNLOADED VIDEO & TRANSCRIPT UPLOAD
+const LECTURE_UPLOAD_DIR = path.resolve(os.tmpdir(), "study_planner_uploads");
+if (!fs.existsSync(LECTURE_UPLOAD_DIR)) {
+  fs.mkdirSync(LECTURE_UPLOAD_DIR, { recursive: true });
+}
+
+const ALLOWED_MEDIA_EXT_TO_MIME: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+  ".mp3": "audio/mp3",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg"
+};
+
+const ALLOWED_TEXT_EXTS = new Set([".txt", ".vtt", ".srt", ".md"]);
+
+function sanitizeUploadDisplayName(rawName: string): string {
+  const base = path.basename(rawName || "lecture_file");
+  return base.replace(/[\r\n\t<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 140) || "lecture_file";
+}
+
+function resolveConfinedUploadPath(filePath?: string): string | null {
+  if (!filePath) return null;
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(LECTURE_UPLOAD_DIR + path.sep)) {
+    return null;
+  }
+  return resolved;
+}
+
+const lectureUploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    if (!fs.existsSync(LECTURE_UPLOAD_DIR)) {
+      fs.mkdirSync(LECTURE_UPLOAD_DIR, { recursive: true });
+    }
+    cb(null, LECTURE_UPLOAD_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    const safeExt = (ext in ALLOWED_MEDIA_EXT_TO_MIME || ALLOWED_TEXT_EXTS.has(ext)) ? ext : "";
+    const randomId = crypto.randomBytes(8).toString("hex");
+    cb(null, `lecture_${Date.now()}_${randomId}${safeExt}`);
+  }
+});
+
+const lectureUploadMiddleware = multer({
+  storage: lectureUploadStorage,
+  limits: {
+    fileSize: 250 * 1024 * 1024, // 250 MB max per file
+    files: 2
+  },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    const mime = (file.mimetype || "").toLowerCase();
+    if (file.fieldname === "video") {
+      if (ext in ALLOWED_MEDIA_EXT_TO_MIME || mime.startsWith("video/") || mime.startsWith("audio/")) {
+        return cb(null, true);
+      }
+      return cb(new Error("Unsupported video/audio format. Please upload MP4, MOV, WebM, MKV, MP3, WAV, or M4A."));
+    }
+    if (file.fieldname === "transcriptFile") {
+      if (ALLOWED_TEXT_EXTS.has(ext) || mime.startsWith("text/")) {
+        return cb(null, true);
+      }
+      return cb(new Error("Unsupported transcript format. Please upload .txt, .vtt, .srt, or .md."));
+    }
+    return cb(new Error("Unexpected upload field."));
+  }
+});
+
+app.post("/api/coach/extract-from-upload", (req, res) => {
+  lectureUploadMiddleware.fields([
+    { name: "video", maxCount: 1 },
+    { name: "transcriptFile", maxCount: 1 }
+  ])(req, res, async (uploadErr: any) => {
+    if (uploadErr) {
+      if (uploadErr?.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          error: "File exceeds the 250 MB upload limit. Try a compressed MP4 or paste the transcript text."
+        });
+      }
+      return res.status(400).json({
+        error: uploadErr?.message || "Invalid file upload."
+      });
+    }
+
+    const filesMap = (req.files || {}) as Record<string, Express.Multer.File[]>;
+    const videoUpload = filesMap.video?.[0];
+    const transcriptUpload = filesMap.transcriptFile?.[0];
+
+    const verifiedVideoPath = resolveConfinedUploadPath(videoUpload?.path);
+    const verifiedTranscriptPath = resolveConfinedUploadPath(transcriptUpload?.path);
+
+    let uploadedGeminiFileName: string | null = null;
+    const ai = getAi();
+
+    const cleanupFiles = async () => {
+      for (const p of [verifiedVideoPath, verifiedTranscriptPath]) {
+        if (p) {
+          try {
+            await fs.promises.unlink(p);
+          } catch {}
+        }
+      }
+      if (uploadedGeminiFileName && process.env.GEMINI_API_KEY) {
+        try {
+          await ai.files.delete({ name: uploadedGeminiFileName });
+        } catch {}
+      }
+    };
+
+    try {
+      const {
+        goalTitle = "Study Session",
+        goalCategory = "General",
+        chapterTitle = "",
+        lessonTitle = "",
+        transcriptText = "",
+        mode = "both",
+        questionCount = "5"
+      } = (req.body || {}) as Record<string, string>;
+
+      const clampedCount = Math.min(8, Math.max(4, Number(questionCount) || 5));
+      let combinedTranscript = typeof transcriptText === "string" ? transcriptText.trim() : "";
+
+      if (verifiedTranscriptPath) {
+        try {
+          const rawTranscript = await fs.promises.readFile(verifiedTranscriptPath, "utf-8");
+          const cleanedFileText = rawTranscript.replace(/\r\n/g, "\n").trim();
+          if (cleanedFileText) {
+            combinedTranscript = combinedTranscript
+              ? `${combinedTranscript}\n\n${cleanedFileText}`
+              : cleanedFileText;
+          }
+        } catch {
+          await cleanupFiles();
+          return res.status(400).json({ error: "Could not read the uploaded transcript file as UTF-8 text." });
+        }
+      }
+
+      const safeTranscript = combinedTranscript.slice(0, 35000);
+
+      if (!verifiedVideoPath && !safeTranscript) {
+        await cleanupFiles();
+        return res.status(400).json({
+          error: "Please upload a video/audio file, upload a transcript (.txt/.vtt/.srt), or paste your lesson text."
+        });
+      }
+
+      if (!process.env.GEMINI_API_KEY) {
+        await cleanupFiles();
+        return res.status(503).json({
+          error: "AI video and transcript analysis requires a configured Gemini API key. Check Settings > Secrets."
+        });
+      }
+
+      const safeLessonTitle = typeof lessonTitle === "string" ? lessonTitle.trim().slice(0, 180) : "";
+      const safeOriginalFileName = videoUpload
+        ? sanitizeUploadDisplayName(videoUpload.originalname)
+        : transcriptUpload
+        ? sanitizeUploadDisplayName(transcriptUpload.originalname)
+        : undefined;
+
+      const uploadSchema = {
+        type: Type.OBJECT,
+        properties: {
+          extractedTitle: { type: Type.STRING, description: "Concise, descriptive title for the uploaded lecture." },
+          studyNotes: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                category: { type: Type.STRING, description: "One of: concept, summary, qa, definition" },
+                content: { type: Type.STRING },
+                question: { type: Type.STRING },
+                answer: { type: Type.STRING },
+                term: { type: Type.STRING },
+                definition: { type: Type.STRING },
+                keyTerms: { type: Type.ARRAY, items: { type: Type.STRING } }
+              },
+              required: ["title", "category", "content"]
+            }
+          },
+          flashcards: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                front: { type: Type.STRING },
+                back: { type: Type.STRING }
+              },
+              required: ["front", "back"]
+            }
+          },
+          testTitle: { type: Type.STRING },
+          questions: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                question: { type: Type.STRING },
+                options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                correctIndex: { type: Type.INTEGER },
+                explanation: { type: Type.STRING },
+                difficulty: { type: Type.STRING }
+              },
+              required: ["question", "options", "correctIndex", "explanation"]
+            }
+          }
+        },
+        required: ["extractedTitle", "studyNotes", "questions"]
+      };
+
+      const promptText = `You are an expert educator and exam writer analyzing a student's downloaded lecture${verifiedVideoPath ? " video" : ""}${safeTranscript ? " and transcript/notes" : ""} for their study goal "${goalTitle}" (${goalCategory}${chapterTitle ? `, Chapter: ${chapterTitle}` : ""}).
+${safeLessonTitle ? `Student's lesson title: "${safeLessonTitle}"\n` : ""}${safeOriginalFileName ? `Uploaded file: "${safeOriginalFileName}"\n` : ""}${safeTranscript ? `\nStudent-provided transcript / lecture text:\n"""\n${safeTranscript}\n"""\n` : ""}
+Task (mode="${mode}"):
+1. Extract 3-6 high-yield study notes grounded strictly in the actual lecture content (include a balanced mix of concise summaries, core concepts, key definitions, and Q&A takeaways where helpful).
+2. Extract 4-6 active recall flashcards (concise front question/term and clear back answer).
+3. Author ${clampedCount} rigorous multiple-choice test questions testing real comprehension of the lecture concepts, formulas, examples, or demonstrations shown/discussed (each with 4 plausible options, 0-indexed correctIndex 0..3, thorough explanation referencing the lesson, and difficulty easy|medium|hard).
+
+Return ONLY valid JSON matching the requested schema.`;
+
+      const contentParts: any[] = [];
+
+      if (verifiedVideoPath && videoUpload) {
+        const ext = path.extname(videoUpload.originalname || "").toLowerCase();
+        const inferredMime =
+          ALLOWED_MEDIA_EXT_TO_MIME[ext] ||
+          (videoUpload.mimetype && videoUpload.mimetype !== "application/octet-stream"
+            ? videoUpload.mimetype
+            : "video/mp4");
+
+        const uploadedFile = await ai.files.upload({
+          file: verifiedVideoPath,
+          config: {
+            mimeType: inferredMime,
+            displayName: safeOriginalFileName || "downloaded_lecture_video"
+          }
+        });
+
+        uploadedGeminiFileName = uploadedFile.name || null;
+
+        let activeFile = uploadedFile;
+        const pollStart = Date.now();
+        while (activeFile.state === FileState.PROCESSING) {
+          if (Date.now() - pollStart > 120_000) {
+            throw new Error("Video processing timed out. Try a shorter clip or include the transcript text.");
+          }
+          await new Promise((r) => setTimeout(r, 2500));
+          if (!activeFile.name) break;
+          activeFile = await ai.files.get({ name: activeFile.name });
+        }
+
+        if (activeFile.state === FileState.FAILED) {
+          throw new Error("Could not process this video encoding. Try converting to standard MP4 or pasting the transcript.");
+        }
+
+        if (activeFile.uri) {
+          contentParts.push({
+            fileData: {
+              fileUri: activeFile.uri,
+              mimeType: activeFile.mimeType || inferredMime
+            }
+          });
+        }
+      }
+
+      contentParts.push({ text: promptText });
+
+      let rawParsed: any = null;
+      const models = ["gemini-4-hydrogen", "gemini-3.1-flash-lite"];
+      let lastModelErr: any = null;
+
+      for (const modelName of models) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [{ role: "user", parts: contentParts }],
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: uploadSchema
+            }
+          });
+          rawParsed = parseJsonFromModelText(response.text || "");
+          if (rawParsed) break;
+        } catch (mErr: any) {
+          lastModelErr = mErr;
+          console.warn(`Upload extraction with ${modelName} fallback:`, mErr?.message || mErr);
+        }
+      }
+
+      if (!rawParsed) {
+        throw lastModelErr || new Error("Could not extract structured notes or quiz questions from the uploaded material.");
+      }
+
+      const nowIso = new Date().toISOString();
+      const baseTs = Date.now();
+      const extractedTitle =
+        safeLessonTitle ||
+        (typeof rawParsed.extractedTitle === "string" && rawParsed.extractedTitle.trim()) ||
+        (safeOriginalFileName ? safeOriginalFileName.replace(/\.[^.]+$/, "") : "Uploaded Lecture Study Guide");
+
+      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "definition"]);
+      const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
+      const notes = rawNotes
+        .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
+        .slice(0, 6)
+        .map((n: any, idx: number) => {
+          const cat = allowedCategories.has(n.category) ? n.category : "summary";
+          const isQA = cat === "qa" && n.question && n.answer;
+          const isDef = cat === "definition" && n.term && n.definition;
+          return {
+            id: `note_${baseTs}_${idx}`,
+            title: isQA
+              ? String(n.question).trim()
+              : isDef
+              ? String(n.term).trim()
+              : String(n.title || extractedTitle).trim(),
+            category: cat,
+            content: isQA
+              ? `Q: ${String(n.question).trim()}\n\nA: ${String(n.answer).trim()}${n.explanation ? `\n\nExplanation: ${String(n.explanation).trim()}` : ""}`
+              : isDef
+              ? `${String(n.term).trim()}: ${String(n.definition).trim()}`
+              : String(n.content || "").trim(),
+            question: isQA ? String(n.question).trim() : undefined,
+            answer: isQA ? String(n.answer).trim() : undefined,
+            explanation: isQA && n.explanation ? String(n.explanation).trim() : undefined,
+            term: isDef ? String(n.term).trim() : undefined,
+            definition: isDef ? String(n.definition).trim() : undefined,
+            sourceFileName: safeOriginalFileName,
+            chapterTitle: chapterTitle || undefined,
+            keyTerms: Array.isArray(n.keyTerms) ? n.keyTerms.map(String).slice(0, 8) : undefined,
+            createdAt: nowIso,
+            updatedAt: nowIso
+          };
+        });
+
+      const flashcards = Array.isArray(rawParsed.flashcards)
+        ? rawParsed.flashcards
+            .filter((f: any) => f && f.front && f.back)
+            .slice(0, 6)
+            .map((f: any, idx: number) => ({
+              id: `fc_${baseTs}_${idx}`,
+              front: String(f.front).trim(),
+              back: String(f.back).trim(),
+              chapterTitle: chapterTitle || undefined,
+              mastered: false
+            }))
+        : [];
+
+      const rawQuestions = Array.isArray(rawParsed.questions) ? rawParsed.questions : [];
+      const formattedQuestions = rawQuestions
+        .filter((q: any) => q && q.question && Array.isArray(q.options) && q.options.length >= 2)
+        .slice(0, 8)
+        .map((q: any, idx: number) => {
+          const opts = q.options.slice(0, 4).map(String);
+          while (opts.length < 4) opts.push("None of the above");
+          const cIdx = typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex < opts.length ? q.correctIndex : 0;
+          const diff = q.difficulty === "easy" || q.difficulty === "hard" ? q.difficulty : "medium";
+          return {
+            id: `q_${baseTs}_${idx}`,
+            question: String(q.question).trim(),
+            options: opts,
+            correctIndex: cIdx,
+            explanation: String(q.explanation || "Review the lecture video or transcript for details.").trim(),
+            difficulty: diff
+          };
+        });
+
+      const test = formattedQuestions.length > 0
+        ? {
+            id: `test_${baseTs}`,
+            title: String(rawParsed.testTitle || `${extractedTitle} Quiz`).trim(),
+            chapterTitle: chapterTitle || undefined,
+            sourceFileName: safeOriginalFileName,
+            createdAt: nowIso,
+            questions: formattedQuestions,
+            attemptsCount: 0
+          }
+        : null;
+
+      await cleanupFiles();
+
+      return res.json({
+        extractedTitle,
+        sourceFileName: safeOriginalFileName,
+        notes,
+        flashcards,
+        test
+      });
+    } catch (err: any) {
+      await cleanupFiles();
+      console.error("Lecture upload extraction error:", err?.message || err);
+      const msg = String(err?.message || "");
+      if (/PERMISSION_DENIED|API_KEY_INVALID|403/.test(msg) && /key|api/i.test(msg)) {
+        return res.status(502).json({
+          error: "Gemini API key error. Please check your key in Settings > Secrets."
+        });
+      }
+      return res.status(500).json({
+        error: msg || "Failed to analyze the uploaded video or text. Try again or include transcript text."
+      });
+    }
+  });
 });
 
 // 6. SMART ENERGY-BASED SCHEDULING ENDPOINT

@@ -40,9 +40,11 @@ import {
   Award,
   Zap,
   BatteryCharging,
-  StickyNote
+  StickyNote,
+  ClipboardCheck,
+  Link2
 } from "lucide-react";
-import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, SessionSubStep, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits, GoalKnowledgeHub } from "../types";
+import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, SessionSubStep, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits, GoalKnowledgeHub, GoalStepType } from "../types";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
 import GoalStartBriefingModal from "./GoalStartBriefingModal";
@@ -340,6 +342,11 @@ export default function GoalTracker({
           const matchingTask = rawSubtasks?.find(t => t.id === s.id || t.title.toLowerCase() === s.title.toLowerCase());
           return {
             ...s,
+            stepType: s.stepType ?? matchingTask?.stepType,
+            assignedLinkNoteId: s.assignedLinkNoteId ?? matchingTask?.assignedLinkNoteId,
+            assignedLinkUrl: s.assignedLinkUrl ?? matchingTask?.assignedLinkUrl,
+            assignedLinkTitle: s.assignedLinkTitle ?? matchingTask?.assignedLinkTitle,
+            lastTestScore: s.lastTestScore ?? matchingTask?.lastTestScore,
             carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
             carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
           };
@@ -351,6 +358,11 @@ export default function GoalTracker({
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
         completed: s.completed || false,
+        stepType: s.stepType,
+        assignedLinkNoteId: s.assignedLinkNoteId,
+        assignedLinkUrl: s.assignedLinkUrl,
+        assignedLinkTitle: s.assignedLinkTitle,
+        lastTestScore: s.lastTestScore,
         carryoverNote: s.carryoverNote,
         carryoverNoteDate: s.carryoverNoteDate
       }));
@@ -543,6 +555,11 @@ export default function GoalTracker({
                 title: s.title,
                 durationMinutes: s.durationMinutes || 15,
                 completed: s.completed || false,
+                stepType: s.stepType,
+                assignedLinkNoteId: s.assignedLinkNoteId,
+                assignedLinkUrl: s.assignedLinkUrl,
+                assignedLinkTitle: s.assignedLinkTitle,
+                lastTestScore: s.lastTestScore,
                 carryoverNote: s.carryoverNote,
                 carryoverNoteDate: s.carryoverNoteDate
               })) : undefined)
@@ -705,6 +722,11 @@ export default function GoalTracker({
       title: s.title,
       durationMinutes: s.durationMinutes || 15,
       completed: s.completed || false,
+      stepType: s.stepType,
+      assignedLinkNoteId: s.assignedLinkNoteId,
+      assignedLinkUrl: s.assignedLinkUrl,
+      assignedLinkTitle: s.assignedLinkTitle,
+      lastTestScore: s.lastTestScore,
       carryoverNote: s.carryoverNote,
       carryoverNoteDate: s.carryoverNoteDate
     }));
@@ -717,6 +739,11 @@ export default function GoalTracker({
       title: s.title,
       durationMinutes: s.durationMinutes || 15,
       completed: s.completed || false,
+      stepType: s.stepType,
+      assignedLinkNoteId: s.assignedLinkNoteId,
+      assignedLinkUrl: s.assignedLinkUrl,
+      assignedLinkTitle: s.assignedLinkTitle,
+      lastTestScore: s.lastTestScore,
       carryoverNote: s.carryoverNote,
       carryoverNoteDate: s.carryoverNoteDate
     }));
@@ -740,6 +767,11 @@ export default function GoalTracker({
       title: s.title,
       durationMinutes: s.durationMinutes || 15,
       completed: s.completed || false,
+      stepType: s.stepType,
+      assignedLinkNoteId: s.assignedLinkNoteId,
+      assignedLinkUrl: s.assignedLinkUrl,
+      assignedLinkTitle: s.assignedLinkTitle,
+      lastTestScore: s.lastTestScore,
       carryoverNote: s.carryoverNote,
       carryoverNoteDate: s.carryoverNoteDate
     }))).map(s =>
@@ -936,9 +968,33 @@ export default function GoalTracker({
   ]);
   const [newPhaseTitle, setNewPhaseTitle] = useState("");
   const [newPhaseDuration, setNewPhaseDuration] = useState<number>(15);
+  const [newPhaseType, setNewPhaseType] = useState<GoalStepType>("study");
+  const [newPhaseAssignedLinkId, setNewPhaseAssignedLinkId] = useState("");
+  const [newPhaseAssignedLinkUrl, setNewPhaseAssignedLinkUrl] = useState("");
+  const [newPhaseAssignedLinkTitle, setNewPhaseAssignedLinkTitle] = useState("");
   const [newPhaseCarryoverNote, setNewPhaseCarryoverNote] = useState("");
   const [showNewPhaseNoteInput, setShowNewPhaseNoteInput] = useState(false);
   const [expandedFormPhaseNoteIdx, setExpandedFormPhaseNoteIdx] = useState<number | null>(null);
+  const [newSubtaskIsSelfTestForGoal, setNewSubtaskIsSelfTestForGoal] = useState<Record<string, boolean>>({});
+  const [newSubtaskLinkForGoal, setNewSubtaskLinkForGoal] = useState<Record<string, string>>({});
+
+  const editingGoalObj = editingGoalId ? goals.find(g => g.id === editingGoalId) : undefined;
+  const availableFormLinks = [
+    ...(editingGoalObj?.knowledgeHub?.notes?.filter(n => n.category === "url" && n.url) || []).map(n => ({
+      id: n.id,
+      title: n.title,
+      url: n.url!,
+      requiresLogin: Boolean(n.requiresLogin)
+    })),
+    ...(resourceLink.trim()
+      ? [{
+          id: "goal_portal",
+          title: resourceLabel.trim() || "Course Portal",
+          url: resourceLink.trim(),
+          requiresLogin: true
+        }]
+      : [])
+  ];
 
   const totalPhasesDuration = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
 
@@ -959,22 +1015,56 @@ export default function GoalTracker({
     setFormPhases(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleAddPhase = (title?: string, duration?: number) => {
-    const phaseTitle = (title || newPhaseTitle).trim();
+  const handleAddPhase = (
+    title?: string,
+    duration?: number,
+    explicitType?: GoalStepType,
+    explicitLink?: { id?: string; url?: string; title?: string }
+  ) => {
+    const stepTypeToUse = explicitType || newPhaseType;
+    const phaseTitle = (title || newPhaseTitle || (stepTypeToUse === "self_test" ? "Self Test & Link Review" : "")).trim();
     if (!phaseTitle) return;
     const phaseDur = duration !== undefined ? duration : (Number(newPhaseDuration) || 15);
     const trimmedNote = newPhaseCarryoverNote.trim();
+    const matchedSavedLink = explicitLink?.id
+      ? availableFormLinks.find(l => l.id === explicitLink.id)
+      : newPhaseAssignedLinkId
+      ? availableFormLinks.find(l => l.id === newPhaseAssignedLinkId)
+      : undefined;
+    const resolvedLinkUrl = explicitLink?.url || matchedSavedLink?.url || (stepTypeToUse === "self_test" ? newPhaseAssignedLinkUrl.trim() : "");
+    const resolvedLinkTitle = explicitLink?.title || matchedSavedLink?.title || (stepTypeToUse === "self_test" ? newPhaseAssignedLinkTitle.trim() : "");
+    const resolvedLinkId = matchedSavedLink?.id || explicitLink?.id;
+
     const newPhase: SessionSubStep = {
       id: `phase_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       title: phaseTitle,
       durationMinutes: Math.max(1, phaseDur),
       completed: false,
+      stepType: stepTypeToUse,
+      ...(stepTypeToUse === "self_test" && resolvedLinkId ? { assignedLinkNoteId: resolvedLinkId } : {}),
+      ...(stepTypeToUse === "self_test" && resolvedLinkUrl ? { assignedLinkUrl: resolvedLinkUrl } : {}),
+      ...(stepTypeToUse === "self_test" && resolvedLinkTitle ? { assignedLinkTitle: resolvedLinkTitle } : {}),
       ...(trimmedNote ? { carryoverNote: trimmedNote, carryoverNoteDate: new Date().toISOString() } : {})
     };
     setFormPhases(prev => [...prev, newPhase]);
     setNewPhaseTitle("");
+    setNewPhaseType("study");
+    setNewPhaseAssignedLinkId("");
+    setNewPhaseAssignedLinkUrl("");
+    setNewPhaseAssignedLinkTitle("");
     setNewPhaseCarryoverNote("");
     setShowNewPhaseNoteInput(false);
+  };
+
+  const handleQuickAddSelfTestPhase = () => {
+    const defaultLink = availableFormLinks.find(l => l.requiresLogin) || availableFormLinks[0];
+    const testDur = Math.min(15, Math.max(5, Math.round((durationMinutes || 60) * 0.2)));
+    handleAddPhase(
+      `Self Test (${testDur}m): Material Quiz & Link Review`,
+      testDur,
+      "self_test",
+      defaultLink ? { id: defaultLink.id, url: defaultLink.url, title: defaultLink.title } : undefined
+    );
   };
 
   const handleApplyPhasePreset = (presetType: "review_focus" | "pomodoro" | "spaced_recall" | "lab_practice") => {
@@ -1003,7 +1093,7 @@ export default function GoalTracker({
       newSteps = [
         { id: `phase_recall_${Date.now()}`, title: "Active Recall: Quiz & Previous Mistakes", durationMinutes: recallMins, completed: false },
         { id: `phase_deep_${Date.now()}`, title: "Deep Practice & New Material", durationMinutes: mainMins, completed: false },
-        { id: `phase_synth_${Date.now()}`, title: "Synthesis & Reflection Summary", durationMinutes: recapMins, completed: false }
+        { id: `phase_synth_${Date.now()}`, title: "Self Test: Material MCQs & Link Review", durationMinutes: recapMins, completed: false, stepType: "self_test" }
       ];
     } else if (presetType === "lab_practice") {
       newSteps = [
@@ -1216,6 +1306,11 @@ export default function GoalTracker({
       title: p.title,
       durationMinutes: p.durationMinutes,
       completed: false,
+      stepType: p.stepType,
+      assignedLinkNoteId: p.assignedLinkNoteId,
+      assignedLinkUrl: p.assignedLinkUrl,
+      assignedLinkTitle: p.assignedLinkTitle,
+      lastTestScore: p.lastTestScore,
       carryoverNote: p.carryoverNote,
       carryoverNoteDate: p.carryoverNoteDate
     })) : undefined;
@@ -1320,6 +1415,10 @@ export default function GoalTracker({
     ]);
     setNewPhaseTitle("");
     setNewPhaseDuration(15);
+    setNewPhaseType("study");
+    setNewPhaseAssignedLinkId("");
+    setNewPhaseAssignedLinkUrl("");
+    setNewPhaseAssignedLinkTitle("");
     setNewPhaseCarryoverNote("");
     setShowNewPhaseNoteInput(false);
     setExpandedFormPhaseNoteIdx(null);
@@ -1350,6 +1449,10 @@ export default function GoalTracker({
       ]);
       setNewPhaseTitle("");
       setNewPhaseDuration(15);
+      setNewPhaseType("study");
+      setNewPhaseAssignedLinkId("");
+      setNewPhaseAssignedLinkUrl("");
+      setNewPhaseAssignedLinkTitle("");
       setNewPhaseCarryoverNote("");
       setShowNewPhaseNoteInput(false);
       setExpandedFormPhaseNoteIdx(null);
@@ -1391,6 +1494,10 @@ export default function GoalTracker({
     ]);
     setNewPhaseTitle("");
     setNewPhaseDuration(15);
+    setNewPhaseType("study");
+    setNewPhaseAssignedLinkId("");
+    setNewPhaseAssignedLinkUrl("");
+    setNewPhaseAssignedLinkTitle("");
     setNewPhaseCarryoverNote("");
     setShowNewPhaseNoteInput(false);
     setExpandedFormPhaseNoteIdx(null);
@@ -1420,6 +1527,11 @@ export default function GoalTracker({
         return {
           ...s,
           completed: false,
+          stepType: s.stepType ?? matchingTask?.stepType,
+          assignedLinkNoteId: s.assignedLinkNoteId ?? matchingTask?.assignedLinkNoteId,
+          assignedLinkUrl: s.assignedLinkUrl ?? matchingTask?.assignedLinkUrl,
+          assignedLinkTitle: s.assignedLinkTitle ?? matchingTask?.assignedLinkTitle,
+          lastTestScore: s.lastTestScore ?? matchingTask?.lastTestScore,
           carryoverNote: s.carryoverNote ?? matchingTask?.carryoverNote,
           carryoverNoteDate: s.carryoverNoteDate ?? matchingTask?.carryoverNoteDate
         };
@@ -1430,6 +1542,11 @@ export default function GoalTracker({
         title: s.title,
         durationMinutes: s.durationMinutes || 15,
         completed: false,
+        stepType: s.stepType,
+        assignedLinkNoteId: s.assignedLinkNoteId,
+        assignedLinkUrl: s.assignedLinkUrl,
+        assignedLinkTitle: s.assignedLinkTitle,
+        lastTestScore: s.lastTestScore,
         carryoverNote: s.carryoverNote,
         carryoverNoteDate: s.carryoverNoteDate
       })));
@@ -1444,6 +1561,10 @@ export default function GoalTracker({
     }
     setNewPhaseTitle("");
     setNewPhaseDuration(15);
+    setNewPhaseType("study");
+    setNewPhaseAssignedLinkId("");
+    setNewPhaseAssignedLinkUrl("");
+    setNewPhaseAssignedLinkTitle("");
     setNewPhaseCarryoverNote("");
     setShowNewPhaseNoteInput(false);
     setExpandedFormPhaseNoteIdx(null);
@@ -2327,6 +2448,15 @@ export default function GoalTracker({
                   >
                     <span>🔬 Lab & Practice</span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleQuickAddSelfTestPhase}
+                    className="px-2 py-1 rounded bg-violet-500/20 hover:bg-violet-500/35 text-violet-200 border border-violet-400/40 text-[10px] font-bold transition cursor-pointer flex items-center gap-1"
+                    title="Append a timed Self Test step (MCQs + login link review)"
+                  >
+                    <ClipboardCheck className="w-3 h-3 text-violet-300" />
+                    <span>+ Self Test Step</span>
+                  </button>
                 </div>
               </div>
 
@@ -2382,15 +2512,24 @@ export default function GoalTracker({
                   const isLast = idx === formPhases.length - 1;
                   const isNoteOpen = expandedFormPhaseNoteIdx === idx;
                   const hasNote = Boolean(phase.carryoverNote && phase.carryoverNote.trim().length > 0);
+                  const isSelfTest = phase.stepType === "self_test";
                   return (
                     <div
                       key={phase.id || idx}
-                      className="p-2 bg-[#0c0e16] border border-white/10 hover:border-indigo-500/40 rounded-lg group transition space-y-1.5"
+                      className={`p-2 rounded-lg group transition space-y-1.5 border ${
+                        isSelfTest
+                          ? "bg-violet-950/25 border-violet-500/35 hover:border-violet-400/60"
+                          : "bg-[#0c0e16] border-white/10 hover:border-indigo-500/40"
+                      }`}
                     >
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                         {/* Step Number & Up/Down Reorder Controls */}
                         <div className="flex items-center gap-1 shrink-0">
-                          <span className="w-5 h-5 rounded bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 font-mono text-[10px] font-bold flex items-center justify-center">
+                          <span className={`w-5 h-5 rounded font-mono text-[10px] font-bold flex items-center justify-center border ${
+                            isSelfTest
+                              ? "bg-violet-600/35 text-violet-200 border-violet-400/40"
+                              : "bg-indigo-600/30 text-indigo-300 border-indigo-500/30"
+                          }`}>
                             {idx + 1}
                           </span>
                           <div className="flex flex-col">
@@ -2419,13 +2558,31 @@ export default function GoalTracker({
                           </div>
                         </div>
 
+                        {/* Step Type Toggle (Study vs Self Test) */}
+                        <button
+                          type="button"
+                          onClick={() => handleUpdatePhase(idx, {
+                            stepType: isSelfTest ? "study" : "self_test",
+                            title: !isSelfTest && !phase.title.trim() ? "Self Test: Quiz & Link Review" : phase.title
+                          })}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold border transition cursor-pointer flex items-center gap-1 shrink-0 ${
+                            isSelfTest
+                              ? "bg-violet-600/30 text-violet-200 border-violet-400/50"
+                              : "bg-white/5 text-slate-400 hover:text-violet-300 border-white/10"
+                          }`}
+                          title={isSelfTest ? "Self Test step (MCQs + login link review). Click to switch to regular Study step." : "Click to make this a Self Test step"}
+                        >
+                          <ClipboardCheck className="w-3 h-3" />
+                          <span>{isSelfTest ? "Self Test" : "Study"}</span>
+                        </button>
+
                         {/* Phase Title Input */}
                         <div className="flex-1 min-w-0">
                           <input
                             type="text"
                             value={phase.title}
                             onChange={(e) => handleUpdatePhase(idx, { title: e.target.value })}
-                            placeholder="e.g. 15m Concept Review & Carryover Notes"
+                            placeholder={isSelfTest ? "e.g. Self Test: Module 2 MCQs & Coursera Review" : "e.g. 15m Concept Review & Carryover Notes"}
                             className="w-full text-xs px-2.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white focus:outline-none focus:border-indigo-400 font-medium"
                           />
                         </div>
@@ -2454,6 +2611,7 @@ export default function GoalTracker({
                             value={phase.durationMinutes}
                             onChange={(e) => handleUpdatePhase(idx, { durationMinutes: Math.max(1, Number(e.target.value) || 5) })}
                             className="w-14 text-xs px-1.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
+                            title={isSelfTest ? "Self Test duration (minutes)" : "Phase duration (minutes)"}
                           />
                           <span className="text-[10px] text-slate-400 font-medium">min</span>
                         </div>
@@ -2468,6 +2626,65 @@ export default function GoalTracker({
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
+
+                      {/* Self Test Step Configuration: Assigned Link to Review/Read */}
+                      {isSelfTest && (
+                        <div className="ml-7 p-2 rounded-md bg-violet-950/35 border border-violet-500/25 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 text-[10px]">
+                          <div className="flex items-center gap-1.5 text-violet-200 font-semibold shrink-0">
+                            <Link2 className="w-3 h-3 text-cyan-400" />
+                            <span>Link to Review/Read:</span>
+                          </div>
+                          {availableFormLinks.length > 0 && (
+                            <select
+                              value={phase.assignedLinkNoteId || (phase.assignedLinkUrl ? "__custom__" : "")}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (!val) {
+                                  handleUpdatePhase(idx, { assignedLinkNoteId: undefined, assignedLinkUrl: undefined, assignedLinkTitle: undefined });
+                                } else if (val === "__custom__") {
+                                  handleUpdatePhase(idx, { assignedLinkNoteId: undefined });
+                                } else {
+                                  const picked = availableFormLinks.find(l => l.id === val);
+                                  if (picked) {
+                                    handleUpdatePhase(idx, {
+                                      assignedLinkNoteId: picked.id,
+                                      assignedLinkUrl: picked.url,
+                                      assignedLinkTitle: picked.title
+                                    });
+                                  }
+                                }
+                              }}
+                              className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0c0e16] border border-violet-500/30 text-slate-200 focus:outline-none focus:border-cyan-400"
+                            >
+                              <option value="">Auto (any pending login-required links + MCQs)</option>
+                              {availableFormLinks.map(l => (
+                                <option key={l.id} value={l.id}>
+                                  {l.requiresLogin ? "🔒 " : "🔗 "}{l.title}
+                                </option>
+                              ))}
+                              <option value="__custom__">+ Custom link URL...</option>
+                            </select>
+                          )}
+                          {(availableFormLinks.length === 0 || (!phase.assignedLinkNoteId && (phase.assignedLinkUrl !== undefined || availableFormLinks.length === 0))) && (
+                            <div className="flex-1 flex items-center gap-1.5 min-w-0">
+                              <input
+                                type="url"
+                                value={phase.assignedLinkUrl || ""}
+                                onChange={(e) => handleUpdatePhase(idx, { assignedLinkUrl: e.target.value, assignedLinkNoteId: undefined })}
+                                placeholder="Optional login link URL (e.g. https://coursera.org/...)"
+                                className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0c0e16] border border-white/10 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                              />
+                              <input
+                                type="text"
+                                value={phase.assignedLinkTitle || ""}
+                                onChange={(e) => handleUpdatePhase(idx, { assignedLinkTitle: e.target.value })}
+                                placeholder="Label (optional)"
+                                className="w-28 px-2 py-1 rounded bg-[#0c0e16] border border-white/10 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Preview or Editor for Step Carryover Note */}
                       {isNoteOpen ? (
@@ -2515,13 +2732,36 @@ export default function GoalTracker({
 
               {/* Add Phase Input Bar */}
               <div className="space-y-1.5 pt-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextType: GoalStepType = newPhaseType === "self_test" ? "study" : "self_test";
+                      setNewPhaseType(nextType);
+                      if (nextType === "self_test" && !newPhaseTitle.trim()) {
+                        setNewPhaseTitle("Self Test: Material Quiz & Link Review");
+                        setNewPhaseDuration(10);
+                      } else if (nextType === "study" && newPhaseTitle === "Self Test: Material Quiz & Link Review") {
+                        setNewPhaseTitle("");
+                      }
+                    }}
+                    className={`px-2.5 py-2 rounded-lg border text-[11px] font-bold transition cursor-pointer flex items-center gap-1 shrink-0 ${
+                      newPhaseType === "self_test"
+                        ? "bg-violet-600/30 text-violet-200 border-violet-400/50"
+                        : "bg-[#0f111a] text-slate-300 hover:text-violet-300 border-white/10"
+                    }`}
+                    title="Switch between standard Study step and Self Test step"
+                  >
+                    <ClipboardCheck className="w-3.5 h-3.5" />
+                    <span>{newPhaseType === "self_test" ? "Self Test" : "Study"}</span>
+                  </button>
+
                   <input
                     type="text"
                     value={newPhaseTitle}
                     onChange={(e) => setNewPhaseTitle(e.target.value)}
-                    placeholder="Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."
-                    className="flex-1 text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
+                    placeholder={newPhaseType === "self_test" ? "Self Test step title (e.g. Week 2 Self Test & Link Review)..." : "Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."}
+                    className="flex-1 min-w-[160px] text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -2556,12 +2796,57 @@ export default function GoalTracker({
                   <button
                     type="button"
                     onClick={() => handleAddPhase()}
-                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
+                    className={`px-3 py-2 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-sm ${
+                      newPhaseType === "self_test"
+                        ? "bg-violet-600 hover:bg-violet-500"
+                        : "bg-indigo-600 hover:bg-indigo-500"
+                    }`}
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Add Phase</span>
+                    <span>{newPhaseType === "self_test" ? "Add Self Test" : "Add Phase"}</span>
                   </button>
                 </div>
+
+                {newPhaseType === "self_test" && (
+                  <div className="p-2 rounded-lg bg-violet-950/25 border border-violet-500/25 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 text-[11px]">
+                    <span className="text-violet-200 font-semibold flex items-center gap-1 shrink-0">
+                      <Link2 className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Login Link for Test Review:</span>
+                    </span>
+                    {availableFormLinks.length > 0 && (
+                      <select
+                        value={newPhaseAssignedLinkId}
+                        onChange={(e) => setNewPhaseAssignedLinkId(e.target.value)}
+                        className="flex-1 px-2 py-1 rounded bg-[#0f111a] border border-violet-500/30 text-slate-200 focus:outline-none focus:border-cyan-400"
+                      >
+                        <option value="">Auto (prompt pending login-required links + MCQs)</option>
+                        {availableFormLinks.map(l => (
+                          <option key={l.id} value={l.id}>
+                            {l.requiresLogin ? "🔒 " : "🔗 "}{l.title}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {!newPhaseAssignedLinkId && (
+                      <div className="flex-1 flex items-center gap-1.5">
+                        <input
+                          type="url"
+                          value={newPhaseAssignedLinkUrl}
+                          onChange={(e) => setNewPhaseAssignedLinkUrl(e.target.value)}
+                          placeholder="Optional link URL to study/review (e.g. Coursera lesson)"
+                          className="flex-1 px-2 py-1 rounded bg-[#0f111a] border border-white/10 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                        />
+                        <input
+                          type="text"
+                          value={newPhaseAssignedLinkTitle}
+                          onChange={(e) => setNewPhaseAssignedLinkTitle(e.target.value)}
+                          placeholder="Link title"
+                          className="w-28 px-2 py-1 rounded bg-[#0f111a] border border-white/10 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {showNewPhaseNoteInput && (
                   <input
@@ -3182,7 +3467,11 @@ export default function GoalTracker({
                             const hasStepNote = Boolean(sub.carryoverNote && sub.carryoverNote.trim().length > 0);
 
                             return (
-                              <div key={sub.id} className="group bg-black/20 hover:bg-black/35 px-2 py-1.5 rounded-lg border border-white/5 transition space-y-1">
+                              <div key={sub.id} className={`group px-2 py-1.5 rounded-lg border transition space-y-1 ${
+                                sub.stepType === "self_test"
+                                  ? "bg-violet-950/25 hover:bg-violet-950/40 border-violet-500/30"
+                                  : "bg-black/20 hover:bg-black/35 border-white/5"
+                              }`}>
                                 <div className="flex items-center justify-between gap-1">
                                   <div className="flex items-center gap-1.5 flex-1 min-w-0">
                                     <span className="text-[9px] font-mono text-slate-500 w-3 text-center shrink-0">
@@ -3199,6 +3488,12 @@ export default function GoalTracker({
                                       }}
                                       className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer shrink-0"
                                     />
+
+                                    {sub.stepType === "self_test" && (
+                                      <span className="px-1.5 py-0.2 rounded text-[8px] font-bold uppercase tracking-wider bg-violet-500/25 text-violet-200 border border-violet-400/40 shrink-0">
+                                        Self Test
+                                      </span>
+                                    )}
 
                                     {isEditing ? (
                                       <form
@@ -3405,6 +3700,22 @@ export default function GoalTracker({
                                     )}
                                   </div>
                                 ) : null}
+
+                                {sub.stepType === "self_test" && (sub.assignedLinkTitle || sub.assignedLinkUrl || typeof sub.lastTestScore === "number") && (
+                                  <div className="ml-4 flex items-center gap-2 flex-wrap text-[9px] text-violet-200/90">
+                                    {(sub.assignedLinkTitle || sub.assignedLinkUrl) && (
+                                      <span className="inline-flex items-center gap-1 text-cyan-300 truncate max-w-[180px]">
+                                        <Link2 className="w-2.5 h-2.5 shrink-0" />
+                                        <span className="truncate">{sub.assignedLinkTitle || sub.assignedLinkUrl}</span>
+                                      </span>
+                                    )}
+                                    {typeof sub.lastTestScore === "number" && (
+                                      <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold">
+                                        Last: {sub.lastTestScore}%
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -3413,96 +3724,157 @@ export default function GoalTracker({
                         <p className="text-[9px] text-slate-500 italic">No milestones defined yet. Click "AI Steps" or add one below.</p>
                       )}
 
-                      <form 
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const form = e.currentTarget;
-                          const input = form.elements.namedItem("subtaskTitle") as HTMLInputElement;
-                          const durInput = form.elements.namedItem("subtaskMins") as HTMLInputElement;
-                          const title = input.value.trim();
-                          if (!title) return;
-                          const mins = parseInt(durInput?.value) || 15;
-                          const stepNoteText = (newSubtaskNoteForGoal[g.id] || "").trim();
-                          
-                          const newSub: SubTask = {
-                            id: `sub_${Date.now()}`,
-                            title,
-                            durationMinutes: mins,
-                            completed: false,
-                            ...(stepNoteText ? {
-                              carryoverNote: stepNoteText,
-                              carryoverNoteDate: new Date().toISOString()
-                            } : {})
-                          };
-                          const updatedSubtasks = [...(g.subtasks || []), newSub];
-                          const updatedSubSteps: SessionSubStep[] = [
-                            ...(g.subSteps || []),
-                            {
-                              id: newSub.id,
-                              title: newSub.title,
-                              durationMinutes: mins,
-                              completed: false,
-                              carryoverNote: newSub.carryoverNote,
-                              carryoverNoteDate: newSub.carryoverNoteDate
-                            }
-                          ];
-                          onEditGoal(g.id, { subtasks: updatedSubtasks, subSteps: updatedSubSteps });
-                          input.value = "";
-                          if (durInput) durInput.value = "15";
-                          setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: "" }));
-                          setShowNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: false }));
-                        }}
-                        className="space-y-1"
-                      >
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="text"
-                            name="subtaskTitle"
-                            placeholder="Add milestone..."
-                            className="flex-1 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: !prev[g.id] }))}
-                            className={`p-1 rounded border transition cursor-pointer shrink-0 ${
-                              showNewSubtaskNoteForGoal[g.id] || (newSubtaskNoteForGoal[g.id] || "").trim()
-                                ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
-                                : "bg-[#0f111a] text-slate-400 hover:text-amber-300 border-white/5"
-                            }`}
-                            title="Attach a carryover note for this new step"
+                      {(() => {
+                        const isSelfTestNew = Boolean(newSubtaskIsSelfTestForGoal[g.id]);
+                        const goalUrlOptions = [
+                          ...(g.knowledgeHub?.notes?.filter(n => n.category === "url" && n.url) || []).map(n => ({
+                            id: n.id,
+                            title: n.title,
+                            url: n.url!,
+                            requiresLogin: Boolean(n.requiresLogin)
+                          })),
+                          ...(g.resourceLink ? [{ id: "goal_portal", title: g.resourceLabel || "Course Portal", url: g.resourceLink, requiresLogin: true }] : [])
+                        ];
+                        return (
+                          <form 
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const form = e.currentTarget;
+                              const input = form.elements.namedItem("subtaskTitle") as HTMLInputElement;
+                              const durInput = form.elements.namedItem("subtaskMins") as HTMLInputElement;
+                              const rawTitle = input.value.trim();
+                              const title = rawTitle || (isSelfTestNew ? "Self Test: Material Quiz & Link Review" : "");
+                              if (!title) return;
+                              const mins = Math.max(1, parseInt(durInput?.value) || (isSelfTestNew ? 10 : 15));
+                              const stepNoteText = (newSubtaskNoteForGoal[g.id] || "").trim();
+                              const selectedLinkId = newSubtaskLinkForGoal[g.id] || "";
+                              const pickedLink = selectedLinkId ? goalUrlOptions.find(l => l.id === selectedLinkId) : undefined;
+                              
+                              const newSub: SubTask = {
+                                id: `sub_${Date.now()}`,
+                                title,
+                                durationMinutes: mins,
+                                completed: false,
+                                ...(isSelfTestNew ? { stepType: "self_test" as GoalStepType } : {}),
+                                ...(isSelfTestNew && pickedLink ? {
+                                  assignedLinkNoteId: pickedLink.id,
+                                  assignedLinkUrl: pickedLink.url,
+                                  assignedLinkTitle: pickedLink.title
+                                } : {}),
+                                ...(stepNoteText ? {
+                                  carryoverNote: stepNoteText,
+                                  carryoverNoteDate: new Date().toISOString()
+                                } : {})
+                              };
+                              const updatedSubtasks = [...(g.subtasks || []), newSub];
+                              const updatedSubSteps: SessionSubStep[] = [
+                                ...(g.subSteps || []),
+                                {
+                                  id: newSub.id,
+                                  title: newSub.title,
+                                  durationMinutes: mins,
+                                  completed: false,
+                                  stepType: newSub.stepType,
+                                  assignedLinkNoteId: newSub.assignedLinkNoteId,
+                                  assignedLinkUrl: newSub.assignedLinkUrl,
+                                  assignedLinkTitle: newSub.assignedLinkTitle,
+                                  carryoverNote: newSub.carryoverNote,
+                                  carryoverNoteDate: newSub.carryoverNoteDate
+                                }
+                              ];
+                              onEditGoal(g.id, { subtasks: updatedSubtasks, subSteps: updatedSubSteps });
+                              input.value = "";
+                              if (durInput) durInput.value = "15";
+                              setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: "" }));
+                              setShowNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: false }));
+                              setNewSubtaskIsSelfTestForGoal(prev => ({ ...prev, [g.id]: false }));
+                              setNewSubtaskLinkForGoal(prev => ({ ...prev, [g.id]: "" }));
+                            }}
+                            className="space-y-1"
                           >
-                            <StickyNote className="w-3 h-3" />
-                          </button>
-                          <div className="flex items-center bg-[#0f111a] border border-white/5 rounded px-1.5 py-1">
-                            <input
-                              type="number"
-                              name="subtaskMins"
-                              defaultValue={15}
-                              min={1}
-                              max={180}
-                              className="w-8 text-[10px] text-center text-white bg-transparent focus:outline-none font-mono font-bold"
-                              title="Minutes for this step"
-                            />
-                            <span className="text-[9px] text-slate-400 font-mono">m</span>
-                          </div>
-                          <button
-                            type="submit"
-                            className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white p-1 rounded transition text-[10px] font-bold shrink-0 cursor-pointer"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setNewSubtaskIsSelfTestForGoal(prev => ({ ...prev, [g.id]: !prev[g.id] }))}
+                                className={`px-1.5 py-1 rounded border text-[9px] font-bold transition cursor-pointer shrink-0 flex items-center gap-0.5 ${
+                                  isSelfTestNew
+                                    ? "bg-violet-600/35 text-violet-200 border-violet-400/50"
+                                    : "bg-[#0f111a] text-slate-400 hover:text-violet-300 border-white/5"
+                                }`}
+                                title="Toggle to add a Self Test step (MCQs + login link review)"
+                              >
+                                <ClipboardCheck className="w-2.5 h-2.5" />
+                                <span>{isSelfTestNew ? "Test" : "Step"}</span>
+                              </button>
+                              <input
+                                type="text"
+                                name="subtaskTitle"
+                                placeholder={isSelfTestNew ? "Self Test (MCQs + link review)..." : "Add milestone..."}
+                                className="flex-1 min-w-0 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: !prev[g.id] }))}
+                                className={`p-1 rounded border transition cursor-pointer shrink-0 ${
+                                  showNewSubtaskNoteForGoal[g.id] || (newSubtaskNoteForGoal[g.id] || "").trim()
+                                    ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                                    : "bg-[#0f111a] text-slate-400 hover:text-amber-300 border-white/5"
+                                }`}
+                                title="Attach a carryover note for this new step"
+                              >
+                                <StickyNote className="w-3 h-3" />
+                              </button>
+                              <div className="flex items-center bg-[#0f111a] border border-white/5 rounded px-1.5 py-1">
+                                <input
+                                  type="number"
+                                  name="subtaskMins"
+                                  defaultValue={15}
+                                  min={1}
+                                  max={180}
+                                  className="w-8 text-[10px] text-center text-white bg-transparent focus:outline-none font-mono font-bold"
+                                  title="Minutes for this step"
+                                />
+                                <span className="text-[9px] text-slate-400 font-mono">m</span>
+                              </div>
+                              <button
+                                type="submit"
+                                className={`p-1 rounded transition text-[10px] font-bold shrink-0 cursor-pointer ${
+                                  isSelfTestNew
+                                    ? "bg-violet-600/35 hover:bg-violet-600 text-violet-200 hover:text-white"
+                                    : "bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white"
+                                }`}
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
 
-                        {showNewSubtaskNoteForGoal[g.id] && (
-                          <input
-                            type="text"
-                            value={newSubtaskNoteForGoal[g.id] || ""}
-                            onChange={(e) => setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: e.target.value }))}
-                            placeholder="Optional carryover note for this step (where to start next)..."
-                            className="w-full bg-[#0f111a] text-[10px] px-2 py-1 border border-amber-500/35 rounded text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
-                          />
-                        )}
-                      </form>
+                            {isSelfTestNew && goalUrlOptions.length > 0 && (
+                              <select
+                                value={newSubtaskLinkForGoal[g.id] || ""}
+                                onChange={(e) => setNewSubtaskLinkForGoal(prev => ({ ...prev, [g.id]: e.target.value }))}
+                                className="w-full bg-[#0f111a] text-[10px] px-2 py-1 border border-violet-500/35 rounded text-cyan-200 focus:outline-none focus:border-cyan-400"
+                              >
+                                <option value="">Review any pending login-required links + MCQs</option>
+                                {goalUrlOptions.map(l => (
+                                  <option key={l.id} value={l.id}>
+                                    {l.requiresLogin ? "🔒 " : "🔗 "}Review: {l.title}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+
+                            {showNewSubtaskNoteForGoal[g.id] && (
+                              <input
+                                type="text"
+                                value={newSubtaskNoteForGoal[g.id] || ""}
+                                onChange={(e) => setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: e.target.value }))}
+                                placeholder="Optional carryover note for this step (where to start next)..."
+                                className="w-full bg-[#0f111a] text-[10px] px-2 py-1 border border-amber-500/35 rounded text-amber-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                              />
+                            )}
+                          </form>
+                        );
+                      })()}
                     </div>
 
                     {/* Next Session Carryover Prep Note Section */}

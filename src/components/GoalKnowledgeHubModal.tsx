@@ -28,21 +28,31 @@ import {
   X,
   Target,
   RefreshCw,
-  Clock
+  Clock,
+  Link2,
+  ExternalLink,
+  Loader2,
+  Upload,
+  Video,
+  Camera,
+  ImagePlus
 } from "lucide-react";
+import { captureScreenScreenshot, extractImagesFromClipboardEvent, readImageFileAsDataUrl } from "../lib/screenshotCapture";
 
 interface GoalKnowledgeHubModalProps {
   goal: Goal;
   isOpen: boolean;
   onClose: () => void;
   onUpdateKnowledgeHub: (goalId: string, updatedHub: GoalKnowledgeHub) => void;
+  initialTab?: "notes" | "tester" | "flashcards" | "overview";
 }
 
 export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   goal,
   isOpen,
   onClose,
-  onUpdateKnowledgeHub
+  onUpdateKnowledgeHub,
+  initialTab = "notes"
 }) => {
   if (!isOpen) return null;
 
@@ -54,17 +64,54 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     overallMasteryScore: 0
   };
 
-  const [activeTab, setActiveTab] = useState<"notes" | "tester" | "flashcards" | "overview">("notes");
+  const [activeTab, setActiveTab] = useState<"notes" | "tester" | "flashcards" | "overview">(initialTab);
   const [selectedNoteCategory, setSelectedNoteCategory] = useState<string>("all");
+
+  React.useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
   
   // Note creation modal/form state
   const [isAddingNote, setIsAddingNote] = useState(false);
+  const [isUploadingInNotes, setIsUploadingInNotes] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteCategory, setNewNoteCategory] = useState<StudyArtifactNote["category"]>("concept");
   const [newNoteContent, setNewNoteContent] = useState("");
+  const [newNoteQuestion, setNewNoteQuestion] = useState("");
+  const [newNoteAnswer, setNewNoteAnswer] = useState("");
+  const [newNoteExplanation, setNewNoteExplanation] = useState("");
+  const [newNoteTerm, setNewNoteTerm] = useState("");
+  const [newNoteDefinition, setNewNoteDefinition] = useState("");
+  const [newNoteUrl, setNewNoteUrl] = useState("");
+  const [newNoteUrlContext, setNewNoteUrlContext] = useState("");
+  const [newNoteRequiresLogin, setNewNoteRequiresLogin] = useState(false);
+  const [extractOnHubUrlSave, setExtractOnHubUrlSave] = useState(true);
   const [newNoteKeyTerms, setNewNoteKeyTerms] = useState("");
   const [newNoteChapter, setNewNoteChapter] = useState("");
+  const [newNoteScreenshots, setNewNoteScreenshots] = useState<string[]>([]);
+  const [isCapturingHubScreenshot, setIsCapturingHubScreenshot] = useState(false);
+  const [hubScreenshotNotice, setHubScreenshotNotice] = useState<string | null>(null);
+  const [lightboxScreenshotUrl, setLightboxScreenshotUrl] = useState<string | null>(null);
+  const hubScreenshotFileInputRef = React.useRef<HTMLInputElement>(null);
   const [copiedNoteId, setCopiedNoteId] = useState<string | null>(null);
+  const [hiddenQaNoteAnswers, setHiddenQaNoteAnswers] = useState<Record<string, boolean>>({});
+
+  // URL & Video Upload Quiz Tester state
+  const [sourceTesterMode, setSourceTesterMode] = useState<"upload" | "url">("upload");
+  const [testerUrlInput, setTesterUrlInput] = useState("");
+  const [testerUrlNotesInput, setTesterUrlNotesInput] = useState("");
+  const [isExtractingUrl, setIsExtractingUrl] = useState(false);
+  const [loginPromptLink, setLoginPromptLink] = useState<{ title: string; url: string; note?: string } | null>(null);
+
+  // Downloaded Video & Transcript Upload state
+  const [uploadedVideoFile, setUploadedVideoFile] = useState<File | null>(null);
+  const [uploadedTranscriptFile, setUploadedTranscriptFile] = useState<File | null>(null);
+  const [uploadedLessonTitle, setUploadedLessonTitle] = useState("");
+  const [uploadedTranscriptText, setUploadedTranscriptText] = useState("");
+  const [isExtractingUpload, setIsExtractingUpload] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Active Test Runner state
   const [activeTest, setActiveTest] = useState<KnowledgeTestArtifact | null>(null);
@@ -195,37 +242,411 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     }
   };
 
+  const isSafeHttpUrl = (raw?: string) => {
+    if (!raw) return false;
+    try {
+      const parsed = new URL(raw.trim());
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  };
+
+  const isLikelyLoginProtectedUrl = (raw?: string) => {
+    if (!raw) return false;
+    return /(?:coursera\.org|udemy\.com|edx\.org|pluralsight\.com|linkedin\.com\/learning|skillshare\.com|codecademy\.com|datacamp\.com|frontendmasters\.com|egghead\.io|laracasts\.com|oreilly\.com)/i.test(raw);
+  };
+
+  const loginStudyLinks = currentHub.notes.filter(
+    n => n.category === "url" && n.url && isSafeHttpUrl(n.url) && n.requiresLogin
+  );
+
+  const handleExtractFromUrl = async (params: {
+    url: string;
+    userNotes?: string;
+    mode?: "both" | "notes" | "test";
+    existingNoteId?: string;
+    hubOverride?: GoalKnowledgeHub;
+    startGeneratedTest?: boolean;
+    requiresLogin?: boolean;
+    title?: string;
+  }) => {
+    const targetUrl = params.url.trim();
+    if (!isSafeHttpUrl(targetUrl)) {
+      setAiNotice("Please provide a valid http:// or https:// URL.");
+      setTimeout(() => setAiNotice(null), 4000);
+      return;
+    }
+
+    const trimmedContext = (params.userNotes || "").trim();
+    const knownLoginRequired = Boolean(params.requiresLogin || isLikelyLoginProtectedUrl(targetUrl));
+
+    if (knownLoginRequired && !trimmedContext) {
+      let hostLabel = "this link";
+      try {
+        hostLabel = params.title || new URL(targetUrl).hostname.replace(/^www\./, "");
+      } catch {}
+      const reminderNote =
+        "This link requires signing in, so notes or quizzes cannot be auto-extracted from the private video. Go study the lesson directly in your browser (or paste your takeaways/transcript below to generate a quiz).";
+      setLoginPromptLink({
+        title: hostLabel,
+        url: targetUrl,
+        note: reminderNote
+      });
+      if (params.startGeneratedTest) {
+        setActiveTab("tester");
+      }
+      setAiNotice(`Go study "${hostLabel}" directly — login is required to access that lesson.`);
+      setTimeout(() => setAiNotice(null), 6000);
+      return;
+    }
+
+    setLoginPromptLink(null);
+    setIsExtractingUrl(true);
+    setAiNotice(
+      params.mode === "test"
+        ? "Analyzing URL content and authoring review quiz questions..."
+        : "Extracting study notes, flashcards, and quiz questions from URL..."
+    );
+
+    try {
+      const res = await fetch("/api/coach/extract-from-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: targetUrl,
+          goalTitle: goal.name,
+          goalCategory: goal.category || "General",
+          chapterTitle: newNoteChapter.trim() || (goal.chapters && goal.chapters[0]?.title) || "",
+          userNotes: trimmedContext,
+          mode: params.mode || "both"
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setAiNotice(data?.error || "Could not extract study material from that URL.");
+        setTimeout(() => setAiNotice(null), 5000);
+        return;
+      }
+
+      const workingHub = params.hubOverride || currentHub;
+      const extractedNotes: StudyArtifactNote[] =
+        params.mode === "test" ? [] : (Array.isArray(data.notes) ? data.notes : []);
+      const extractedCards: FlashcardItem[] =
+        params.mode === "test" ? [] : (Array.isArray(data.flashcards) ? data.flashcards : []);
+      const newTest: KnowledgeTestArtifact | null = data.test || null;
+      const isRestricted =
+        data.accessStatus === "restricted" ||
+        (data.accessStatus === "partial_public" && !newTest && extractedNotes.length === 0);
+
+      const updatedExistingNotes = workingHub.notes.map(n => {
+        const isMatch = params.existingNoteId ? n.id === params.existingNoteId : n.url === targetUrl;
+        if (!isMatch) return n;
+        return {
+          ...n,
+          title: data.extractedTitle && !newNoteTitle.trim() ? data.extractedTitle : n.title,
+          requiresLogin: isRestricted ? true : n.requiresLogin,
+          urlAccessNote: isRestricted ? (data.accessNote || "Login required — study this link directly.") : n.urlAccessNote
+        };
+      });
+
+      saveHub({
+        ...workingHub,
+        notes: [...extractedNotes, ...updatedExistingNotes],
+        flashcards: [...extractedCards, ...workingHub.flashcards],
+        tests: newTest ? [newTest, ...workingHub.tests] : workingHub.tests
+      });
+
+      if (isRestricted) {
+        setLoginPromptLink({
+          title: data.extractedTitle || params.title || targetUrl,
+          url: targetUrl,
+          note: data.accessNote || "This lesson requires signing in. Go study it directly in your browser."
+        });
+      }
+
+      if (params.startGeneratedTest && newTest) {
+        setActiveTab("tester");
+        startTest(newTest);
+      }
+
+      setAiNotice(data.accessNote || "Study material extracted from URL!");
+      setTimeout(() => setAiNotice(null), 6000);
+    } catch (err) {
+      console.error("Failed to extract from URL", err);
+      setAiNotice("Could not extract from URL. Please check the link and try again.");
+      setTimeout(() => setAiNotice(null), 4500);
+    } finally {
+      setIsExtractingUrl(false);
+    }
+  };
+
+  const handleExtractFromUpload = async (options?: {
+    mode?: "both" | "notes" | "test";
+    startGeneratedTest?: boolean;
+  }) => {
+    if (!uploadedVideoFile && !uploadedTranscriptFile && !uploadedTranscriptText.trim()) {
+      setUploadError("Select a downloaded video/audio file, upload a transcript file, or paste your lesson text.");
+      return;
+    }
+
+    setUploadError(null);
+    setIsExtractingUpload(true);
+    setAiNotice(
+      uploadedVideoFile
+        ? `Analyzing "${uploadedVideoFile.name}"${uploadedTranscriptText.trim() || uploadedTranscriptFile ? " + transcript" : ""}... Larger videos may take 30–90 seconds.`
+        : "Extracting study notes, flashcards, and quiz questions from your lecture text..."
+    );
+
+    try {
+      const formData = new FormData();
+      if (uploadedVideoFile) {
+        formData.append("video", uploadedVideoFile);
+      }
+      if (uploadedTranscriptFile) {
+        formData.append("transcriptFile", uploadedTranscriptFile);
+      }
+      if (uploadedTranscriptText.trim()) {
+        formData.append("transcriptText", uploadedTranscriptText.trim());
+      }
+      if (uploadedLessonTitle.trim()) {
+        formData.append("lessonTitle", uploadedLessonTitle.trim());
+      }
+      formData.append("goalTitle", goal.name);
+      formData.append("goalCategory", goal.category || "General");
+      formData.append(
+        "chapterTitle",
+        newNoteChapter.trim() || (goal.chapters && goal.chapters.find(c => !c.completed)?.title) || (goal.chapters && goal.chapters[0]?.title) || ""
+      );
+      formData.append("mode", options?.mode || "both");
+      formData.append("questionCount", "5");
+
+      const res = await fetch("/api/coach/extract-from-upload", {
+        method: "POST",
+        body: formData
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        const errMsg = data?.error || "Could not extract study materials from that video or transcript.";
+        setUploadError(errMsg);
+        setAiNotice(errMsg);
+        setTimeout(() => setAiNotice(null), 5000);
+        return;
+      }
+
+      const mode = options?.mode || "both";
+      const extractedNotes: StudyArtifactNote[] =
+        mode === "test" ? [] : (Array.isArray(data.notes) ? data.notes : []);
+      const extractedCards: FlashcardItem[] =
+        mode === "test" ? [] : (Array.isArray(data.flashcards) ? data.flashcards : []);
+      const newTest: KnowledgeTestArtifact | null = data.test || null;
+
+      saveHub({
+        ...currentHub,
+        notes: [...extractedNotes, ...currentHub.notes],
+        flashcards: [...extractedCards, ...currentHub.flashcards],
+        tests: newTest ? [newTest, ...currentHub.tests] : currentHub.tests
+      });
+
+      setUploadedVideoFile(null);
+      setUploadedTranscriptFile(null);
+      setUploadedLessonTitle("");
+      setUploadedTranscriptText("");
+      setIsUploadingInNotes(false);
+
+      if (options?.startGeneratedTest && newTest) {
+        setActiveTab("tester");
+        startTest(newTest);
+      }
+
+      const parts: string[] = [];
+      if (extractedNotes.length > 0) parts.push(`${extractedNotes.length} notes`);
+      if (extractedCards.length > 0) parts.push(`${extractedCards.length} flashcards`);
+      if (newTest) parts.push(`${newTest.questions.length} quiz questions`);
+      setAiNotice(`Ready! Created ${parts.join(", ")} from "${data.extractedTitle || "your lecture"}".`);
+      setTimeout(() => setAiNotice(null), 6000);
+    } catch (err) {
+      console.error("Failed to extract from uploaded lecture:", err);
+      const msg = "Upload failed or timed out. Check your file size (under 250 MB) or include the transcript text.";
+      setUploadError(msg);
+      setAiNotice(msg);
+      setTimeout(() => setAiNotice(null), 5000);
+    } finally {
+      setIsExtractingUpload(false);
+    }
+  };
+
   // 3. Note Management
-  const handleCreateManualNote = (e: React.FormEvent) => {
+  const formatCategoryLabel = (cat: string) => {
+    if (cat === "qa") return "Question & Answer";
+    if (cat === "definition") return "Definition";
+    if (cat === "url") return "URL / Video";
+    if (cat === "all") return "All";
+    return cat.replace("_", " ");
+  };
+
+  const handleTakeHubScreenshot = async () => {
+    if (isCapturingHubScreenshot) return;
+    if (newNoteScreenshots.length >= 4) {
+      setHubScreenshotNotice("Maximum 4 screenshots per note.");
+      setTimeout(() => setHubScreenshotNotice(null), 3500);
+      return;
+    }
+    setIsCapturingHubScreenshot(true);
+    setHubScreenshotNotice(null);
+    const result = await captureScreenScreenshot();
+    setIsCapturingHubScreenshot(false);
+    if (result.dataUrl) {
+      setNewNoteScreenshots(prev => [...prev, result.dataUrl!].slice(0, 4));
+    } else if (result.error) {
+      setHubScreenshotNotice(result.error);
+      setTimeout(() => setHubScreenshotNotice(null), 6000);
+    }
+  };
+
+  const handleUploadHubScreenshotFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setHubScreenshotNotice(null);
+    const remaining = Math.max(0, 4 - newNoteScreenshots.length);
+    const added: string[] = [];
+    for (let i = 0; i < Math.min(files.length, remaining); i += 1) {
+      try {
+        const dataUrl = await readImageFileAsDataUrl(files[i]);
+        added.push(dataUrl);
+      } catch {
+        // Ignore non-image files
+      }
+    }
+    if (added.length > 0) {
+      setNewNoteScreenshots(prev => [...prev, ...added].slice(0, 4));
+    }
+  };
+
+  const handleHubFormPaste = async (e: React.ClipboardEvent) => {
+    const pasted = await extractImagesFromClipboardEvent(e);
+    if (pasted.length > 0) {
+      e.preventDefault();
+      setHubScreenshotNotice(null);
+      setNewNoteScreenshots(prev => [...prev, ...pasted].slice(0, 4));
+    }
+  };
+
+  const handleCreateManualNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newNoteTitle.trim() || !newNoteContent.trim()) return;
+    const isQA = newNoteCategory === "qa";
+    const isDefinition = newNoteCategory === "definition";
+    const isUrl = newNoteCategory === "url";
+    const hasScreenshots = newNoteScreenshots.length > 0;
+    if (isQA) {
+      if ((!newNoteQuestion.trim() || !newNoteAnswer.trim()) && !hasScreenshots) return;
+    } else if (isDefinition) {
+      if ((!newNoteTerm.trim() || !newNoteDefinition.trim()) && !hasScreenshots) return;
+    } else if (isUrl) {
+      if (!newNoteUrl.trim() || !isSafeHttpUrl(newNoteUrl)) {
+        setAiNotice("Please enter a valid http:// or https:// URL.");
+        setTimeout(() => setAiNotice(null), 4000);
+        return;
+      }
+    } else if ((!newNoteTitle.trim() || !newNoteContent.trim()) && !hasScreenshots) {
+      return;
+    }
 
     const terms = newNoteKeyTerms
       .split(",")
       .map(t => t.trim())
       .filter(Boolean);
 
+    const trimmedQuestion = newNoteQuestion.trim() || (isQA && hasScreenshots ? "Screenshot Question" : "");
+    const trimmedAnswer = newNoteAnswer.trim() || (isQA && hasScreenshots ? "See attached screenshot" : "");
+    const trimmedExplanation = newNoteExplanation.trim();
+    const trimmedTerm = newNoteTerm.trim() || (isDefinition && hasScreenshots ? "Screenshot Term" : "");
+    const trimmedDefinition = newNoteDefinition.trim() || (isDefinition && hasScreenshots ? "See attached screenshot" : "");
+    const trimmedUrl = newNoteUrl.trim();
+    const trimmedUrlContext = newNoteUrlContext.trim();
+
+    let defaultUrlTitle = trimmedUrl;
+    if (isUrl) {
+      try {
+        defaultUrlTitle = new URL(trimmedUrl).hostname.replace(/^www\./, "");
+      } catch {}
+    }
+
+    const markLoginRequired = isUrl && (newNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
+
+    const noteId = "note_" + Date.now();
     const note: StudyArtifactNote = {
-      id: "note_" + Date.now(),
-      title: newNoteTitle.trim(),
+      id: noteId,
+      title: isQA
+        ? trimmedQuestion
+        : isDefinition
+        ? trimmedTerm
+        : isUrl
+        ? (newNoteTitle.trim() || defaultUrlTitle)
+        : (newNoteTitle.trim() || "Screenshot Note"),
       category: newNoteCategory,
-      content: newNoteContent.trim(),
+      content: isQA
+        ? `Q: ${trimmedQuestion}\n\nA: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
+        : isDefinition
+        ? `${trimmedTerm}: ${trimmedDefinition}`
+        : isUrl
+        ? (trimmedUrlContext ? `${trimmedUrl}\n\n${trimmedUrlContext}` : trimmedUrl)
+        : (newNoteContent.trim() || "Attached screenshot"),
+      question: isQA ? trimmedQuestion : undefined,
+      answer: isQA ? trimmedAnswer : undefined,
+      explanation: isQA && trimmedExplanation ? trimmedExplanation : undefined,
+      term: isDefinition ? trimmedTerm : undefined,
+      definition: isDefinition ? trimmedDefinition : undefined,
+      url: isUrl ? trimmedUrl : undefined,
+      urlNotes: isUrl && trimmedUrlContext ? trimmedUrlContext : undefined,
+      screenshots: hasScreenshots ? [...newNoteScreenshots] : undefined,
+      requiresLogin: isUrl ? markLoginRequired : undefined,
+      urlAccessNote: markLoginRequired && !trimmedUrlContext
+        ? "This link requires signing in. Go study it directly in your browser."
+        : undefined,
       chapterTitle: newNoteChapter.trim() || undefined,
       keyTerms: terms.length > 0 ? terms : undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
-    saveHub({
+    const nextHub: GoalKnowledgeHub = {
       ...currentHub,
       notes: [note, ...currentHub.notes]
-    });
+    };
+    saveHub(nextHub);
 
     setNewNoteTitle("");
     setNewNoteContent("");
+    setNewNoteQuestion("");
+    setNewNoteAnswer("");
+    setNewNoteExplanation("");
+    setNewNoteTerm("");
+    setNewNoteDefinition("");
+    setNewNoteUrl("");
+    setNewNoteUrlContext("");
+    setNewNoteRequiresLogin(false);
     setNewNoteKeyTerms("");
     setNewNoteChapter("");
+    setNewNoteScreenshots([]);
+    setHubScreenshotNotice(null);
     setIsAddingNote(false);
+
+    if (isUrl && extractOnHubUrlSave && (!markLoginRequired || trimmedUrlContext.length > 0)) {
+      await handleExtractFromUrl({
+        url: trimmedUrl,
+        userNotes: trimmedUrlContext,
+        mode: "both",
+        existingNoteId: noteId,
+        hubOverride: nextHub,
+        requiresLogin: markLoginRequired,
+        title: note.title
+      });
+    } else if (isUrl && markLoginRequired) {
+      setAiNotice("Link saved! I'll remind you to go study this link when studying, reviewing, or testing.");
+      setTimeout(() => setAiNotice(null), 5000);
+    }
   };
 
   const handleDeleteNote = (noteId: string) => {
@@ -235,8 +656,46 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     });
   };
 
+  const handleToggleLinkAssignment = (noteId: string) => {
+    const nowIso = new Date().toISOString();
+    const updatedNotes = currentHub.notes.map(n => {
+      if (n.id !== noteId) return n;
+      const nextDone = !n.reviewCompleted;
+      return {
+        ...n,
+        reviewCompleted: nextDone,
+        lastStudiedAt: nextDone ? nowIso : n.lastStudiedAt,
+        studyCount: nextDone ? (n.studyCount || 0) + 1 : n.studyCount,
+        updatedAt: nowIso
+      };
+    });
+    saveHub({
+      ...currentHub,
+      notes: updatedNotes
+    });
+  };
+
+  const handleResetAllLinkAssignments = () => {
+    const nowIso = new Date().toISOString();
+    saveHub({
+      ...currentHub,
+      notes: currentHub.notes.map(n =>
+        n.category === "url" && n.requiresLogin
+          ? { ...n, reviewCompleted: false, updatedAt: nowIso }
+          : n
+      )
+    });
+  };
+
   const handleCopyNoteContent = (note: StudyArtifactNote) => {
-    navigator.clipboard.writeText(`${note.title}\n\n${note.content}`);
+    const copyText = note.question && note.answer
+      ? `${note.title && note.title !== note.question ? `${note.title}\n\n` : ""}Q: ${note.question}\n\nA: ${note.answer}${note.explanation ? `\n\nExplanation: ${note.explanation}` : ""}`
+      : note.term && note.definition
+      ? `${note.title && note.title !== note.term ? `${note.title}\n\n` : ""}${note.term}\n${note.definition}`
+      : note.url
+      ? `${note.title}\n${note.url}${note.urlNotes ? `\n\n${note.urlNotes}` : ""}`
+      : `${note.title}\n\n${note.content}`;
+    navigator.clipboard.writeText(copyText);
     setCopiedNoteId(note.id);
     setTimeout(() => setCopiedNoteId(null), 2000);
   };
@@ -486,7 +945,25 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                   <span>{isGeneratingNotes ? "Generating..." : "AI Generate Guide"}</span>
                 </button>
                 <button
-                  onClick={() => setIsAddingNote(!isAddingNote)}
+                  type="button"
+                  onClick={() => {
+                    setIsUploadingInNotes(!isUploadingInNotes);
+                    setIsAddingNote(false);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-all cursor-pointer ${
+                    isUploadingInNotes
+                      ? "bg-cyan-600/30 border-cyan-400 text-white"
+                      : "bg-cyan-600/15 hover:bg-cyan-600/25 border-cyan-500/35 text-cyan-200"
+                  }`}
+                >
+                  <Upload className="w-3.5 h-3.5 text-cyan-300" />
+                  <span>Upload Video / Text</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setIsAddingNote(!isAddingNote);
+                    setIsUploadingInNotes(false);
+                  }}
                   className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-medium text-slate-200 border border-white/10 flex items-center gap-1.5 transition-all"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -524,11 +1001,138 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
           {/* TAB 1: STUDY NOTES & ARTIFACTS */}
           {activeTab === "notes" && (
             <div className="space-y-6">
-              
+              {/* Upload Downloaded Video & Transcript Panel */}
+              {isUploadingInNotes && (
+                <div
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.code === "Enter")) {
+                      e.preventDefault();
+                      if (!isExtractingUpload && (uploadedVideoFile || uploadedTranscriptFile || uploadedTranscriptText.trim())) {
+                        void handleExtractFromUpload({ mode: "both", startGeneratedTest: false });
+                      }
+                    }
+                  }}
+                  className="p-5 rounded-xl bg-[#16192a] border border-cyan-700/45 shadow-xl space-y-4 animate-fadeIn"
+                >
+                  <div className="flex items-center justify-between border-b border-cyan-900/30 pb-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <Video className="w-4 h-4 text-cyan-400" />
+                        Upload Downloaded Lecture Video &amp; Transcript Text
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Upload a downloaded Coursera/course video (.mp4, .mov, .webm) and optionally attach a subtitle file (.vtt, .srt, .txt) or paste text to generate notes, flashcards &amp; a quiz.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsUploadingInNotes(false)}
+                      className="text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {uploadError && (
+                    <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-500/40 text-xs text-rose-200">
+                      {uploadError}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <label className="block p-3 rounded-lg bg-slate-900/80 border border-dashed border-cyan-600/45 hover:border-cyan-400/70 transition cursor-pointer">
+                      <span className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5 mb-1">
+                        <Video className="w-3.5 h-3.5" />
+                        <span>Video / Audio File (Max 250 MB)</span>
+                      </span>
+                      <input
+                        type="file"
+                        accept="video/*,audio/*,.mp4,.mov,.webm,.mkv,.m4v,.mp3,.wav,.m4a"
+                        onChange={e => setUploadedVideoFile(e.target.files?.[0] || null)}
+                        className="sr-only"
+                      />
+                      <span className="text-xs text-slate-300 block truncate">
+                        {uploadedVideoFile
+                          ? `${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)`
+                          : "Choose downloaded video (MP4, MOV, WebM, MKV)..."}
+                      </span>
+                    </label>
+
+                    <label className="block p-3 rounded-lg bg-slate-900/80 border border-dashed border-slate-700 hover:border-violet-500/60 transition cursor-pointer">
+                      <span className="text-xs font-semibold text-violet-300 flex items-center gap-1.5 mb-1">
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Transcript / Subtitle File (Optional)</span>
+                      </span>
+                      <input
+                        type="file"
+                        accept=".txt,.vtt,.srt,.md,text/plain,text/vtt"
+                        onChange={e => setUploadedTranscriptFile(e.target.files?.[0] || null)}
+                        className="sr-only"
+                      />
+                      <span className="text-xs text-slate-300 block truncate">
+                        {uploadedTranscriptFile
+                          ? uploadedTranscriptFile.name
+                          : "Optional: attach .txt, .vtt, .srt, or .md..."}
+                      </span>
+                    </label>
+                  </div>
+
+                  <input
+                    type="text"
+                    placeholder="Lesson Title (Optional — e.g. Week 2: Subnetting & CIDR)"
+                    value={uploadedLessonTitle}
+                    onChange={e => setUploadedLessonTitle(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+
+                  <textarea
+                    rows={3}
+                    placeholder="Optional: paste transcript, captions, or extra lesson text here..."
+                    value={uploadedTranscriptText}
+                    onChange={e => setUploadedTranscriptText(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <span className="text-[11px] text-slate-400 mr-auto hidden sm:inline">
+                      Tip: Press Ctrl+Enter to save &amp; extract
+                    </span>
+                    <button
+                      type="button"
+                      disabled={isExtractingUpload || (!uploadedVideoFile && !uploadedTranscriptFile && !uploadedTranscriptText.trim())}
+                      onClick={() => handleExtractFromUpload({ mode: "both", startGeneratedTest: false })}
+                      title="Save Notes & Quiz (Ctrl + Enter)"
+                      className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {isExtractingUpload ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+                      <span>{isExtractingUpload ? "Analyzing Lecture..." : "Save Notes & Quiz"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isExtractingUpload || (!uploadedVideoFile && !uploadedTranscriptFile && !uploadedTranscriptText.trim())}
+                      onClick={() => handleExtractFromUpload({ mode: "both", startGeneratedTest: true })}
+                      className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {isExtractingUpload ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Brain className="w-3.5 h-3.5" />}
+                      <span>{isExtractingUpload ? "Building Quiz..." : "Extract & Test Me Now"}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Add Note Collapsible Form */}
               {isAddingNote && (
                 <form 
                   onSubmit={handleCreateManualNote}
+                  onPaste={handleHubFormPaste}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.code === "Enter")) {
+                      e.preventDefault();
+                      if (!isExtractingUrl) {
+                        e.currentTarget.requestSubmit();
+                      }
+                    }
+                  }}
                   className="p-5 rounded-xl bg-[#16192a] border border-violet-800/40 shadow-xl space-y-4 animate-fadeIn"
                 >
                   <div className="flex items-center justify-between border-b border-violet-900/30 pb-3">
@@ -546,23 +1150,38 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="md:col-span-2 space-y-1">
-                      <label className="text-xs font-medium text-slate-300">Artifact Title</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. DNS Resolution Flow & Troubleshooting Protocol"
-                        value={newNoteTitle}
-                        onChange={e => setNewNoteTitle(e.target.value)}
-                        required
-                        className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
-                      />
-                    </div>
+                    {newNoteCategory !== "qa" && newNoteCategory !== "definition" && (
+                      <div className="md:col-span-2 space-y-1">
+                        <label className="text-xs font-medium text-slate-300">
+                          {newNoteCategory === "url" ? "Resource Title (Optional)" : "Artifact Title"}
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={
+                            newNoteCategory === "url"
+                              ? "e.g. CompTIA Security+ DNS Lecture (auto-detected if blank)"
+                              : "e.g. DNS Resolution Flow & Troubleshooting Protocol"
+                          }
+                          value={newNoteTitle}
+                          onChange={e => setNewNoteTitle(e.target.value)}
+                          required={newNoteCategory !== "url" && newNoteScreenshots.length === 0}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                        />
+                      </div>
+                    )}
 
-                    <div className="space-y-1">
+                    <div className={`space-y-1 ${newNoteCategory === "qa" || newNoteCategory === "definition" ? "md:col-span-3" : ""}`}>
                       <label className="text-xs font-medium text-slate-300">Category Type</label>
                       <select
                         value={newNoteCategory}
-                        onChange={e => setNewNoteCategory(e.target.value as any)}
+                        onChange={e => {
+                          if (e.target.value === "video_upload") {
+                            setIsAddingNote(false);
+                            setIsUploadingInNotes(true);
+                            return;
+                          }
+                          setNewNoteCategory(e.target.value as StudyArtifactNote["category"]);
+                        }}
                         className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white focus:outline-none focus:border-violet-500"
                       >
                         <option value="concept">Concept Breakdown</option>
@@ -570,20 +1189,240 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <option value="code_snippet">Code Snippet / Commands</option>
                         <option value="summary">Chapter Summary</option>
                         <option value="formula">Formula / Algorithm</option>
+                        <option value="qa">Question &amp; Answer</option>
+                        <option value="definition">Definition</option>
+                        <option value="url">Video / Resource URL</option>
+                        <option value="video_upload">Upload Video / Text</option>
                       </select>
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-slate-300">Content (Markdown Supported)</label>
-                    <textarea
-                      rows={5}
-                      placeholder="Write structured notes, bullet points, key equations, or code syntax..."
-                      value={newNoteContent}
-                      onChange={e => setNewNoteContent(e.target.value)}
-                      required
-                      className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 font-mono text-xs"
-                    />
+                  {newNoteCategory === "qa" ? (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-amber-300 flex items-center gap-1.5">
+                          <HelpCircle className="w-3.5 h-3.5" />
+                          <span>Question</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="Write your study question..."
+                          value={newNoteQuestion}
+                          onChange={e => setNewNoteQuestion(e.target.value)}
+                          required={newNoteScreenshots.length === 0}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-amber-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-emerald-300 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Answer</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="Write the answer..."
+                          value={newNoteAnswer}
+                          onChange={e => setNewNoteAnswer(e.target.value)}
+                          required={newNoteScreenshots.length === 0}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-emerald-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 text-violet-400" />
+                          <span>Answer Explanation (Optional)</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="Optional: explain why this answer is correct..."
+                          value={newNoteExplanation}
+                          onChange={e => setNewNoteExplanation(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                        />
+                      </div>
+                    </div>
+                  ) : newNoteCategory === "definition" ? (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-sky-300 flex items-center gap-1.5">
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>Term / Concept</span>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Zero Trust Architecture"
+                          value={newNoteTerm}
+                          onChange={e => setNewNoteTerm(e.target.value)}
+                          required={newNoteScreenshots.length === 0}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-sky-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-emerald-300 flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5" />
+                          <span>Definition</span>
+                        </label>
+                        <textarea
+                          rows={4}
+                          placeholder="Write the clear definition and any important context..."
+                          value={newNoteDefinition}
+                          onChange={e => setNewNoteDefinition(e.target.value)}
+                          required={newNoteScreenshots.length === 0}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-emerald-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+                  ) : newNoteCategory === "url" ? (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-cyan-300 flex items-center gap-1.5">
+                          <Link2 className="w-3.5 h-3.5" />
+                          <span>Video or Resource URL</span>
+                        </label>
+                        <input
+                          type="url"
+                          placeholder="https://www.youtube.com/watch?v=..., Coursera, Udemy, or docs URL"
+                          value={newNoteUrl}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setNewNoteUrl(val);
+                            if (isLikelyLoginProtectedUrl(val)) {
+                              setNewNoteRequiresLogin(true);
+                            }
+                          }}
+                          required
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-cyan-700/40 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+
+                      <label className="flex items-center gap-2 text-xs text-amber-300 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={newNoteRequiresLogin}
+                          onChange={e => setNewNoteRequiresLogin(e.target.checked)}
+                          className="rounded border-amber-500 text-amber-500 focus:ring-amber-500"
+                        />
+                        <span>Requires login (remind me to go study this link when studying, reviewing, or testing)</span>
+                      </label>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-300">
+                          Lesson Context or Transcript (Optional)
+                        </label>
+                        <textarea
+                          rows={3}
+                          placeholder="Optional: paste key takeaways or transcript so I can extract notes & quiz questions for login-protected lessons."
+                          value={newNoteUrlContext}
+                          onChange={e => setNewNoteUrlContext(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+
+                      {(!newNoteRequiresLogin || newNoteUrlContext.trim().length > 0) && (
+                        <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={extractOnHubUrlSave}
+                            onChange={e => setExtractOnHubUrlSave(e.target.checked)}
+                            className="rounded border-slate-600 text-violet-600 focus:ring-violet-500"
+                          />
+                          <span>Extract AI study notes, flashcards &amp; quiz questions from this link</span>
+                        </label>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-300">Content (Markdown Supported)</label>
+                      <textarea
+                        rows={5}
+                        placeholder="Write structured notes, bullet points, key equations, or code syntax..."
+                        value={newNoteContent}
+                        onChange={e => setNewNoteContent(e.target.value)}
+                        required={newNoteScreenshots.length === 0}
+                        className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 font-mono text-xs"
+                      />
+                    </div>
+                  )}
+
+                  {/* Screenshot Capture & Paste Strip (All Note Types) */}
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleTakeHubScreenshot}
+                          disabled={isCapturingHubScreenshot || newNoteScreenshots.length >= 4}
+                          className="px-3 py-1.5 rounded-lg bg-slate-900/90 hover:bg-violet-950/60 border border-slate-700/70 hover:border-violet-500/60 text-xs font-medium text-slate-200 inline-flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
+                          title="Capture a screenshot of your screen, window, or browser tab"
+                        >
+                          {isCapturingHubScreenshot ? (
+                            <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin" />
+                          ) : (
+                            <Camera className="w-3.5 h-3.5 text-violet-400" />
+                          )}
+                          <span>{isCapturingHubScreenshot ? "Capturing..." : "Take Screenshot"}</span>
+                        </button>
+
+                        <input
+                          ref={hubScreenshotFileInputRef}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={e => {
+                            void handleUploadHubScreenshotFiles(e.target.files);
+                            e.target.value = "";
+                          }}
+                          className="sr-only"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => hubScreenshotFileInputRef.current?.click()}
+                          disabled={newNoteScreenshots.length >= 4}
+                          className="px-3 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-slate-700/70 text-xs font-medium text-slate-300 inline-flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
+                        >
+                          <ImagePlus className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Attach Image</span>
+                        </button>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        {newNoteScreenshots.length > 0
+                          ? `${newNoteScreenshots.length}/4 screenshots attached`
+                          : "or press Ctrl+V to paste screenshot"}
+                      </span>
+                    </div>
+
+                    {hubScreenshotNotice && (
+                      <div className="px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-500/35 text-xs text-amber-200">
+                        {hubScreenshotNotice}
+                      </div>
+                    )}
+
+                    {newNoteScreenshots.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {newNoteScreenshots.map((src, idx) => (
+                          <div key={`${idx}_${src.slice(0, 32)}`} className="relative group rounded-lg overflow-hidden border border-slate-700 bg-black aspect-video">
+                            <button
+                              type="button"
+                              onClick={() => setLightboxScreenshotUrl(src)}
+                              className="w-full h-full block cursor-zoom-in"
+                            >
+                              <img src={src} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNewNoteScreenshots(prev => prev.filter((_, i) => i !== idx))}
+                              className="absolute top-1 right-1 p-1 rounded-full bg-black/75 hover:bg-rose-600 text-white cursor-pointer"
+                              title="Remove screenshot"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -610,7 +1449,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex justify-end gap-2 pt-2">
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <span className="text-[11px] text-slate-400 mr-auto hidden sm:inline">
+                      Tip: Press Ctrl+Enter to save
+                    </span>
                     <button
                       type="button"
                       onClick={() => setIsAddingNote(false)}
@@ -620,9 +1462,13 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     </button>
                     <button
                       type="submit"
-                      className="px-5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-xs font-semibold text-white shadow-md shadow-violet-900/40"
+                      disabled={isExtractingUrl}
+                      title="Save (Ctrl + Enter)"
+                      className="px-5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-xs font-semibold text-white shadow-md shadow-violet-900/40"
                     >
-                      Save Study Artifact
+                      {newNoteCategory === "url" && extractOnHubUrlSave && (!newNoteRequiresLogin || newNoteUrlContext.trim().length > 0)
+                        ? "Save & Extract from URL"
+                        : "Save Study Artifact"}
                     </button>
                   </div>
                 </form>
@@ -630,17 +1476,17 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
               {/* Notes Filter Category Bar */}
               <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-                {["all", "concept", "cheat_sheet", "code_snippet", "summary", "formula"].map((cat) => (
+                {["all", "concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "definition", "url"].map((cat) => (
                   <button
                     key={cat}
                     onClick={() => setSelectedNoteCategory(cat)}
-                    className={`px-3 py-1.5 rounded-lg capitalize font-medium transition-all ${
+                    className={`px-3 py-1.5 rounded-lg capitalize font-medium whitespace-nowrap transition-all ${
                       selectedNoteCategory === cat
                         ? "bg-violet-600 text-white shadow-md shadow-violet-900/30"
                         : "bg-slate-900/60 text-slate-400 hover:text-slate-200 border border-slate-800"
                     }`}
                   >
-                    {cat.replace("_", " ")}
+                    {formatCategoryLabel(cat)}
                   </button>
                 ))}
               </div>
@@ -672,17 +1518,39 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       <div className="space-y-3">
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <span className="text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold bg-violet-900/40 text-violet-300 border border-violet-700/30">
-                              {note.category.replace("_", " ")}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold border ${
+                              note.category === "qa"
+                                ? "bg-amber-900/40 text-amber-300 border-amber-700/30"
+                                : note.category === "definition"
+                                ? "bg-sky-900/40 text-sky-300 border-sky-700/30"
+                                : note.category === "url"
+                                ? "bg-cyan-900/40 text-cyan-300 border-cyan-700/30"
+                                : "bg-violet-900/40 text-violet-300 border-violet-700/30"
+                            }`}>
+                              {formatCategoryLabel(note.category)}
                             </span>
                             {note.chapterTitle && (
                               <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
                                 {note.chapterTitle}
                               </span>
                             )}
-                            <h4 className="text-base font-bold text-white mt-2 leading-snug">
-                              {note.title}
-                            </h4>
+                            {note.sourceFileName && (
+                              <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-cyan-950/60 text-cyan-300 border border-cyan-700/35">
+                                {note.sourceFileName}
+                              </span>
+                            )}
+                            {!(
+                              (note.category === "qa" || (note.question && note.answer)) &&
+                              note.title === (note.question || note.title)
+                            ) &&
+                              !(
+                                (note.category === "definition" || (note.term && note.definition)) &&
+                                note.title === (note.term || note.title)
+                              ) && (
+                                <h4 className="text-base font-bold text-white mt-2 leading-snug">
+                                  {note.title}
+                                </h4>
+                              )}
                           </div>
 
                           <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
@@ -708,9 +1576,229 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         </div>
 
                         {/* Note Body */}
-                        <div className="text-xs text-slate-300 whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-950/40 p-3 rounded-lg border border-slate-900">
-                          {note.content}
-                        </div>
+                        {note.category === "qa" || (note.question && note.answer) ? (
+                          <div className="space-y-2.5">
+                            <div className="bg-amber-950/30 p-3 rounded-lg border border-amber-800/30 space-y-1">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1">
+                                <HelpCircle className="w-3 h-3" />
+                                Question
+                              </span>
+                              <p className="text-xs text-slate-100 whitespace-pre-line leading-relaxed">
+                                {note.question || note.title}
+                              </p>
+                            </div>
+                            <div className="bg-emerald-950/25 p-3 rounded-lg border border-emerald-800/30 space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  Answer
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setHiddenQaNoteAnswers(prev => ({
+                                      ...prev,
+                                      [note.id]: !prev[note.id]
+                                    }))
+                                  }
+                                  className="text-[10px] font-semibold text-emerald-300 hover:text-emerald-200 underline cursor-pointer"
+                                >
+                                  {hiddenQaNoteAnswers[note.id] ? "Show Answer" : "Hide Answer"}
+                                </button>
+                              </div>
+                              {hiddenQaNoteAnswers[note.id] ? (
+                                <p className="text-xs italic text-slate-400">
+                                  Answer hidden for active recall. Click "Show Answer" to reveal.
+                                </p>
+                              ) : (
+                                <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                                  <p className="text-xs text-slate-200 whitespace-pre-line leading-relaxed">
+                                    {note.answer || note.content}
+                                  </p>
+                                  {note.explanation && (
+                                    <div className="pt-2 border-t border-emerald-800/30 space-y-1">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-violet-300 block">
+                                        Explanation
+                                      </span>
+                                      <p className="text-xs text-slate-300 whitespace-pre-line leading-relaxed">
+                                        {note.explanation}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : note.category === "definition" || (note.term && note.definition) ? (
+                          <div className="space-y-2.5">
+                            <div className="bg-sky-950/30 p-3 rounded-lg border border-sky-800/30 space-y-1">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300 flex items-center gap-1">
+                                <BookOpen className="w-3 h-3" />
+                                Term
+                              </span>
+                              <p className="text-xs font-semibold text-slate-100 whitespace-pre-line leading-relaxed">
+                                {note.term || note.title}
+                              </p>
+                            </div>
+                            <div className="bg-emerald-950/25 p-3 rounded-lg border border-emerald-800/30 space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 flex items-center gap-1">
+                                  <FileText className="w-3 h-3" />
+                                  Definition
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setHiddenQaNoteAnswers(prev => ({
+                                      ...prev,
+                                      [note.id]: !prev[note.id]
+                                    }))
+                                  }
+                                  className="text-[10px] font-semibold text-emerald-300 hover:text-emerald-200 underline cursor-pointer"
+                                >
+                                  {hiddenQaNoteAnswers[note.id] ? "Show Definition" : "Hide Definition"}
+                                </button>
+                              </div>
+                              {hiddenQaNoteAnswers[note.id] ? (
+                                <p className="text-xs italic text-slate-400">
+                                  Definition hidden for active recall. Click "Show Definition" to reveal.
+                                </p>
+                              ) : (
+                                <p className="text-xs text-slate-200 whitespace-pre-line leading-relaxed max-h-44 overflow-y-auto pr-1 custom-scrollbar">
+                                  {note.definition || note.content}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ) : note.category === "url" && note.url && isSafeHttpUrl(note.url) ? (
+                          <div className="space-y-2.5">
+                            {note.requiresLogin && (
+                              <div className={`p-2.5 rounded-lg border text-[11px] flex items-center justify-between gap-2 ${
+                                note.reviewCompleted
+                                  ? "bg-emerald-950/30 border-emerald-700/35 text-emerald-200"
+                                  : "bg-amber-950/35 border-amber-700/40 text-amber-200"
+                              }`}>
+                                <span>
+                                  {note.reviewCompleted
+                                    ? `Studied${note.studyCount ? ` (${note.studyCount}x)` : ""} — ready for next review`
+                                    : "Study / Review Assignment — login required"}
+                                </span>
+                                <span className={`px-1.5 py-0.5 rounded font-semibold uppercase text-[9px] shrink-0 ${
+                                  note.reviewCompleted
+                                    ? "bg-emerald-500/20 text-emerald-300"
+                                    : "bg-amber-500/20 text-amber-300"
+                                }`}>
+                                  {note.reviewCompleted ? "Studied ✓" : "Assigned"}
+                                </span>
+                              </div>
+                            )}
+                            <a
+                              href={note.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-between gap-2 p-3 rounded-lg bg-cyan-950/30 border border-cyan-800/40 text-xs text-cyan-300 hover:text-cyan-200 hover:border-cyan-600/60 transition-colors"
+                            >
+                              <span className="truncate font-mono">{note.url}</span>
+                              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                            </a>
+                            {note.urlNotes && (
+                              <div className="text-xs text-slate-300 whitespace-pre-line leading-relaxed max-h-36 overflow-y-auto pr-1 custom-scrollbar bg-slate-950/40 p-3 rounded-lg border border-slate-900">
+                                {note.urlNotes}
+                              </div>
+                            )}
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                              {note.requiresLogin && (
+                                <>
+                                  <a
+                                    href={note.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors"
+                                  >
+                                    <span>{note.reviewCompleted ? "Review Link" : "Go Study Link"}</span>
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleLinkAssignment(note.id)}
+                                    className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                                      note.reviewCompleted
+                                        ? "bg-emerald-950/60 border-emerald-700/40 text-emerald-300 hover:bg-slate-900 hover:text-slate-200"
+                                        : "bg-slate-900 border-slate-700 text-slate-200 hover:border-emerald-600/50 hover:text-emerald-300"
+                                    }`}
+                                  >
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>{note.reviewCompleted ? "Assign Again" : "Mark Studied"}</span>
+                                  </button>
+                                </>
+                              )}
+                              {(!note.requiresLogin || note.urlNotes) && (
+                                <button
+                                  type="button"
+                                  disabled={isExtractingUrl}
+                                  onClick={() =>
+                                    handleExtractFromUrl({
+                                      url: note.url!,
+                                      userNotes: note.urlNotes,
+                                      mode: "notes",
+                                      existingNoteId: note.id,
+                                      requiresLogin: note.requiresLogin,
+                                      title: note.title
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-violet-600/20 hover:bg-violet-600/35 border border-violet-500/30 text-violet-200 text-[11px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                                >
+                                  <Sparkles className="w-3 h-3 text-amber-300" />
+                                  <span>Extract Notes</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={isExtractingUrl}
+                                onClick={() =>
+                                  handleExtractFromUrl({
+                                    url: note.url!,
+                                    userNotes: note.urlNotes,
+                                    mode: "test",
+                                    existingNoteId: note.id,
+                                    startGeneratedTest: true,
+                                    requiresLogin: note.requiresLogin,
+                                    title: note.title
+                                  })
+                                }
+                                className="px-2.5 py-1.5 rounded-lg bg-indigo-600/25 hover:bg-indigo-600/40 border border-indigo-500/35 text-indigo-200 text-[11px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                              >
+                                <Brain className="w-3 h-3 text-indigo-300" />
+                                <span>Test Me from Link</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-slate-300 whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-950/40 p-3 rounded-lg border border-slate-900">
+                            {note.content}
+                          </div>
+                        )}
+
+                        {/* Attached Screenshots */}
+                        {note.screenshots && note.screenshots.length > 0 && (
+                          <div className={`grid gap-2 pt-1 ${note.screenshots.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
+                            {note.screenshots.map((src, sIdx) => (
+                              <button
+                                key={`${note.id}_ss_${sIdx}`}
+                                type="button"
+                                onClick={() => setLightboxScreenshotUrl(src)}
+                                className="relative group rounded-lg overflow-hidden border border-slate-800 hover:border-violet-500/60 bg-black/50 transition-colors cursor-zoom-in"
+                                title="Click to view screenshot full size"
+                              >
+                                <img
+                                  src={src}
+                                  alt={`${note.title} screenshot ${sIdx + 1}`}
+                                  className="w-full max-h-44 object-cover"
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        )}
 
                         {/* Key Terms */}
                         {note.keyTerms && note.keyTerms.length > 0 && (
@@ -935,7 +2023,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
               ) : (
                 /* Test Bank / Selection View */
                 <div className="space-y-6">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="text-base font-bold text-white">Diagnostic Knowledge Assessments</h3>
                       <p className="text-xs text-slate-400">
@@ -946,11 +2034,328 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     <button
                       onClick={() => handleAIGenerateTest()}
                       disabled={isGeneratingTest}
-                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-xs font-medium text-white shadow-lg shadow-indigo-900/30 inline-flex items-center gap-2 disabled:opacity-50"
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-xs font-medium text-white shadow-lg shadow-indigo-900/30 inline-flex items-center gap-2 disabled:opacity-50 whitespace-nowrap shrink-0"
                     >
                       <Sparkles className="w-4 h-4 text-amber-300" />
                       <span>{isGeneratingTest ? "Authoring Test..." : "Generate New Test"}</span>
                     </button>
+                  </div>
+
+                  {/* Assigned Links for Study & Review in Tester */}
+                  {(loginPromptLink || loginStudyLinks.length > 0) && (() => {
+                    const pendingCount = loginStudyLinks.filter(l => !l.reviewCompleted).length;
+                    return (
+                      <div className="p-4 rounded-xl bg-amber-950/25 border border-amber-600/40 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2.5">
+                            <Link2 className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h4 className="text-sm font-semibold text-amber-200">
+                                  {loginPromptLink
+                                    ? `Study Assignment: "${loginPromptLink.title}"`
+                                    : "Assigned Links to Study & Review"}
+                                </h4>
+                                {loginStudyLinks.length > 0 && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                                    pendingCount > 0
+                                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                      : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                  }`}>
+                                    {pendingCount > 0 ? `${pendingCount} pending` : "All studied ✓"}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-300 mt-0.5">
+                                {loginPromptLink?.note ||
+                                  "These saved lessons require signing in. Open an assigned link to study or review directly, then check it off:"}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {loginStudyLinks.length > 0 && pendingCount === 0 && (
+                              <button
+                                type="button"
+                                onClick={handleResetAllLinkAssignments}
+                                className="text-[11px] font-medium text-amber-300 hover:text-amber-200 underline cursor-pointer whitespace-nowrap"
+                              >
+                                Re-assign all
+                              </button>
+                            )}
+                            {loginPromptLink && (
+                              <button
+                                type="button"
+                                onClick={() => setLoginPromptLink(null)}
+                                className="p-1 text-slate-400 hover:text-white rounded cursor-pointer"
+                                title="Dismiss"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {loginPromptLink && isSafeHttpUrl(loginPromptLink.url) && (
+                          <div className="flex flex-wrap gap-2">
+                            <a
+                              href={loginPromptLink.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                            >
+                              <span>Go Study: {loginPromptLink.title}</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          </div>
+                        )}
+
+                        {loginStudyLinks.length > 0 && (
+                          <div className="space-y-1.5">
+                            {loginStudyLinks.map(linkNote => (
+                              <div
+                                key={linkNote.id}
+                                className={`flex items-center justify-between gap-3 px-3 py-2 rounded-lg border transition-colors ${
+                                  linkNote.reviewCompleted
+                                    ? "bg-emerald-950/20 border-emerald-700/35"
+                                    : "bg-slate-900/75 border-amber-700/30"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleLinkAssignment(linkNote.id)}
+                                  className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
+                                >
+                                  <span className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border transition-colors ${
+                                    linkNote.reviewCompleted
+                                      ? "bg-emerald-500 border-emerald-500 text-white"
+                                      : "border-amber-400/60 group-hover:border-amber-300"
+                                  }`}>
+                                    {linkNote.reviewCompleted && <Check className="w-3 h-3" />}
+                                  </span>
+                                  <span className={`text-xs font-medium truncate ${
+                                    linkNote.reviewCompleted ? "line-through text-slate-400" : "text-slate-100"
+                                  }`}>
+                                    {linkNote.title}
+                                  </span>
+                                  {(linkNote.studyCount || 0) > 0 && (
+                                    <span className="text-[10px] text-slate-400 shrink-0">
+                                      Studied {linkNote.studyCount}x
+                                    </span>
+                                  )}
+                                </button>
+
+                                <a
+                                  href={linkNote.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                                >
+                                  <span>{linkNote.reviewCompleted ? "Review Link" : "Go Study"}</span>
+                                  <ExternalLink className="w-3 h-3 shrink-0" />
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Test Me from Uploaded Video, Text, or URL Card */}
+                  <div className="p-4 rounded-xl bg-[#141727] border border-cyan-800/35 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        {sourceTesterMode === "upload" ? (
+                          <Video className="w-4 h-4 text-cyan-400 shrink-0" />
+                        ) : (
+                          <Link2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                        )}
+                        <h4 className="text-sm font-semibold text-white">
+                          {sourceTesterMode === "upload"
+                            ? "Test Me from Downloaded Video & Text"
+                            : "Test Me from Video or Resource URL"}
+                        </h4>
+                      </div>
+
+                      <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => setSourceTesterMode("upload")}
+                          className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
+                            sourceTesterMode === "upload"
+                              ? "bg-cyan-600 text-white"
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <Upload className="w-3 h-3" />
+                          <span>Upload Video / Text</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSourceTesterMode("url")}
+                          className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
+                            sourceTesterMode === "url"
+                              ? "bg-cyan-600 text-white"
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <Link2 className="w-3 h-3" />
+                          <span>From URL</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {sourceTesterMode === "upload" ? (
+                      <div className="space-y-2.5">
+                        <p className="text-[11px] text-slate-400">
+                          Downloaded a Coursera or course video? Upload the video (.mp4, .mov, .webm) and/or attach a transcript (.txt, .vtt, .srt) or paste lesson text to generate study notes &amp; test questions directly from it.
+                        </p>
+
+                        {uploadError && (
+                          <p className="text-xs text-rose-300 bg-rose-950/35 border border-rose-500/35 rounded-lg px-3 py-2">
+                            {uploadError}
+                          </p>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <label className="block p-2.5 rounded-lg bg-slate-900/80 border border-dashed border-cyan-600/45 hover:border-cyan-400/75 transition cursor-pointer">
+                            <span className="text-[11px] font-semibold text-cyan-300 flex items-center gap-1.5 mb-0.5">
+                              <Video className="w-3.5 h-3.5" />
+                              <span>Downloaded Video / Audio</span>
+                            </span>
+                            <input
+                              type="file"
+                              accept="video/*,audio/*,.mp4,.mov,.webm,.mkv,.m4v,.mp3,.wav,.m4a"
+                              onChange={e => setUploadedVideoFile(e.target.files?.[0] || null)}
+                              className="sr-only"
+                            />
+                            <span className="text-[11px] text-slate-300 block truncate">
+                              {uploadedVideoFile
+                                ? `${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)`
+                                : "Select MP4, MOV, WebM, MKV, or MP3 (up to 250 MB)"}
+                            </span>
+                          </label>
+
+                          <label className="block p-2.5 rounded-lg bg-slate-900/80 border border-dashed border-slate-700 hover:border-violet-500/60 transition cursor-pointer">
+                            <span className="text-[11px] font-semibold text-violet-300 flex items-center gap-1.5 mb-0.5">
+                              <FileText className="w-3.5 h-3.5" />
+                              <span>Transcript / Subtitle File (Optional)</span>
+                            </span>
+                            <input
+                              type="file"
+                              accept=".txt,.vtt,.srt,.md,text/plain,text/vtt"
+                              onChange={e => setUploadedTranscriptFile(e.target.files?.[0] || null)}
+                              className="sr-only"
+                            />
+                            <span className="text-[11px] text-slate-300 block truncate">
+                              {uploadedTranscriptFile
+                                ? uploadedTranscriptFile.name
+                                : "Optional: select .txt, .vtt, .srt, or .md"}
+                            </span>
+                          </label>
+                        </div>
+
+                        <input
+                          type="text"
+                          placeholder="Optional lesson title (e.g. Module 3: Supervised Learning)"
+                          value={uploadedLessonTitle}
+                          onChange={e => setUploadedLessonTitle(e.target.value)}
+                          className="w-full px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                        />
+
+                        <textarea
+                          rows={2}
+                          placeholder="Optional: paste lecture transcript or text notes to combine with your video..."
+                          value={uploadedTranscriptText}
+                          onChange={e => setUploadedTranscriptText(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                        />
+
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] text-slate-400">
+                            Saves study notes, flashcards &amp; test to this goal
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={isExtractingUpload || (!uploadedVideoFile && !uploadedTranscriptFile && !uploadedTranscriptText.trim())}
+                              onClick={() => handleExtractFromUpload({ mode: "both", startGeneratedTest: true })}
+                              className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-xs font-semibold text-white inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                            >
+                              {isExtractingUpload ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Brain className="w-3.5 h-3.5" />}
+                              <span>{isExtractingUpload ? "Analyzing Video & Building Quiz..." : "Analyze & Test Me"}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="url"
+                            placeholder="Paste YouTube, Coursera, Udemy, or article URL..."
+                            value={testerUrlInput}
+                            onChange={e => setTesterUrlInput(e.target.value)}
+                            className="flex-1 px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-700/60 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                          />
+                          <button
+                            type="button"
+                            disabled={isExtractingUrl || !testerUrlInput.trim()}
+                            onClick={() =>
+                              handleExtractFromUrl({
+                                url: testerUrlInput,
+                                userNotes: testerUrlNotesInput,
+                                mode: "test",
+                                startGeneratedTest: true
+                              })
+                            }
+                            className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-xs font-semibold text-white inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            {isExtractingUrl ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Brain className="w-3.5 h-3.5" />}
+                            <span>{isExtractingUrl ? "Building Quiz..." : "Generate Quiz from URL"}</span>
+                          </button>
+                        </div>
+
+                        <input
+                          type="text"
+                          placeholder="Optional: paste lecture topics or transcript snippet (for login-protected Coursera/Udemy videos)"
+                          value={testerUrlNotesInput}
+                          onChange={e => setTesterUrlNotesInput(e.target.value)}
+                          className="w-full px-3 py-1.5 rounded-lg bg-slate-900/50 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                        />
+
+                        {currentHub.notes.some(n => n.category === "url" && n.url && isSafeHttpUrl(n.url)) && (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <span className="text-[11px] text-slate-400">Saved links:</span>
+                            {currentHub.notes
+                              .filter(n => n.category === "url" && n.url && isSafeHttpUrl(n.url))
+                              .slice(0, 5)
+                              .map(urlNote => (
+                                <button
+                                  key={urlNote.id}
+                                  type="button"
+                                  disabled={isExtractingUrl}
+                                  onClick={() =>
+                                    handleExtractFromUrl({
+                                      url: urlNote.url!,
+                                      userNotes: urlNote.urlNotes,
+                                      mode: "test",
+                                      existingNoteId: urlNote.id,
+                                      startGeneratedTest: true,
+                                      requiresLogin: urlNote.requiresLogin,
+                                      title: urlNote.title
+                                    })
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-cyan-950/60 border border-slate-700 hover:border-cyan-700/50 text-xs text-cyan-300 inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                                >
+                                  <Link2 className="w-3 h-3 shrink-0" />
+                                  <span className="max-w-[180px] truncate">{urlNote.title}</span>
+                                </button>
+                              ))}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
 
                   {currentHub.tests.length === 0 ? (
@@ -980,11 +2385,18 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                             <div className="flex items-start justify-between">
                               <div>
                                 <h4 className="text-base font-bold text-white">{test.title}</h4>
-                                {test.chapterTitle && (
-                                  <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 mt-1 inline-block">
-                                    {test.chapterTitle}
-                                  </span>
-                                )}
+                                <div className="flex flex-wrap gap-1.5 mt-1">
+                                  {test.chapterTitle && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 inline-block">
+                                      {test.chapterTitle}
+                                    </span>
+                                  )}
+                                  {test.sourceFileName && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-300 border border-cyan-700/35 inline-block">
+                                      {test.sourceFileName}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                               {test.lastScore !== undefined && (
                                 <div className="text-right">
@@ -1038,7 +2450,86 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
           {/* TAB 3: ACTIVE RECALL FLASHCARDS */}
           {activeTab === "flashcards" && (
             <div className="max-w-2xl mx-auto space-y-6">
-              
+              {loginStudyLinks.length > 0 && (() => {
+                const pendingReviewCount = loginStudyLinks.filter(l => !l.reviewCompleted).length;
+                return (
+                  <div className="p-4 rounded-xl bg-cyan-950/30 border border-cyan-600/35 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-start gap-2">
+                        <Link2 className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-xs font-semibold text-cyan-200">
+                              Link Study &amp; Review Assignments
+                            </h4>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                              pendingReviewCount > 0
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            }`}>
+                              {pendingReviewCount > 0 ? `${pendingReviewCount} to review` : "All reviewed ✓"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-300 mt-0.5">
+                            Login-required lessons — open to review directly, then check them off:
+                          </p>
+                        </div>
+                      </div>
+                      {pendingReviewCount === 0 && (
+                        <button
+                          type="button"
+                          onClick={handleResetAllLinkAssignments}
+                          className="text-[11px] font-medium text-cyan-300 hover:text-cyan-200 underline cursor-pointer whitespace-nowrap shrink-0"
+                        >
+                          Review again
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      {loginStudyLinks.map(linkNote => (
+                        <div
+                          key={linkNote.id}
+                          className={`flex items-center justify-between gap-3 px-3 py-2 rounded-lg border transition-colors ${
+                            linkNote.reviewCompleted
+                              ? "bg-emerald-950/20 border-emerald-700/35"
+                              : "bg-slate-900/75 border-cyan-700/35"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleToggleLinkAssignment(linkNote.id)}
+                            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
+                          >
+                            <span className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border transition-colors ${
+                              linkNote.reviewCompleted
+                                ? "bg-emerald-500 border-emerald-500 text-white"
+                                : "border-cyan-400/60 group-hover:border-cyan-300"
+                            }`}>
+                              {linkNote.reviewCompleted && <Check className="w-3 h-3" />}
+                            </span>
+                            <span className={`text-xs font-medium truncate ${
+                              linkNote.reviewCompleted ? "line-through text-slate-400" : "text-slate-100"
+                            }`}>
+                              {linkNote.title}
+                            </span>
+                          </button>
+
+                          <a
+                            href={linkNote.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <span>{linkNote.reviewCompleted ? "Review" : "Go Study"}</span>
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Add Card Form */}
               {isAddingFlashcard && (
                 <form
@@ -1355,6 +2846,33 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
         </div>
       </div>
+
+      {/* Fullscreen Screenshot Lightbox Preview */}
+      {lightboxScreenshotUrl && (
+        <div
+          onClick={() => setLightboxScreenshotUrl(null)}
+          className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-4xl max-h-[90vh] flex flex-col items-end gap-2"
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxScreenshotUrl(null)}
+              className="px-3 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-white/15 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Close Preview</span>
+            </button>
+            <img
+              src={lightboxScreenshotUrl}
+              alt="Screenshot preview"
+              className="max-w-full max-h-[82vh] rounded-xl border border-white/15 shadow-2xl object-contain bg-black"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };
