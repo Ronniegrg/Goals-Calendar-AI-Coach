@@ -1281,11 +1281,60 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
     difficulty = "medium",
     studyMaterialContext = "",
     assignedLinkTitle = "",
-    questionCount = 4
+    questionCount = 6,
+    sourceMode = "hybrid",
+    directNoteQuestions = []
   } = req.body;
-  const clampedCount = Math.min(6, Math.max(3, Number(questionCount) || 4));
-  const safeContext = typeof studyMaterialContext === "string" ? studyMaterialContext.trim().slice(0, 8000) : "";
+  const clampedCount = Math.min(12, Math.max(3, Number(questionCount) || 6));
+  const safeContext = typeof studyMaterialContext === "string" ? studyMaterialContext.trim().slice(0, 12000) : "";
   const safeAssignedTitle = typeof assignedLinkTitle === "string" ? assignedLinkTitle.trim().slice(0, 200) : "";
+  const requestedMode: "hybrid" | "notes_only" | "ai_only" =
+    sourceMode === "notes_only" || sourceMode === "ai_only" ? sourceMode : "hybrid";
+  const effectiveMode: "hybrid" | "notes_only" | "ai_only" =
+    requestedMode === "ai_only"
+      ? "ai_only"
+      : !safeContext && (!Array.isArray(directNoteQuestions) || directNoteQuestions.length === 0)
+      ? "ai_only"
+      : requestedMode;
+
+  const sanitizedDirectQuestions = (effectiveMode === "ai_only" || !Array.isArray(directNoteQuestions))
+    ? []
+    : directNoteQuestions
+        .filter((q: any) => q && typeof q.question === "string" && q.question.trim() && Array.isArray(q.options) && q.options.length >= 2)
+        .map((q: any, idx: number) => {
+          const opts = q.options.map((o: any) => String(o).trim()).filter(Boolean).slice(0, 6);
+          const corrIdx = typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex < opts.length ? q.correctIndex : 0;
+          return {
+            id: typeof q.id === "string" && q.id.trim() ? q.id : `note_q_${Date.now()}_${idx}`,
+            question: q.question.trim(),
+            options: opts,
+            correctIndex: corrIdx,
+            explanation: typeof q.explanation === "string" && q.explanation.trim() ? q.explanation.trim() : "Verified from your saved study note.",
+            difficulty: q.difficulty === "easy" || q.difficulty === "hard" ? q.difficulty : "medium",
+            sourceType: "note" as const,
+            sourceLabel: typeof q.sourceLabel === "string" && q.sourceLabel.trim() ? q.sourceLabel.trim() : "From Your Notes"
+          };
+        })
+        .filter((q: any) => q.options.length >= 2);
+
+  // Detect if there are other note types (definitions, summaries, concepts, Q&A, fill-in-the-blank, etc.)
+  const hasRichNoteContext = /\[(Definition|Q&A|Fill-in-the-Blank|concept|cheat_sheet|code_snippet|summary|formula|Resource:)/i.test(safeContext);
+  const directCap =
+    effectiveMode === "notes_only"
+      ? (hasRichNoteContext ? Math.max(1, Math.ceil(clampedCount * 0.5)) : clampedCount)
+      : Math.max(1, Math.floor(clampedCount * 0.35));
+  const pickedDirectQuestions = sanitizedDirectQuestions.slice(0, directCap);
+  const aiCountNeeded = Math.max(0, clampedCount - pickedDirectQuestions.length);
+
+  const interleaveQuestions = (noteQs: any[], aiQs: any[]) => {
+    const merged: any[] = [];
+    const maxLen = Math.max(noteQs.length, aiQs.length);
+    for (let i = 0; i < maxLen; i += 1) {
+      if (i < aiQs.length) merged.push(aiQs[i]);
+      if (i < noteQs.length) merged.push(noteQs[i]);
+    }
+    return merged.slice(0, clampedCount);
+  };
 
   function generateFallbackTest(title: string, category: string, chapter: string, diff: string) {
     const topic = chapter || title;
@@ -1461,27 +1510,65 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
     }
 
     const testId = "test_" + Date.now();
+    const fallbackAiPool = questions.map((q: any) => ({
+      ...q,
+      sourceType: "ai" as const,
+      sourceLabel: "AI Question"
+    }));
+    const combinedFallback = interleaveQuestions(pickedDirectQuestions, fallbackAiPool);
     return {
       test: {
         id: testId,
-        title: topic ? `${topic} Knowledge Assessment` : `${title} Mastery Test`,
+        title: topic
+          ? `${topic} ${effectiveMode === "hybrid" ? "Mixed" : effectiveMode === "notes_only" ? "Notes" : "Knowledge"} Assessment`
+          : `${title} Mastery Test`,
         chapterTitle: chapter || undefined,
+        generationMode: effectiveMode,
         createdAt: new Date().toISOString(),
-        questions: questions.slice(0, clampedCount),
+        questions: combinedFallback,
         attemptsCount: 0
       }
     };
   }
 
+  // If notes_only has enough direct note questions to satisfy the entire test, return immediately
+  if (aiCountNeeded === 0 && pickedDirectQuestions.length > 0) {
+    return res.json({
+      test: {
+        id: "test_" + Date.now(),
+        title: `${chapterTitle || goalTitle} · My Notes Assessment`,
+        chapterTitle: chapterTitle || undefined,
+        generationMode: effectiveMode,
+        createdAt: new Date().toISOString(),
+        questions: pickedDirectQuestions.slice(0, clampedCount),
+        attemptsCount: 0
+      }
+    });
+  }
+
   try {
+    const noteGuidance =
+      effectiveMode === "notes_only" && safeContext
+        ? `ALL ${aiCountNeeded} questions MUST be derived strictly from the student's provided Study Material Notes (covering their Definitions, Summaries, Concepts, Cheat Sheets, Formulas, Code Snippets, Q&As, and Fill-in-the-Blank items). Do not ask unrelated outside trivia. Set "sourceType": "note" and "sourceLabel": "From Your Notes" on every question.`
+        : effectiveMode === "hybrid" && safeContext
+        ? `This is a COMBINATION assessment blending the student's saved study material with fresh AI exam questions:
+- Roughly HALF of the ${aiCountNeeded} questions must be grounded directly in the student's provided Study Material Notes (turning their Definitions, Summaries, Concepts, Cheat Sheets, Formulas, Code Snippets, Q&As, and Fill-in-the-Blank items into rigorous multiple-choice questions). For these, set "sourceType": "note" and "sourceLabel": "From Your Notes".
+- The OTHER HALF of the ${aiCountNeeded} questions must be fresh, complementary AI-authored exam/scenario questions covering broader concepts and real-world applications for "${goalTitle}"${chapterTitle ? ` (${chapterTitle})` : ""}. For these, set "sourceType": "ai" and "sourceLabel": "AI Question".`
+        : `Author ${aiCountNeeded} fresh certification/exam-grade multiple-choice questions testing deep conceptual and applied understanding for this goal. Set "sourceType": "ai" and "sourceLabel": "AI Question" on every question.`;
+
+    const alreadyUsedNoteText = pickedDirectQuestions.length > 0
+      ? `\n\nAlready included from the student's saved MCQs/True-False notes (DO NOT repeat these):\n${pickedDirectQuestions.map((q: any, i: number) => `${i + 1}. ${q.question}`).join("\n")}`
+      : "";
+
     const systemPrompt = `You are a professional test author and technical certification exam creator.
-Create a rigorous, highly educational ${clampedCount}-question multiple choice diagnostic assessment for the user's study goal.
-${safeContext ? "Prioritize testing concepts, terms, definitions, and Q&A ideas present in the student's provided study material context while also ensuring conceptually accurate technical depth." : ""}
+Create a rigorous, highly educational ${aiCountNeeded}-question multiple choice diagnostic assessment for the user's study goal.
+${noteGuidance}
 Each question must have:
 - Exactly 4 plausible options (1 correct, 3 realistic distractors).
 - A 0-indexed 'correctIndex' (0, 1, 2, or 3).
 - A comprehensive 'explanation' clarifying why the correct option is right and what principle applies.
 - Difficulty assigned as "easy", "medium", or "hard".
+- "sourceType": "note" or "ai", and "sourceLabel": "From Your Notes" or "AI Question".
 
 Return valid JSON in this EXACT schema:
 {
@@ -1493,19 +1580,21 @@ Return valid JSON in this EXACT schema:
       "options": ["Option A", "Option B", "Option C", "Option D"],
       "correctIndex": 1,
       "explanation": "Detailed explanation of why this option is correct.",
-      "difficulty": "medium"
+      "difficulty": "medium",
+      "sourceType": "ai",
+      "sourceLabel": "AI Question"
     }
   ]
 }
 Return ONLY valid JSON. No markdown ticks outside the JSON.`;
 
-    const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nChapter/Topic: "${chapterTitle || 'Core Focus'}"\nTarget Exam: "${examTitle || 'Certification'}"\nTarget Difficulty: "${difficulty}"${safeAssignedTitle ? `\nAssigned Reading/Lesson Topic: "${safeAssignedTitle}"` : ""}${safeContext ? `\n\nStudent's Study Material Notes:\n"""\n${safeContext}\n"""` : ""}`;
+    const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nChapter/Topic: "${chapterTitle || 'Core Focus'}"\nTarget Exam: "${examTitle || 'Certification'}"\nTarget Difficulty: "${difficulty}"\nTest Mode: "${effectiveMode}"${safeAssignedTitle ? `\nAssigned Reading/Lesson Topic: "${safeAssignedTitle}"` : ""}${safeContext && effectiveMode !== "ai_only" ? `\n\nStudent's Study Material Notes:\n"""\n${safeContext}\n"""` : ""}${alreadyUsedNoteText}`;
 
     const result = await generateWithFallback({
       primaryModel: "gemini-4-hydrogen",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
-      timeoutMs: 8000,
+      timeoutMs: 9000,
       config: {
         systemInstruction: systemPrompt,
         temperature: 0.35,
@@ -1517,19 +1606,49 @@ Return ONLY valid JSON. No markdown ticks outside the JSON.`;
       const parsed = JSON.parse(result.text.trim());
       if (parsed && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
         const testId = "test_" + Date.now();
-        const test = {
-          id: testId,
-          title: parsed.title || `${chapterTitle || goalTitle} Knowledge Test`,
-          chapterTitle: chapterTitle || undefined,
-          createdAt: new Date().toISOString(),
-          questions: parsed.questions.map((q: any, idx: number) => ({
+        const aiQuestions = parsed.questions.slice(0, aiCountNeeded).map((q: any, idx: number) => {
+          const opts = Array.isArray(q.options) && q.options.length >= 2
+            ? q.options.map((o: any) => String(o)).slice(0, 6)
+            : ["Option A", "Option B", "Option C", "Option D"];
+          const corrIdx = typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex < opts.length
+            ? q.correctIndex
+            : 0;
+          const inferredSourceType: "note" | "ai" =
+            q.sourceType === "note" || (effectiveMode === "notes_only")
+              ? "note"
+              : "ai";
+          return {
             id: q.id || `q_${Date.now()}_${idx}`,
             question: q.question,
-            options: Array.isArray(q.options) && q.options.length === 4 ? q.options : ["Option A", "Option B", "Option C", "Option D"],
-            correctIndex: typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex <= 3 ? q.correctIndex : 0,
+            options: opts,
+            correctIndex: corrIdx,
             explanation: q.explanation || "Correct answer.",
-            difficulty: q.difficulty || difficulty
-          })),
+            difficulty: q.difficulty || difficulty,
+            sourceType: inferredSourceType,
+            sourceLabel:
+              typeof q.sourceLabel === "string" && q.sourceLabel.trim()
+                ? q.sourceLabel.trim()
+                : inferredSourceType === "note"
+                ? "From Your Notes"
+                : "AI Question"
+          };
+        });
+
+        const mergedQuestions = interleaveQuestions(pickedDirectQuestions, aiQuestions);
+        const modeTitleSuffix =
+          effectiveMode === "hybrid"
+            ? " (AI + Notes Mix)"
+            : effectiveMode === "notes_only"
+            ? " (My Notes)"
+            : "";
+
+        const test = {
+          id: testId,
+          title: parsed.title || `${chapterTitle || goalTitle} Knowledge Test${modeTitleSuffix}`,
+          chapterTitle: chapterTitle || undefined,
+          generationMode: effectiveMode,
+          createdAt: new Date().toISOString(),
+          questions: mergedQuestions,
           attemptsCount: 0
         };
         return res.json({ test });
@@ -1540,6 +1659,213 @@ Return ONLY valid JSON. No markdown ticks outside the JSON.`;
   } catch (err: any) {
     console.warn("Knowledge test generation notice:", err?.message || err);
     return res.json(generateFallbackTest(goalTitle, goalCategory, chapterTitle, difficulty));
+  }
+});
+
+// 5c-2. GOAL KNOWLEDGE HUB - AI READING RECOMMENDATIONS (MISSED QUESTIONS & TOPIC STUDY)
+app.post("/api/coach/recommend-reading", async (req, res) => {
+  const {
+    goalTitle = "Study Goal",
+    goalCategory = "General",
+    chapterTitle = "",
+    examTitle = "",
+    missedQuestions = [],
+    existingNoteTitles = [],
+    count = 4
+  } = req.body;
+
+  const clampedCount = Math.min(6, Math.max(2, Number(count) || 4));
+  const sanitizedMissed = Array.isArray(missedQuestions)
+    ? missedQuestions
+        .filter((m: any) => m && typeof m.question === "string" && m.question.trim())
+        .slice(0, 6)
+        .map((m: any) => ({
+          question: String(m.question).trim().slice(0, 400),
+          correctAnswer: typeof m.correctAnswer === "string" ? m.correctAnswer.trim().slice(0, 240) : "",
+          userAnswer: typeof m.userAnswer === "string" ? m.userAnswer.trim().slice(0, 240) : "",
+          explanation: typeof m.explanation === "string" ? m.explanation.trim().slice(0, 400) : ""
+        }))
+    : [];
+
+  const sanitizedExisting = Array.isArray(existingNoteTitles)
+    ? existingNoteTitles.map((t: any) => String(t).trim()).filter(Boolean).slice(0, 15)
+    : [];
+
+  const allowedTypes = new Set(["article", "documentation", "video", "book_chapter", "study_guide"]);
+
+  function buildFallbackRecommendations() {
+    const topicBase = chapterTitle || goalTitle;
+    if (sanitizedMissed.length > 0) {
+      return {
+        recommendations: sanitizedMissed.slice(0, clampedCount).map((m: any, idx: number) => {
+          const shortFocus = m.question.replace(/[?]+$/, "").slice(0, 80);
+          return {
+            id: `rec_${Date.now()}_${idx}`,
+            title: `${topicBase}: Deep-Dive Guide on "${shortFocus}"`,
+            sourceName: "Concept Review & Practice",
+            type: "study_guide",
+            topicFocus: m.correctAnswer ? `${topicBase} · ${m.correctAnswer.slice(0, 40)}` : topicBase,
+            whyItHelps: `Targets the question you missed${m.correctAnswer ? ` ("${m.correctAnswer}")` : ""}${m.explanation ? `: ${m.explanation}` : "."}`,
+            keyTakeaways: [
+              m.correctAnswer ? `Core fact to remember: ${m.correctAnswer}` : `Revisit the foundational rule behind: ${shortFocus}`,
+              m.explanation ? m.explanation : `Compare why "${m.userAnswer || "the distractor"}" differs from the correct mechanism.`,
+              `Write a short summary or flashcard in your own words after reading.`
+            ],
+            searchQuery: `${goalTitle} ${m.correctAnswer || shortFocus} tutorial`,
+            estimatedReadMinutes: 8,
+            relatedQuestion: m.question
+          };
+        })
+      };
+    }
+
+    return {
+      recommendations: [
+        {
+          id: `rec_${Date.now()}_0`,
+          title: `${topicBase} — Core Principles & Mental Models`,
+          sourceName: "Study Reference",
+          type: "study_guide",
+          topicFocus: topicBase,
+          whyItHelps: `Builds strong foundational clarity for ${goalTitle}${examTitle ? ` (${examTitle})` : ""}.`,
+          keyTakeaways: [
+            `Map how core terms in ${topicBase} relate to one another`,
+            "Review common exam pitfalls and edge-case scenarios",
+            "Test recall immediately using short active-recall prompts"
+          ],
+          searchQuery: `${goalTitle} ${topicBase} fundamentals guide`,
+          estimatedReadMinutes: 10
+        },
+        {
+          id: `rec_${Date.now()}_1`,
+          title: `${goalTitle}: Practical Troubleshooting & Applied Scenarios`,
+          sourceName: "Official Documentation / Practice",
+          type: "documentation",
+          topicFocus: `${goalTitle} Practice`,
+          whyItHelps: "Bridges theory into real-world scenario questions often tested in assessments.",
+          keyTakeaways: [
+            "Walk through step-by-step diagnostic workflows",
+            "Contrast similar concepts that often get confused",
+            "Summarize key commands, rules, or formulas into cheat sheets"
+          ],
+          searchQuery: `${goalTitle} ${chapterTitle} official documentation examples`,
+          estimatedReadMinutes: 12
+        }
+      ].slice(0, clampedCount)
+    };
+  }
+
+  try {
+    const missedBlock =
+      sanitizedMissed.length > 0
+        ? `\n\nQuestions the student answered INCORRECTLY (prioritize addressing these gaps!):\n${sanitizedMissed
+            .map(
+              (m: any, i: number) =>
+                `${i + 1}. Question: ${m.question}${m.userAnswer ? `\n   Student chose (wrong): ${m.userAnswer}` : ""}${
+                  m.correctAnswer ? `\n   Correct answer: ${m.correctAnswer}` : ""
+                }${m.explanation ? `\n   Explanation: ${m.explanation}` : ""}`
+            )
+            .join("\n")}`
+        : "";
+
+    const existingBlock =
+      sanitizedExisting.length > 0
+        ? `\n\nNotes the student ALREADY has saved (avoid duplicating exact titles): ${sanitizedExisting.join(" | ")}`
+        : "";
+
+    const systemPrompt = `You are an expert study coach and curriculum advisor.
+Recommend ${clampedCount} focused, high-yield reading materials (articles, official documentation, textbook chapters, study guides, or educational videos) to help the student master their study goal and close knowledge gaps.
+${
+  sanitizedMissed.length > 0
+    ? "CRITICAL: Base your recommendations directly on the questions the student missed so they know exactly what to read next and why."
+    : "Tailor recommendations to the student's goal, chapter, and target exam."
+}
+
+URL Rules (CRITICAL):
+- If you know a stable, canonical, authoritative URL (such as MDN Web Docs, React.dev, Python docs, Microsoft Learn, OWASP, NIST, Cloudflare Learning Center, Cisco, Khan Academy, or Wikipedia), include it in "url".
+- Otherwise, leave "url" as an empty string "" and provide a crisp "searchQuery" so the student can find the resource reliably without broken links. Never invent speculative deep URLs.
+
+Always include 2-3 specific, actionable "keyTakeaways" bullet points for each recommendation so saving the reading immediately enriches the student's notes.`;
+
+    const userPrompt = `Goal: "${goalTitle}"
+Category: "${goalCategory}"
+Chapter / Topic: "${chapterTitle || "Core Syllabus"}"
+Target Exam: "${examTitle || "General Mastery"}"${missedBlock}${existingBlock}`;
+
+    const result = await generateWithFallback({
+      primaryModel: "gemini-4-hydrogen",
+      fallbackModel: "gemini-3.1-flash-lite",
+      contents: userPrompt,
+      timeoutMs: 9000,
+      config: {
+        systemInstruction: systemPrompt,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            recommendations: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  sourceName: { type: Type.STRING },
+                  type: { type: Type.STRING },
+                  topicFocus: { type: Type.STRING },
+                  whyItHelps: { type: Type.STRING },
+                  keyTakeaways: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  searchQuery: { type: Type.STRING },
+                  url: { type: Type.STRING },
+                  estimatedReadMinutes: { type: Type.INTEGER },
+                  relatedQuestion: { type: Type.STRING }
+                },
+                required: ["title", "type", "topicFocus", "whyItHelps", "keyTakeaways", "searchQuery"]
+              }
+            }
+          },
+          required: ["recommendations"]
+        }
+      }
+    });
+
+    if (result && result.text) {
+      const parsed = JSON.parse(result.text.trim());
+      if (parsed && Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0) {
+        const recommendations = parsed.recommendations.slice(0, clampedCount).map((r: any, idx: number) => {
+          const urlCheck = typeof r.url === "string" && r.url.trim() ? validatePublicStudyUrl(r.url.trim()) : { valid: false };
+          const rawType = typeof r.type === "string" ? r.type.trim().toLowerCase() : "article";
+          return {
+            id: `rec_${Date.now()}_${idx}`,
+            title: String(r.title || `${chapterTitle || goalTitle} Study Guide`).trim(),
+            sourceName: typeof r.sourceName === "string" && r.sourceName.trim() ? r.sourceName.trim() : undefined,
+            type: allowedTypes.has(rawType) ? rawType : "article",
+            topicFocus: String(r.topicFocus || chapterTitle || goalTitle).trim(),
+            whyItHelps: String(r.whyItHelps || "Reinforces key principles tested in this goal.").trim(),
+            keyTakeaways: Array.isArray(r.keyTakeaways)
+              ? r.keyTakeaways.map((t: any) => String(t).trim()).filter(Boolean).slice(0, 4)
+              : [],
+            searchQuery: String(r.searchQuery || r.title || goalTitle).trim(),
+            url: urlCheck.valid ? urlCheck.normalizedUrl : undefined,
+            estimatedReadMinutes: typeof r.estimatedReadMinutes === "number" && r.estimatedReadMinutes > 0
+              ? Math.min(90, Math.round(r.estimatedReadMinutes))
+              : 10,
+            relatedQuestion: typeof r.relatedQuestion === "string" && r.relatedQuestion.trim()
+              ? r.relatedQuestion.trim()
+              : undefined
+          };
+        });
+        return res.json({ recommendations });
+      }
+    }
+
+    return res.json(buildFallbackRecommendations());
+  } catch (err: any) {
+    console.warn("Reading recommendation notice:", err?.message || err);
+    return res.json(buildFallbackRecommendations());
   }
 });
 
@@ -1841,15 +2167,18 @@ Return ONLY valid JSON matching this schema:
       ? rawParsed.extractedTitle.trim()
       : (canonicalYoutubeUrl ? "YouTube Video Study Guide" : new URL(targetUrl).hostname);
 
-    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "definition"]);
+    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
     const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
     const notes = rawNotes
       .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
       .slice(0, 6)
       .map((n: any, idx: number) => {
         const cat = allowedCategories.has(n.category) ? n.category : "summary";
-        const isQA = cat === "qa" && n.question && n.answer;
+        const isQA = (cat === "qa" || cat === "fill_in_blank" || cat === "multiple_choice" || cat === "true_false") && n.question && n.answer;
+        const isFillBlank = cat === "fill_in_blank" && n.question && n.answer;
         const isDef = cat === "definition" && n.term && n.definition;
+        const opts = Array.isArray(n.options) ? n.options.map(String).filter(Boolean) : undefined;
+        const correctIdx = typeof n.correctOptionIndex === "number" ? n.correctOptionIndex : undefined;
         return {
           id: `note_${baseTs}_${idx}`,
           title: isQA
@@ -1858,7 +2187,9 @@ Return ONLY valid JSON matching this schema:
             ? String(n.term).trim()
             : String(n.title || extractedTitle).trim(),
           category: cat,
-          content: isQA
+          content: isFillBlank
+            ? `Prompt: ${String(n.question).trim()}\n\nAnswer: ${String(n.answer).trim()}${n.explanation ? `\n\nExplanation: ${String(n.explanation).trim()}` : ""}`
+            : isQA
             ? `Q: ${String(n.question).trim()}\n\nA: ${String(n.answer).trim()}${n.explanation ? `\n\nExplanation: ${String(n.explanation).trim()}` : ""}`
             : isDef
             ? `${String(n.term).trim()}: ${String(n.definition).trim()}`
@@ -1866,6 +2197,8 @@ Return ONLY valid JSON matching this schema:
           question: isQA ? String(n.question).trim() : undefined,
           answer: isQA ? String(n.answer).trim() : undefined,
           explanation: isQA && n.explanation ? String(n.explanation).trim() : undefined,
+          options: opts && opts.length >= 2 ? opts : undefined,
+          correctOptionIndex: typeof correctIdx === "number" ? correctIdx : undefined,
           term: isDef ? String(n.term).trim() : undefined,
           definition: isDef ? String(n.definition).trim() : undefined,
           url: targetUrl,
@@ -2252,15 +2585,18 @@ Return ONLY valid JSON matching the requested schema.`;
         (typeof rawParsed.extractedTitle === "string" && rawParsed.extractedTitle.trim()) ||
         (safeOriginalFileName ? safeOriginalFileName.replace(/\.[^.]+$/, "") : "Uploaded Lecture Study Guide");
 
-      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "definition"]);
+      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
       const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
       const notes = rawNotes
         .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
         .slice(0, 6)
         .map((n: any, idx: number) => {
           const cat = allowedCategories.has(n.category) ? n.category : "summary";
-          const isQA = cat === "qa" && n.question && n.answer;
+          const isQA = (cat === "qa" || cat === "fill_in_blank" || cat === "multiple_choice" || cat === "true_false") && n.question && n.answer;
+          const isFillBlank = cat === "fill_in_blank" && n.question && n.answer;
           const isDef = cat === "definition" && n.term && n.definition;
+          const opts = Array.isArray(n.options) ? n.options.map(String).filter(Boolean) : undefined;
+          const correctIdx = typeof n.correctOptionIndex === "number" ? n.correctOptionIndex : undefined;
           return {
             id: `note_${baseTs}_${idx}`,
             title: isQA
@@ -2269,7 +2605,9 @@ Return ONLY valid JSON matching the requested schema.`;
               ? String(n.term).trim()
               : String(n.title || extractedTitle).trim(),
             category: cat,
-            content: isQA
+            content: isFillBlank
+              ? `Prompt: ${String(n.question).trim()}\n\nAnswer: ${String(n.answer).trim()}${n.explanation ? `\n\nExplanation: ${String(n.explanation).trim()}` : ""}`
+              : isQA
               ? `Q: ${String(n.question).trim()}\n\nA: ${String(n.answer).trim()}${n.explanation ? `\n\nExplanation: ${String(n.explanation).trim()}` : ""}`
               : isDef
               ? `${String(n.term).trim()}: ${String(n.definition).trim()}`
@@ -2277,6 +2615,8 @@ Return ONLY valid JSON matching the requested schema.`;
             question: isQA ? String(n.question).trim() : undefined,
             answer: isQA ? String(n.answer).trim() : undefined,
             explanation: isQA && n.explanation ? String(n.explanation).trim() : undefined,
+            options: opts && opts.length >= 2 ? opts : undefined,
+            correctOptionIndex: typeof correctIdx === "number" ? correctIdx : undefined,
             term: isDef ? String(n.term).trim() : undefined,
             definition: isDef ? String(n.definition).trim() : undefined,
             sourceFileName: safeOriginalFileName,

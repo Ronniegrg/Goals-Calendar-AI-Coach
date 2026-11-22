@@ -110,11 +110,13 @@ export interface Goal {
 export interface StudyArtifactNote {
   id: string;
   title: string;
-  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "qa" | "definition" | "url";
+  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "qa" | "fill_in_blank" | "multiple_choice" | "true_false" | "definition" | "url";
   content: string; // Markdown or formatted text
   question?: string;
   answer?: string;
   explanation?: string;
+  options?: string[];
+  correctOptionIndex?: number;
   term?: string;
   definition?: string;
   url?: string;
@@ -143,6 +145,8 @@ export interface KnowledgeQuestion {
   explanation: string;
   userSelectedIndex?: number;
   difficulty?: "easy" | "medium" | "hard";
+  sourceType?: "note" | "ai";
+  sourceLabel?: string;
 }
 
 export interface KnowledgeTestArtifact {
@@ -151,12 +155,27 @@ export interface KnowledgeTestArtifact {
   chapterTitle?: string;
   sourceUrl?: string;
   sourceFileName?: string;
+  generationMode?: "hybrid" | "notes_only" | "ai_only";
   createdAt: string;
   questions: KnowledgeQuestion[];
   completedAt?: string;
   lastScore?: number; // e.g. 80 (%)
   lastScoreFraction?: string; // e.g. "4/5"
   attemptsCount?: number;
+}
+
+export interface ReadingRecommendationItem {
+  id: string;
+  title: string;
+  sourceName?: string;
+  type: "article" | "documentation" | "video" | "book_chapter" | "study_guide";
+  topicFocus: string;
+  whyItHelps: string;
+  keyTakeaways: string[];
+  searchQuery: string;
+  url?: string;
+  estimatedReadMinutes?: number;
+  relatedQuestion?: string;
 }
 
 export interface FlashcardItem {

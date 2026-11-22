@@ -7,6 +7,7 @@ import {
   Minus, 
   CheckCircle2, 
   X, 
+  XCircle, 
   Sparkles, 
   Clock, 
   Flame, 
@@ -53,10 +54,23 @@ import {
   Camera,
   ImagePlus
 } from "lucide-react";
-import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote, KnowledgeTestArtifact, GoalStepType } from "../types";
+import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote, KnowledgeTestArtifact, GoalStepType, ReadingRecommendationItem } from "../types";
 import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
 import { GoalKnowledgeHubModal } from "./GoalKnowledgeHubModal";
 import { captureScreenScreenshot, extractImagesFromClipboardEvent, readImageFileAsDataUrl } from "../lib/screenshotCapture";
+import { resolveFillInBlankDraft } from "../lib/fillInBlank";
+import {
+  extractDirectQuestionsFromNotes,
+  formatStudyMaterialForPrompt,
+  TestSourceMode
+} from "../lib/studyNotesContext";
+import {
+  buildSavedReadingNote,
+  findMatchingNotesForQuestion,
+  getRecommendationOpenUrl,
+  isRecommendationSaved,
+  isSafePublicHttpUrl
+} from "../lib/readingSuggestions";
 
 export interface ActiveTimerData {
   title: string;
@@ -653,6 +667,9 @@ export default function FocusTimerModal({
   const [liveNoteQuestion, setLiveNoteQuestion] = useState("");
   const [liveNoteAnswer, setLiveNoteAnswer] = useState("");
   const [liveNoteExplanation, setLiveNoteExplanation] = useState("");
+  const [liveNoteMcqOptions, setLiveNoteMcqOptions] = useState<string[]>(["", "", "", ""]);
+  const [liveNoteMcqCorrectIndex, setLiveNoteMcqCorrectIndex] = useState<number>(0);
+  const [liveNoteTrueFalseAnswer, setLiveNoteTrueFalseAnswer] = useState<"true" | "false">("true");
   const [liveNoteTerm, setLiveNoteTerm] = useState("");
   const [liveNoteDefinition, setLiveNoteDefinition] = useState("");
   const [liveNoteUrl, setLiveNoteUrl] = useState("");
@@ -686,7 +703,10 @@ export default function FocusTimerModal({
   const [selfTestAnswers, setSelfTestAnswers] = useState<Record<string, number>>({});
   const [selfTestSubmitted, setSelfTestSubmitted] = useState(false);
   const [isGeneratingSelfTest, setIsGeneratingSelfTest] = useState(false);
+  const [selfTestSourceMode, setSelfTestSourceMode] = useState<TestSourceMode>("hybrid");
   const [selfTestError, setSelfTestError] = useState<string | null>(null);
+  const [selfTestReadingRecs, setSelfTestReadingRecs] = useState<ReadingRecommendationItem[]>([]);
+  const [isGeneratingSelfTestReadings, setIsGeneratingSelfTestReadings] = useState(false);
   const [reviewedCustomStepLinkIds, setReviewedCustomStepLinkIds] = useState<Record<string, boolean>>({});
 
   const [timerState, setTimerState] = useState<ActiveTimerData | null>(() => {
@@ -952,27 +972,15 @@ export default function FocusTimerModal({
 
   const buildStudyMaterialContext = () => {
     const notes = activeGoal?.knowledgeHub?.notes || [];
-    if (notes.length === 0) return "";
-    return notes
-      .slice(0, 14)
-      .map((n, idx) => {
-        if (n.category === "qa") {
-          return `${idx + 1}. [Q&A] Q: ${n.question || n.title} | A: ${n.answer || n.content}${n.explanation ? ` | Explanation: ${n.explanation}` : ""}`;
-        }
-        if (n.category === "definition") {
-          return `${idx + 1}. [Definition] ${n.term || n.title}: ${n.definition || n.content}`;
-        }
-        if (n.category === "url") {
-          return `${idx + 1}. [Resource: ${n.title}] ${n.urlNotes || n.content || ""}`;
-        }
-        return `${idx + 1}. [${n.category}] ${n.title}: ${(n.content || "").slice(0, 400)}`;
-      })
-      .join("\n");
+    return formatStudyMaterialForPrompt(notes, 18);
   };
 
-  const handleLoadOrGenerateSelfTest = async (forceNew = false) => {
+  const handleLoadOrGenerateSelfTest = async (forceNew = false, modeOverride?: TestSourceMode) => {
     setSelfTestError(null);
+    setSelfTestReadingRecs([]);
     const existingTests = activeGoal?.knowledgeHub?.tests || [];
+    const selectedMode = modeOverride ?? selfTestSourceMode;
+    const savedNotes = activeGoal?.knowledgeHub?.notes || [];
 
     if (!forceNew && existingTests.length > 0) {
       const assignedUrl = activeStepInfo?.assignedLinkUrl;
@@ -989,9 +997,16 @@ export default function FocusTimerModal({
       }
     }
 
+    if (selectedMode === "notes_only" && savedNotes.length === 0) {
+      setSelfTestError("No saved notes found for this goal yet. Add Study Notes first or switch to AI + Notes.");
+      return;
+    }
+
     setIsGeneratingSelfTest(true);
     try {
-      const studyMaterialContext = buildStudyMaterialContext();
+      const includeNotes = selectedMode !== "ai_only" && savedNotes.length > 0;
+      const studyMaterialContext = includeNotes ? buildStudyMaterialContext() : "";
+      const directNoteQuestions = includeNotes ? extractDirectQuestionsFromNotes(savedNotes) : [];
       const activeChapter = activeGoal?.chapters?.find(c => !c.completed)?.title || "";
       const res = await fetch("/api/coach/generate-knowledge-test", {
         method: "POST",
@@ -1003,8 +1018,10 @@ export default function FocusTimerModal({
           examTitle: activeGoal?.targetExamTitle || "",
           difficulty: "medium",
           assignedLinkTitle: activeStepInfo?.assignedLinkTitle || "",
+          sourceMode: selectedMode,
           studyMaterialContext,
-          questionCount: 4
+          directNoteQuestions,
+          questionCount: 5
         })
       });
       const data = await res.json();
@@ -1037,6 +1054,66 @@ export default function FocusTimerModal({
     } finally {
       setIsGeneratingSelfTest(false);
     }
+  };
+
+  const handleGenerateSelfTestReadings = async () => {
+    if (!activeSelfTest) return;
+    setIsGeneratingSelfTestReadings(true);
+    setSelfTestError(null);
+    try {
+      const missedPayload = activeSelfTest.questions
+        .filter(q => selfTestAnswers[q.id] !== q.correctIndex)
+        .map(q => ({
+          question: q.question,
+          correctAnswer: q.options[q.correctIndex] || "",
+          userAnswer: selfTestAnswers[q.id] !== undefined ? (q.options[selfTestAnswers[q.id]] || "") : "",
+          explanation: q.explanation || ""
+        }));
+
+      const activeChapter = activeGoal?.chapters?.find(c => !c.completed)?.title || activeStepInfo?.title || "";
+      const res = await fetch("/api/coach/recommend-reading", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalTitle: activeGoal?.name || timerState?.title || "Study Session",
+          goalCategory: activeGoal?.category || timerState?.category || "Study",
+          chapterTitle: activeChapter,
+          examTitle: activeGoal?.targetExamTitle || "",
+          missedQuestions: missedPayload,
+          existingNoteTitles: (activeGoal?.knowledgeHub?.notes || []).map(n => n.title).slice(0, 15),
+          count: missedPayload.length > 0 ? Math.min(4, Math.max(2, missedPayload.length)) : 3
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.recommendations)) {
+          setSelfTestReadingRecs(data.recommendations);
+        }
+      } else {
+        setSelfTestError("Could not generate reading recommendations right now.");
+      }
+    } catch {
+      setSelfTestError("Network issue while fetching reading recommendations.");
+    } finally {
+      setIsGeneratingSelfTestReadings(false);
+    }
+  };
+
+  const handleSaveSelfTestReading = (rec: ReadingRecommendationItem) => {
+    if (!activeGoal) return;
+    const currentHub: GoalKnowledgeHub = activeGoal.knowledgeHub || {
+      notes: [],
+      tests: [],
+      flashcards: [],
+      overallMasteryScore: 0
+    };
+    if (isRecommendationSaved(rec, currentHub.notes)) return;
+    const activeChapter = activeGoal.chapters?.find(c => !c.completed)?.title || activeStepInfo?.title;
+    const savedNote = buildSavedReadingNote(rec, activeChapter);
+    persistGoalKnowledgeHub(activeGoal.id, {
+      ...currentHub,
+      notes: [savedNote, ...currentHub.notes]
+    });
   };
 
   const handleSubmitSelfTest = () => {
@@ -1153,8 +1230,47 @@ export default function FocusTimerModal({
     }
   };
 
+  const insertBlankIntoLivePrompt = () => {
+    const el = liveNoteQuestionRef.current;
+    if (!el) {
+      setLiveNoteQuestion(prev => (prev ? `${prev.trimEnd()} ___` : "___"));
+      return;
+    }
+    const start = el.selectionStart ?? liveNoteQuestion.length;
+    const end = el.selectionEnd ?? liveNoteQuestion.length;
+    const before = liveNoteQuestion.slice(0, start);
+    const after = liveNoteQuestion.slice(end);
+    const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+    const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
+    const insertion = `${needsLeadingSpace ? " " : ""}___${needsTrailingSpace ? " " : ""}`;
+    const nextValue = `${before}${insertion}${after}`;
+    const nextCursor = start + insertion.length;
+    setLiveNoteQuestion(nextValue);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
+  const compactMcqDraft = (opts: string[], selectedIdx: number) => {
+    const mapped: { text: string; isCorrect: boolean }[] = [];
+    opts.forEach((raw, idx) => {
+      const trimmed = raw.trim();
+      if (trimmed) {
+        mapped.push({ text: trimmed, isCorrect: idx === selectedIdx });
+      }
+    });
+    return {
+      cleanedOptions: mapped.map(m => m.text),
+      correctIndex: mapped.findIndex(m => m.isCorrect)
+    };
+  };
+
   const handleSaveLiveStudyNote = async () => {
     const isQA = liveNoteCategory === "qa";
+    const isFillInBlank = liveNoteCategory === "fill_in_blank";
+    const isMultipleChoice = liveNoteCategory === "multiple_choice";
+    const isTrueFalse = liveNoteCategory === "true_false";
     const isDefinition = liveNoteCategory === "definition";
     const isReadingUrl = liveNoteCategory === "reading_url";
     const isUrl = liveNoteCategory === "url" || isReadingUrl;
@@ -1270,6 +1386,14 @@ export default function FocusTimerModal({
 
     if (isQA) {
       if ((!liveNoteQuestion.trim() || !liveNoteAnswer.trim()) && !hasScreenshots) return;
+    } else if (isFillInBlank) {
+      const resolvedFill = resolveFillInBlankDraft(liveNoteQuestion, liveNoteAnswer);
+      if ((!resolvedFill.prompt || !resolvedFill.answer) && !hasScreenshots) return;
+    } else if (isMultipleChoice) {
+      const { cleanedOptions, correctIndex } = compactMcqDraft(liveNoteMcqOptions, liveNoteMcqCorrectIndex);
+      if ((!liveNoteQuestion.trim() || cleanedOptions.length < 2 || correctIndex < 0) && !hasScreenshots) return;
+    } else if (isTrueFalse) {
+      if (!liveNoteQuestion.trim() && !hasScreenshots) return;
     } else if (isDefinition) {
       if ((!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && !hasScreenshots) return;
     } else if (isUrl) {
@@ -1282,8 +1406,28 @@ export default function FocusTimerModal({
       return;
     }
 
-    const trimmedQuestion = liveNoteQuestion.trim() || (isQA && hasScreenshots ? "Screenshot Question" : "");
-    const trimmedAnswer = liveNoteAnswer.trim() || (isQA && hasScreenshots ? "See attached screenshot" : "");
+    const resolvedFillBlank = isFillInBlank ? resolveFillInBlankDraft(liveNoteQuestion, liveNoteAnswer) : null;
+    const resolvedMcq = isMultipleChoice ? compactMcqDraft(liveNoteMcqOptions, liveNoteMcqCorrectIndex) : null;
+    const trimmedQuestion = isFillInBlank
+      ? (resolvedFillBlank?.prompt || (hasScreenshots ? "Screenshot Fill-in-the-Blank" : ""))
+      : (liveNoteQuestion.trim() || (
+          isMultipleChoice && hasScreenshots
+            ? "Screenshot Multiple Choice Question"
+            : isTrueFalse && hasScreenshots
+            ? "Screenshot True / False Question"
+            : isQA && hasScreenshots
+            ? "Screenshot Question"
+            : ""
+        ));
+    const trimmedAnswer = isFillInBlank
+      ? (resolvedFillBlank?.answer || (hasScreenshots ? "See attached screenshot" : ""))
+      : isMultipleChoice
+      ? (resolvedMcq && resolvedMcq.correctIndex >= 0
+          ? resolvedMcq.cleanedOptions[resolvedMcq.correctIndex]
+          : (hasScreenshots ? "See attached screenshot" : ""))
+      : isTrueFalse
+      ? (liveNoteTrueFalseAnswer === "true" ? "True" : "False")
+      : (liveNoteAnswer.trim() || (isQA && hasScreenshots ? "See attached screenshot" : ""));
     const trimmedExplanation = liveNoteExplanation.trim();
     const trimmedTerm = liveNoteTerm.trim() || (isDefinition && hasScreenshots ? "Screenshot Term" : "");
     const trimmedDefinition = liveNoteDefinition.trim() || (isDefinition && hasScreenshots ? "See attached screenshot" : "");
@@ -1301,9 +1445,16 @@ export default function FocusTimerModal({
     const markReadingAssignment = isReadingUrl ? liveNoteAssignReading : false;
 
     const savedNoteId = `note_${Date.now()}`;
+    const mcqChoicesFormatted = resolvedMcq && resolvedMcq.cleanedOptions.length > 0
+      ? resolvedMcq.cleanedOptions.map((opt, idx) => `${String.fromCharCode(65 + idx)}) ${opt}`).join("\n")
+      : "";
+    const mcqCorrectLabel = resolvedMcq && resolvedMcq.correctIndex >= 0
+      ? `${String.fromCharCode(65 + resolvedMcq.correctIndex)}) ${resolvedMcq.cleanedOptions[resolvedMcq.correctIndex]}`
+      : trimmedAnswer;
+
     const newNote: StudyArtifactNote = {
       id: savedNoteId,
-      title: isQA
+      title: isQA || isFillInBlank || isMultipleChoice || isTrueFalse
         ? trimmedQuestion
         : isDefinition
         ? trimmedTerm
@@ -1311,16 +1462,32 @@ export default function FocusTimerModal({
         ? (liveNoteTitle.trim() || defaultUrlTitle)
         : liveNoteTitle.trim() || `${activeGoal.name} Study Note (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
       category: isUrl ? "url" : (liveNoteCategory as StudyArtifactNote["category"]),
-      content: isQA
+      content: isMultipleChoice
+        ? `Q: ${trimmedQuestion}${mcqChoicesFormatted ? `\n\n${mcqChoicesFormatted}` : ""}\n\nCorrect Answer: ${mcqCorrectLabel}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
+        : isTrueFalse
+        ? `Statement: ${trimmedQuestion}\n\nAnswer: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
+        : isFillInBlank
+        ? `Prompt: ${trimmedQuestion}\n\nAnswer: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
+        : isQA
         ? `Q: ${trimmedQuestion}\n\nA: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isDefinition
         ? `${trimmedTerm}: ${trimmedDefinition}`
         : isUrl
         ? (trimmedUrlContext ? `${trimmedUrl}\n\n${trimmedUrlContext}` : trimmedUrl)
         : (liveNoteContent.trim() || "Attached screenshot"),
-      question: isQA ? trimmedQuestion : undefined,
-      answer: isQA ? trimmedAnswer : undefined,
-      explanation: isQA && trimmedExplanation ? trimmedExplanation : undefined,
+      question: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedQuestion : undefined,
+      answer: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedAnswer : undefined,
+      explanation: (isQA || isFillInBlank || isMultipleChoice || isTrueFalse) && trimmedExplanation ? trimmedExplanation : undefined,
+      options: isMultipleChoice
+        ? (resolvedMcq?.cleanedOptions || [])
+        : isTrueFalse
+        ? ["True", "False"]
+        : undefined,
+      correctOptionIndex: isMultipleChoice
+        ? (resolvedMcq && resolvedMcq.correctIndex >= 0 ? resolvedMcq.correctIndex : undefined)
+        : isTrueFalse
+        ? (liveNoteTrueFalseAnswer === "true" ? 0 : 1)
+        : undefined,
       term: isDefinition ? trimmedTerm : undefined,
       definition: isDefinition ? trimmedDefinition : undefined,
       url: isUrl ? trimmedUrl : undefined,
@@ -1413,7 +1580,13 @@ export default function FocusTimerModal({
     }
 
     setNoteSavedFeedback(
-      isQA
+      isMultipleChoice
+        ? "Multiple Choice question saved to Goal Study Hub!"
+        : isTrueFalse
+        ? "True / False question saved to Goal Study Hub!"
+        : isFillInBlank
+        ? "Fill-in-the-Blank note saved to Goal Study Hub!"
+        : isQA
         ? "Q&A note saved to Goal Study Hub!"
         : isDefinition
         ? "Definition saved to Goal Study Hub!"
@@ -1429,6 +1602,9 @@ export default function FocusTimerModal({
     setLiveNoteQuestion("");
     setLiveNoteAnswer("");
     setLiveNoteExplanation("");
+    setLiveNoteMcqOptions(["", "", "", ""]);
+    setLiveNoteMcqCorrectIndex(0);
+    setLiveNoteTrueFalseAnswer("true");
     setLiveNoteTerm("");
     setLiveNoteDefinition("");
     setLiveNoteUrl("");
@@ -1439,7 +1615,7 @@ export default function FocusTimerModal({
     setScreenshotFallbackNotice(null);
     setTimeout(() => setNoteSavedFeedback(null), 4000);
     requestAnimationFrame(() => {
-      if (isQA) {
+      if (isQA || isFillInBlank || isMultipleChoice || isTrueFalse) {
         liveNoteQuestionRef.current?.focus();
       } else if (isDefinition) {
         liveNoteTermRef.current?.focus();
@@ -1456,6 +1632,18 @@ export default function FocusTimerModal({
     isExtractingLiveUpload ||
     (liveNoteCategory === "qa"
       ? (!liveNoteQuestion.trim() || !liveNoteAnswer.trim()) && liveNoteScreenshots.length === 0
+      : liveNoteCategory === "fill_in_blank"
+      ? (() => {
+          const resolvedFill = resolveFillInBlankDraft(liveNoteQuestion, liveNoteAnswer);
+          return (!resolvedFill.prompt || !resolvedFill.answer) && liveNoteScreenshots.length === 0;
+        })()
+      : liveNoteCategory === "multiple_choice"
+      ? (() => {
+          const resolvedMcq = compactMcqDraft(liveNoteMcqOptions, liveNoteMcqCorrectIndex);
+          return (!liveNoteQuestion.trim() || resolvedMcq.cleanedOptions.length < 2 || resolvedMcq.correctIndex < 0) && liveNoteScreenshots.length === 0;
+        })()
+      : liveNoteCategory === "true_false"
+      ? !liveNoteQuestion.trim() && liveNoteScreenshots.length === 0
       : liveNoteCategory === "definition"
       ? (!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && liveNoteScreenshots.length === 0
       : liveNoteCategory === "url" || liveNoteCategory === "reading_url"
@@ -1468,15 +1656,21 @@ export default function FocusTimerModal({
     canTrigger: boolean;
     disabled: boolean;
     save: () => Promise<void>;
+    canInsertBlank: boolean;
+    insertBlank: () => void;
   }>({
     canTrigger: false,
     disabled: true,
-    save: handleSaveLiveStudyNote
+    save: handleSaveLiveStudyNote,
+    canInsertBlank: false,
+    insertBlank: insertBlankIntoLivePrompt
   });
   liveNoteSaveShortcutRef.current = {
     canTrigger: Boolean(showLiveNotes && !showKnowledgeHubModal),
     disabled: isLiveNoteSaveDisabled,
-    save: handleSaveLiveStudyNote
+    save: handleSaveLiveStudyNote,
+    canInsertBlank: Boolean(showLiveNotes && !showKnowledgeHubModal && liveNoteCategory === "fill_in_blank"),
+    insertBlank: insertBlankIntoLivePrompt
   };
 
   // Request browser desktop notification permission on mount
@@ -2306,6 +2500,20 @@ export default function FocusTimerModal({
           if (!liveNoteSaveShortcutRef.current.disabled) {
             void liveNoteSaveShortcutRef.current.save();
           }
+          return;
+        }
+      }
+
+      if (
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        (e.code === "KeyB" || e.key.toLowerCase() === "b")
+      ) {
+        if (liveNoteSaveShortcutRef.current.canInsertBlank) {
+          e.preventDefault();
+          liveNoteSaveShortcutRef.current.insertBlank();
           return;
         }
       }
@@ -3680,7 +3888,33 @@ export default function FocusTimerModal({
         {/* IN-SESSION STUDY NOTES & SCRATCHPAD PANEL */}
         {showLiveNotes && (
           <div
+            data-live-notes-panel="true"
             onPaste={handleLiveNotesPaste}
+            onKeyDown={(e) => {
+              if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                const container = e.currentTarget;
+                const candidates = Array.from(
+                  container.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), input:not([type="hidden"]):not([disabled]):not(.sr-only), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                  )
+                ).filter((el) => {
+                  if (el.tabIndex < 0 || el.hasAttribute("disabled") || el.classList.contains("sr-only")) return false;
+                  const rect = el.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0;
+                });
+                const active = document.activeElement as HTMLElement | null;
+                const idx = active ? candidates.indexOf(active) : -1;
+                if (idx !== -1) {
+                  if (!e.shiftKey && idx < candidates.length - 1) {
+                    e.preventDefault();
+                    candidates[idx + 1].focus();
+                  } else if (e.shiftKey && idx > 0) {
+                    e.preventDefault();
+                    candidates[idx - 1].focus();
+                  }
+                }
+              }
+            }}
             className="mb-4 p-4 bg-slate-50 dark:bg-[#141724] border border-slate-200 dark:border-white/10 rounded-2xl animate-fade-in space-y-3.5"
           >
             {/* Panel Header */}
@@ -3740,13 +3974,19 @@ export default function FocusTimerModal({
             {/* Note Type & Title Inputs */}
             <div className="space-y-2.5">
               <div className="flex items-center gap-2.5">
-                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">
+                <label
+                  htmlFor="live_note_type_select"
+                  className="text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0 cursor-pointer"
+                >
                   Note Type
                 </label>
                 <select
+                  id="live_note_type_select"
+                  tabIndex={0}
+                  aria-label="Note Type"
                   value={liveNoteCategory}
                   onChange={(e) => setLiveNoteCategory(e.target.value as StudyArtifactNote["category"] | "video_upload" | "reading_url")}
-                  className="flex-1 min-w-0 text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
+                  className="flex-1 min-w-0 text-xs px-3 py-2 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/45"
                 >
                   <option value="concept">Concept Breakdown</option>
                   <option value="cheat_sheet">Cheat Sheet</option>
@@ -3754,6 +3994,9 @@ export default function FocusTimerModal({
                   <option value="summary">Summary</option>
                   <option value="formula">Formula / Algorithm</option>
                   <option value="qa">Question &amp; Answer</option>
+                  <option value="fill_in_blank">Fill in the Blank</option>
+                  <option value="multiple_choice">Multiple Choice Question</option>
+                  <option value="true_false">True / False Question</option>
                   <option value="definition">Definition</option>
                   <option value="url">Video / Resource URL</option>
                   <option value="reading_url">Website Reading Link (Regular URL)</option>
@@ -3761,7 +4004,7 @@ export default function FocusTimerModal({
                 </select>
               </div>
 
-              {liveNoteCategory !== "qa" && liveNoteCategory !== "definition" && (
+              {liveNoteCategory !== "qa" && liveNoteCategory !== "fill_in_blank" && liveNoteCategory !== "multiple_choice" && liveNoteCategory !== "true_false" && liveNoteCategory !== "definition" && (
                 <input
                   ref={liveNoteTitleRef}
                   type="text"
@@ -3818,6 +4061,231 @@ export default function FocusTimerModal({
                   <textarea
                     rows={2}
                     placeholder="Optional: explain why this is the answer..."
+                    value={liveNoteExplanation}
+                    onChange={(e) => setLiveNoteExplanation(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+                  />
+                </div>
+              </div>
+            ) : liveNoteCategory === "fill_in_blank" ? (
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-teal-600 dark:text-teal-300 flex items-center gap-1.5">
+                      <Edit3 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Sentence / Prompt with Blank</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={insertBlankIntoLivePrompt}
+                      title="Insert blank at cursor (Alt+B / Option+B)"
+                      className="px-2 py-0.5 rounded-md bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/35 text-[11px] font-semibold text-teal-700 dark:text-teal-300 transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5"
+                    >
+                      <span>+ Insert ___</span>
+                      <kbd className="px-1 py-0 rounded bg-teal-500/15 dark:bg-teal-950/60 border border-teal-500/30 font-mono text-[10px] text-teal-800 dark:text-teal-200">
+                        Alt+B
+                      </kbd>
+                    </button>
+                  </div>
+                  <textarea
+                    ref={liveNoteQuestionRef}
+                    rows={2}
+                    placeholder="e.g. DNS translates domain names into ___ addresses. (Or wrap [IP] in brackets)"
+                    value={liveNoteQuestion}
+                    onChange={(e) => setLiveNoteQuestion(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-teal-300 dark:border-teal-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-teal-500 custom-scrollbar"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-emerald-600 dark:text-emerald-300 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Missing Word / Answer</span>
+                    </label>
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                      Separate multiple blanks with commas
+                    </span>
+                  </div>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. IP (or leave blank if using [brackets] above)"
+                    value={liveNoteAnswer}
+                    onChange={(e) => setLiveNoteAnswer(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-emerald-300 dark:border-emerald-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-emerald-500 custom-scrollbar"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+                    <span>Answer Explanation (Optional)</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Optional: explain why this word/concept fits..."
+                    value={liveNoteExplanation}
+                    onChange={(e) => setLiveNoteExplanation(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+                  />
+                </div>
+              </div>
+            ) : liveNoteCategory === "multiple_choice" ? (
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5">
+                    <HelpCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Multiple Choice Question</span>
+                  </label>
+                  <textarea
+                    ref={liveNoteQuestionRef}
+                    rows={2}
+                    placeholder="e.g. Which port does DNS use by default?"
+                    value={liveNoteQuestion}
+                    onChange={(e) => setLiveNoteQuestion(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-indigo-300 dark:border-indigo-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 custom-scrollbar"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-emerald-600 dark:text-emerald-300 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Answer Choices (Click letter to mark correct)</span>
+                    </label>
+                    {liveNoteMcqOptions.length < 6 && (
+                      <button
+                        type="button"
+                        onClick={() => setLiveNoteMcqOptions(prev => [...prev, ""])}
+                        className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 dark:text-indigo-300 dark:hover:text-indigo-200 cursor-pointer"
+                      >
+                        + Add Choice
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    {liveNoteMcqOptions.map((opt, idx) => {
+                      const isCorrect = liveNoteMcqCorrectIndex === idx;
+                      return (
+                        <div key={idx} className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setLiveNoteMcqCorrectIndex(idx)}
+                            title={isCorrect ? "Marked as correct answer" : `Mark choice ${String.fromCharCode(65 + idx)} as correct`}
+                            className={`w-7 h-7 rounded-lg border text-xs font-mono font-bold flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
+                              isCorrect
+                                ? "keep-white bg-emerald-600 border-emerald-600 text-white !text-white shadow-sm"
+                                : "bg-white dark:bg-[#0b0e18] border-slate-300 dark:border-white/15 text-slate-600 dark:text-slate-300 hover:border-emerald-400"
+                            }`}
+                          >
+                            {String.fromCharCode(65 + idx)}
+                          </button>
+                          <input
+                            type="text"
+                            placeholder={`Choice ${String.fromCharCode(65 + idx)}${idx >= 2 ? " (optional if >=2 filled)" : ""}`}
+                            value={opt}
+                            onChange={(e) => {
+                              const next = [...liveNoteMcqOptions];
+                              next[idx] = e.target.value;
+                              setLiveNoteMcqOptions(next);
+                            }}
+                            className={`flex-1 min-w-0 text-xs px-2.5 py-1.5 bg-white dark:bg-[#0b0e18] border rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none ${
+                              isCorrect
+                                ? "border-emerald-400 dark:border-emerald-600/60 focus:border-emerald-500"
+                                : "border-slate-200 dark:border-white/12 focus:border-indigo-500"
+                            }`}
+                          />
+                          {liveNoteMcqOptions.length > 2 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLiveNoteMcqOptions(prev => prev.filter((_, i) => i !== idx));
+                                setLiveNoteMcqCorrectIndex(prev =>
+                                  prev === idx ? 0 : prev > idx ? prev - 1 : prev
+                                );
+                              }}
+                              title="Remove choice"
+                              className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+                    <span>Answer Explanation (Optional)</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Optional: explain why this choice is correct..."
+                    value={liveNoteExplanation}
+                    onChange={(e) => setLiveNoteExplanation(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+                  />
+                </div>
+              </div>
+            ) : liveNoteCategory === "true_false" ? (
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-purple-600 dark:text-purple-300 flex items-center gap-1.5">
+                    <HelpCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>True / False Statement</span>
+                  </label>
+                  <textarea
+                    ref={liveNoteQuestionRef}
+                    rows={2}
+                    placeholder="e.g. UDP guarantees ordered, reliable packet delivery."
+                    value={liveNoteQuestion}
+                    onChange={(e) => setLiveNoteQuestion(e.target.value)}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-purple-300 dark:border-purple-700/40 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-purple-500 custom-scrollbar"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-emerald-600 dark:text-emerald-300 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Correct Answer</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLiveNoteTrueFalseAnswer("true")}
+                      className={`py-2 px-3 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        liveNoteTrueFalseAnswer === "true"
+                          ? "keep-white bg-emerald-600 border-emerald-600 text-white !text-white shadow-sm"
+                          : "bg-white dark:bg-[#0b0e18] border-slate-200 dark:border-white/12 text-slate-700 dark:text-slate-300 hover:border-emerald-400"
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>True</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLiveNoteTrueFalseAnswer("false")}
+                      className={`py-2 px-3 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        liveNoteTrueFalseAnswer === "false"
+                          ? "keep-white bg-rose-600 border-rose-600 text-white !text-white shadow-sm"
+                          : "bg-white dark:bg-[#0b0e18] border-slate-200 dark:border-white/12 text-slate-700 dark:text-slate-300 hover:border-rose-400"
+                      }`}
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>False</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
+                    <span>Answer Explanation (Optional)</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Optional: explain why this statement is True or False..."
                     value={liveNoteExplanation}
                     onChange={(e) => setLiveNoteExplanation(e.target.value)}
                     className="w-full text-xs p-2.5 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
@@ -4162,6 +4630,12 @@ export default function FocusTimerModal({
                       ? "Extracting..."
                       : liveNoteCategory === "qa"
                       ? "Save Q&A"
+                      : liveNoteCategory === "fill_in_blank"
+                      ? "Save Fill-in-the-Blank"
+                      : liveNoteCategory === "multiple_choice"
+                      ? "Save Multiple Choice"
+                      : liveNoteCategory === "true_false"
+                      ? "Save True / False"
                       : liveNoteCategory === "definition"
                       ? "Save Definition"
                       : liveNoteCategory === "url"
@@ -4183,7 +4657,7 @@ export default function FocusTimerModal({
           <div className="mb-3 px-3 py-2 bg-slate-50 dark:bg-[#141724] border border-slate-200 dark:border-white/10 rounded-xl flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 min-w-0">
               <FileText className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
-              <span className="truncate">Need to jot down notes, Q&amp;As, or definitions?</span>
+              <span className="truncate">Need to jot down notes, Q&amp;As, fill-in-the-blanks, or definitions?</span>
             </div>
             <button
               type="button"
@@ -4488,6 +4962,34 @@ export default function FocusTimerModal({
                           </div>
                         </div>
 
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <span className="text-[10px] text-slate-400 mr-1">Mix:</span>
+                          {(
+                            [
+                              { id: "hybrid", label: "AI + Notes" },
+                              { id: "notes_only", label: "Notes Only" },
+                              { id: "ai_only", label: "AI Only" }
+                            ] as const
+                          ).map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              disabled={isGeneratingSelfTest}
+                              onClick={() => {
+                                setSelfTestSourceMode(opt.id);
+                                handleLoadOrGenerateSelfTest(true, opt.id);
+                              }}
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border transition cursor-pointer disabled:opacity-50 ${
+                                selfTestSourceMode === opt.id
+                                  ? "bg-violet-600 border-violet-400 text-white"
+                                  : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+
                         {selfTestError && (
                           <p className="text-[11px] text-rose-300 bg-rose-950/30 border border-rose-500/30 rounded-lg p-2">
                             {selfTestError}
@@ -4505,9 +5007,22 @@ export default function FocusTimerModal({
                               const picked = selfTestAnswers[q.id];
                               return (
                                 <div key={q.id} className="p-2.5 rounded-lg bg-white/[0.03] border border-white/10 space-y-2 text-xs">
-                                  <p className="font-semibold text-slate-100 leading-snug">
-                                    {qIdx + 1}. {q.question}
-                                  </p>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="font-semibold text-slate-100 leading-snug">
+                                      {qIdx + 1}. {q.question}
+                                    </p>
+                                    {q.sourceLabel && (
+                                      <span
+                                        className={`text-[9px] px-1.5 py-0.5 rounded font-semibold whitespace-nowrap shrink-0 border ${
+                                          q.sourceType === "note"
+                                            ? "bg-teal-500/15 text-teal-200 border-teal-400/35"
+                                            : "bg-indigo-500/15 text-indigo-200 border-indigo-400/35"
+                                        }`}
+                                      >
+                                        {q.sourceLabel}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="space-y-1">
                                     {q.options.map((opt, optIdx) => {
                                       const isSelected = picked === optIdx;
@@ -4546,6 +5061,40 @@ export default function FocusTimerModal({
                                       {q.explanation}
                                     </p>
                                   )}
+                                  {selfTestSubmitted && picked !== q.correctIndex && (() => {
+                                    const matchedNotes = findMatchingNotesForQuestion(
+                                      q.question,
+                                      q.explanation || "",
+                                      q.options[q.correctIndex] || "",
+                                      activeGoal?.knowledgeHub?.notes || [],
+                                      2
+                                    );
+                                    if (matchedNotes.length === 0) return null;
+                                    return (
+                                      <div className="p-2 rounded bg-amber-950/35 border border-amber-500/30 space-y-1">
+                                        <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                                          <BookOpen className="w-3 h-3" />
+                                          <span>Review From Your Notes:</span>
+                                        </span>
+                                        {matchedNotes.map(mn => (
+                                          <div key={mn.id} className="text-[10.5px] text-amber-100/90 flex items-center justify-between gap-2">
+                                            <span className="truncate">• {mn.title}</span>
+                                            {mn.url && isSafePublicHttpUrl(mn.url) && (
+                                              <a
+                                                href={mn.url}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-cyan-300 hover:underline shrink-0 inline-flex items-center gap-0.5"
+                                              >
+                                                <span>Open</span>
+                                                <ExternalLink className="w-2.5 h-2.5" />
+                                              </a>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })}
@@ -4559,6 +5108,81 @@ export default function FocusTimerModal({
                             >
                               Load Multiple-Choice Questions
                             </button>
+                          </div>
+                        )}
+
+                        {selfTestSubmitted && activeSelfTest && activeSelfTest.questions.length > 0 && (
+                          <div className="space-y-2 pt-1">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span className="text-[10.5px] text-cyan-200 font-semibold flex items-center gap-1">
+                                <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+                                <span>
+                                  {activeSelfTest.questions.some(q => selfTestAnswers[q.id] !== q.correctIndex)
+                                    ? "Missed questions? Get targeted readings & save them:"
+                                    : "Want deeper follow-up reading?"}
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                disabled={isGeneratingSelfTestReadings}
+                                onClick={handleGenerateSelfTestReadings}
+                                className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                {isGeneratingSelfTestReadings ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3 h-3 text-amber-200" />
+                                )}
+                                <span>
+                                  {isGeneratingSelfTestReadings ? "Finding Readings..." : "AI Recommend Readings"}
+                                </span>
+                              </button>
+                            </div>
+
+                            {selfTestReadingRecs.length > 0 && (
+                              <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                                {selfTestReadingRecs.map(rec => {
+                                  const saved = isRecommendationSaved(rec, activeGoal?.knowledgeHub?.notes || []);
+                                  return (
+                                    <div
+                                      key={rec.id}
+                                      className="p-2 rounded-lg bg-cyan-950/35 border border-cyan-500/30 space-y-1 text-[11px]"
+                                    >
+                                      <div className="flex items-start justify-between gap-2">
+                                        <span className="font-semibold text-cyan-100 leading-snug">{rec.title}</span>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <a
+                                            href={getRecommendationOpenUrl(rec)}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-cyan-200 text-[10px] font-semibold inline-flex items-center gap-0.5"
+                                          >
+                                            <ExternalLink className="w-2.5 h-2.5" />
+                                            <span>Read</span>
+                                          </a>
+                                          {activeGoal && (
+                                            <button
+                                              type="button"
+                                              disabled={saved}
+                                              onClick={() => handleSaveSelfTestReading(rec)}
+                                              className={`px-2 py-0.5 rounded text-[10px] font-semibold inline-flex items-center gap-0.5 cursor-pointer ${
+                                                saved
+                                                  ? "bg-emerald-500/25 text-emerald-200 border border-emerald-400/40 cursor-default"
+                                                  : "bg-cyan-600 hover:bg-cyan-500 text-white"
+                                              }`}
+                                            >
+                                              {saved ? <Check className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
+                                              <span>{saved ? "Saved" : "Save"}</span>
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <p className="text-[10px] text-slate-300 leading-snug">{rec.whyItHelps}</p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         )}
 
