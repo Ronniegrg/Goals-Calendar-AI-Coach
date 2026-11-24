@@ -42,6 +42,20 @@ export function formatStudyMaterialForPrompt(
           n.definition || n.content
         }`;
       }
+      if (n.category === "table") {
+        const headers = Array.isArray(n.tableHeaders) && n.tableHeaders.length > 0 ? n.tableHeaders : [];
+        const rows = Array.isArray(n.tableRows) ? n.tableRows : [];
+        if (headers.length > 0) {
+          const rowsSummary = rows
+            .slice(0, 12)
+            .map((r) => headers.map((h, i) => `${h}: ${r[i] || ""}`).join(", "))
+            .join(" ; ");
+          return `${idx + 1}. [Table] ${n.title}: Columns (${headers.join(" | ")})${
+            rowsSummary ? ` | Rows: ${rowsSummary}` : ""
+          }`.slice(0, 650);
+        }
+        return `${idx + 1}. [Table] ${n.title}: ${(n.content || "").slice(0, 550)}`;
+      }
       if (n.category === "url") {
         return `${idx + 1}. [Resource: ${n.title}] ${
           n.urlNotes || n.content || ""

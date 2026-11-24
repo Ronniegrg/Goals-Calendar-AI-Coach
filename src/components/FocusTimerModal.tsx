@@ -71,6 +71,13 @@ import {
   isRecommendationSaved,
   isSafePublicHttpUrl
 } from "../lib/readingSuggestions";
+import { TableNoteEditor } from "./TableNoteEditor";
+import {
+  createEmptyTableHeaders,
+  createEmptyTableRows,
+  formatTableAsMarkdown,
+  normalizeTableDraft
+} from "../lib/tableNote";
 
 export interface ActiveTimerData {
   title: string;
@@ -672,6 +679,8 @@ export default function FocusTimerModal({
   const [liveNoteTrueFalseAnswer, setLiveNoteTrueFalseAnswer] = useState<"true" | "false">("true");
   const [liveNoteTerm, setLiveNoteTerm] = useState("");
   const [liveNoteDefinition, setLiveNoteDefinition] = useState("");
+  const [liveNoteTableHeaders, setLiveNoteTableHeaders] = useState<string[]>(() => createEmptyTableHeaders(3));
+  const [liveNoteTableRows, setLiveNoteTableRows] = useState<string[][]>(() => createEmptyTableRows(3, 3));
   const [liveNoteUrl, setLiveNoteUrl] = useState("");
   const [liveNoteUrlContext, setLiveNoteUrlContext] = useState("");
   const [liveNoteRequiresLogin, setLiveNoteRequiresLogin] = useState(false);
@@ -1272,6 +1281,7 @@ export default function FocusTimerModal({
     const isMultipleChoice = liveNoteCategory === "multiple_choice";
     const isTrueFalse = liveNoteCategory === "true_false";
     const isDefinition = liveNoteCategory === "definition";
+    const isTable = liveNoteCategory === "table";
     const isReadingUrl = liveNoteCategory === "reading_url";
     const isUrl = liveNoteCategory === "url" || isReadingUrl;
     const isVideoUpload = liveNoteCategory === "video_upload";
@@ -1339,10 +1349,10 @@ export default function FocusTimerModal({
           method: "POST",
           body: formData
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           setNoteSavedFeedback(data?.error || "Could not extract study notes or quiz from that upload.");
-          setTimeout(() => setNoteSavedFeedback(null), 5000);
+          setTimeout(() => setNoteSavedFeedback(null), res.status === 429 ? 8500 : 5500);
           return;
         }
 
@@ -1396,6 +1406,9 @@ export default function FocusTimerModal({
       if (!liveNoteQuestion.trim() && !hasScreenshots) return;
     } else if (isDefinition) {
       if ((!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && !hasScreenshots) return;
+    } else if (isTable) {
+      const checkTable = normalizeTableDraft(liveNoteTableHeaders, liveNoteTableRows);
+      if (!checkTable.hasContent && !hasScreenshots) return;
     } else if (isUrl) {
       if (!liveNoteUrl.trim() || !isSafeHttpUrl(liveNoteUrl)) {
         setNoteSavedFeedback("Please enter a valid http:// or https:// URL.");
@@ -1408,6 +1421,7 @@ export default function FocusTimerModal({
 
     const resolvedFillBlank = isFillInBlank ? resolveFillInBlankDraft(liveNoteQuestion, liveNoteAnswer) : null;
     const resolvedMcq = isMultipleChoice ? compactMcqDraft(liveNoteMcqOptions, liveNoteMcqCorrectIndex) : null;
+    const resolvedTable = isTable ? normalizeTableDraft(liveNoteTableHeaders, liveNoteTableRows) : null;
     const trimmedQuestion = isFillInBlank
       ? (resolvedFillBlank?.prompt || (hasScreenshots ? "Screenshot Fill-in-the-Blank" : ""))
       : (liveNoteQuestion.trim() || (
@@ -1458,11 +1472,15 @@ export default function FocusTimerModal({
         ? trimmedQuestion
         : isDefinition
         ? trimmedTerm
+        : isTable
+        ? (liveNoteTitle.trim() || `${activeGoal.name} Table (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`)
         : isUrl
         ? (liveNoteTitle.trim() || defaultUrlTitle)
         : liveNoteTitle.trim() || `${activeGoal.name} Study Note (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
       category: isUrl ? "url" : (liveNoteCategory as StudyArtifactNote["category"]),
-      content: isMultipleChoice
+      content: isTable
+        ? (resolvedTable?.hasContent ? formatTableAsMarkdown(resolvedTable.headers, resolvedTable.rows) : "Attached table screenshot")
+        : isMultipleChoice
         ? `Q: ${trimmedQuestion}${mcqChoicesFormatted ? `\n\n${mcqChoicesFormatted}` : ""}\n\nCorrect Answer: ${mcqCorrectLabel}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isTrueFalse
         ? `Statement: ${trimmedQuestion}\n\nAnswer: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
@@ -1475,6 +1493,8 @@ export default function FocusTimerModal({
         : isUrl
         ? (trimmedUrlContext ? `${trimmedUrl}\n\n${trimmedUrlContext}` : trimmedUrl)
         : (liveNoteContent.trim() || "Attached screenshot"),
+      tableHeaders: isTable && resolvedTable?.hasContent ? resolvedTable.headers : undefined,
+      tableRows: isTable && resolvedTable?.hasContent ? resolvedTable.rows : undefined,
       question: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedQuestion : undefined,
       answer: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedAnswer : undefined,
       explanation: (isQA || isFillInBlank || isMultipleChoice || isTrueFalse) && trimmedExplanation ? trimmedExplanation : undefined,
@@ -1516,6 +1536,7 @@ export default function FocusTimerModal({
     if (shouldExtract) {
       setIsExtractingLiveUrl(true);
       setNoteSavedFeedback("Link saved. Extracting study notes & quiz questions...");
+      let feedbackTimeoutMs = 5000;
       try {
         const res = await fetch("/api/coach/extract-from-url", {
           method: "POST",
@@ -1529,9 +1550,14 @@ export default function FocusTimerModal({
             mode: "both"
           })
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          setNoteSavedFeedback(data?.error || "Link saved, but could not extract notes from this URL.");
+          if (res.status === 429) feedbackTimeoutMs = 8500;
+          setNoteSavedFeedback(
+            data?.error
+              ? `Link saved. ${data.error}`
+              : "Link saved, but could not extract notes from this URL."
+          );
         } else {
           const isRestricted = data.accessStatus === "restricted" || (data.accessStatus === "partial_public" && (!data.test || !data.notes?.length));
           const updatedNotesList = baseHub.notes.map(n =>
@@ -1571,7 +1597,7 @@ export default function FocusTimerModal({
         setLiveNoteTitle("");
         setLiveNoteScreenshots([]);
         setScreenshotFallbackNotice(null);
-        setTimeout(() => setNoteSavedFeedback(null), 5000);
+        setTimeout(() => setNoteSavedFeedback(null), feedbackTimeoutMs);
         requestAnimationFrame(() => {
           liveNoteUrlRef.current?.focus();
         });
@@ -1590,6 +1616,8 @@ export default function FocusTimerModal({
         ? "Q&A note saved to Goal Study Hub!"
         : isDefinition
         ? "Definition saved to Goal Study Hub!"
+        : isTable
+        ? "Table note saved to Goal Study Hub!"
         : isReadingUrl && markReadingAssignment
         ? "Reading link saved! I'll remind you to read this website when studying, reviewing, or testing."
         : isUrl && markLoginRequired
@@ -1607,6 +1635,8 @@ export default function FocusTimerModal({
     setLiveNoteTrueFalseAnswer("true");
     setLiveNoteTerm("");
     setLiveNoteDefinition("");
+    setLiveNoteTableHeaders(createEmptyTableHeaders(3));
+    setLiveNoteTableRows(createEmptyTableRows(3, 3));
     setLiveNoteUrl("");
     setLiveNoteUrlContext("");
     setLiveNoteRequiresLogin(false);
@@ -1646,6 +1676,8 @@ export default function FocusTimerModal({
       ? !liveNoteQuestion.trim() && liveNoteScreenshots.length === 0
       : liveNoteCategory === "definition"
       ? (!liveNoteTerm.trim() || !liveNoteDefinition.trim()) && liveNoteScreenshots.length === 0
+      : liveNoteCategory === "table"
+      ? !normalizeTableDraft(liveNoteTableHeaders, liveNoteTableRows).hasContent && liveNoteScreenshots.length === 0
       : liveNoteCategory === "url" || liveNoteCategory === "reading_url"
       ? !liveNoteUrl.trim()
       : liveNoteCategory === "video_upload"
@@ -3993,6 +4025,7 @@ export default function FocusTimerModal({
                   <option value="code_snippet">Code Snippet / Command</option>
                   <option value="summary">Summary</option>
                   <option value="formula">Formula / Algorithm</option>
+                  <option value="table">Table</option>
                   <option value="qa">Question &amp; Answer</option>
                   <option value="fill_in_blank">Fill in the Blank</option>
                   <option value="multiple_choice">Multiple Choice Question</option>
@@ -4015,6 +4048,8 @@ export default function FocusTimerModal({
                       ? "Article / Website title (Optional — auto-detected if blank)"
                       : liveNoteCategory === "url"
                       ? "Resource title (Optional — auto-detected if blank)"
+                      : liveNoteCategory === "table"
+                      ? "Table title (e.g. OSI Layers or Port Numbers)"
                       : "Note title (e.g. Chapter 3 DNS & Port 53)"
                   }
                   value={liveNoteTitle}
@@ -4474,6 +4509,16 @@ export default function FocusTimerModal({
                   />
                 </div>
               </div>
+            ) : liveNoteCategory === "table" ? (
+              <TableNoteEditor
+                headers={liveNoteTableHeaders}
+                rows={liveNoteTableRows}
+                onChange={(nextHeaders, nextRows) => {
+                  setLiveNoteTableHeaders(nextHeaders);
+                  setLiveNoteTableRows(nextRows);
+                }}
+                compact
+              />
             ) : (
               <textarea
                 rows={4}
@@ -4638,6 +4683,8 @@ export default function FocusTimerModal({
                       ? "Save True / False"
                       : liveNoteCategory === "definition"
                       ? "Save Definition"
+                      : liveNoteCategory === "table"
+                      ? "Save Table"
                       : liveNoteCategory === "url"
                       ? (extractOnUrlSave && (!liveNoteRequiresLogin || liveNoteUrlContext.trim().length > 0) ? "Save & Extract" : "Save Link")
                       : liveNoteCategory === "reading_url"

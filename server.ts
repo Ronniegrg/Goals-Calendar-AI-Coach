@@ -52,13 +52,27 @@ function getAi(): GoogleGenAI {
 }
 
 /**
+ * Detects Gemini quota / rate-limit errors (HTTP 429 / RESOURCE_EXHAUSTED).
+ */
+function isGeminiQuotaOrRateLimitError(err: any): boolean {
+  const status = Number(err?.status || err?.code || 0);
+  const msg = String(err?.message || err || "");
+  return status === 429 || /RESOURCE_EXHAUSTED|"code"\s*:\s*429|\b429\b|quota|rate[- ]?limit/i.test(msg);
+}
+
+/**
+ * Detects invalid or unauthorized Gemini API key errors.
+ */
+function isGeminiKeyError(err: any): boolean {
+  const status = Number(err?.status || err?.code || 0);
+  const msg = String(err?.message || err || "");
+  if (/PERMISSION_DENIED|API_KEY_INVALID/i.test(msg)) return true;
+  return (status === 403 || status === 400 || /\b(403|400)\b/.test(msg)) && /key|api/i.test(msg);
+}
+
+/**
  * Resilient Gemini Content Generator with multi-tier model fallback.
- * Automatically cascades through:
- * 1. Primary Model (defaults to gemini-3.8-flash)
- * 2. Stable Alias (gemini-flash-latest)
- * 3. High-throughput Lite (gemini-3.1-flash-lite)
- * If cloud models encounter temporary demand spikes (503/429), it smoothly
- * transitions down the tier chain before engaging the local heuristic intelligence.
+ * Cascades from gemini-4-hydrogen -> gemini-3.1-flash-lite.
  */
 async function generateWithFallback(params: {
   contents: any;
@@ -72,9 +86,9 @@ async function generateWithFallback(params: {
 
   const ai = getAi();
   const requestTimeout = params.timeoutMs || 4000;
-  
+
   const modelChain = [
-    params.primaryModel || "gemini-3.8-flash",
+    params.primaryModel || "gemini-4-hydrogen",
     params.fallbackModel || "gemini-3.1-flash-lite"
   ];
   const uniqueModels = Array.from(new Set(modelChain));
@@ -106,15 +120,67 @@ async function generateWithFallback(params: {
 
       if (!isLast) {
         const nextModel = uniqueModels[i + 1];
-        console.log(`[AI Service] Model ${model} ${isDemandSpike ? "busy (high demand 503/timeout)" : "unavailable"}. Transitioning gracefully to ${nextModel}...`);
-        await new Promise((r) => setTimeout(r, 200));
+        console.warn(`[AI Service] Model ${model} ${isDemandSpike ? "busy (429/503/timeout)" : "unavailable"}. Transitioning to ${nextModel}...`);
+        await new Promise((r) => setTimeout(r, 250));
       } else {
-        console.log(`[AI Service] All cloud models currently experiencing temporary demand spike. Transitioning to local heuristic intelligence.`);
+        console.warn(`[AI Service] All cloud models unavailable (${isQuotaOrRateLimitLabel(err)}). Using fallback where available.`);
       }
     }
   }
 
   return null;
+}
+
+function isQuotaOrRateLimitLabel(err: any): string {
+  if (isGeminiQuotaOrRateLimitError(err)) return "quota/rate-limit 429";
+  if (isGeminiKeyError(err)) return "API key error";
+  return err?.message ? String(err.message).slice(0, 120) : "unavailable";
+}
+
+/**
+ * Generates Gemini content across model tiers and rethrows the final error
+ * so endpoints can surface accurate HTTP status codes (e.g. 429 RESOURCE_EXHAUSTED).
+ */
+async function generateContentWithModelFallback(params: {
+  contents: any;
+  config?: any;
+  models?: string[];
+  timeoutMs?: number;
+}): Promise<any> {
+  const ai = getAi();
+  const models = Array.from(new Set(params.models && params.models.length > 0 ? params.models : ["gemini-4-hydrogen", "gemini-3.1-flash-lite"]));
+  const requestTimeout = params.timeoutMs || 28000;
+  let lastErr: any = null;
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    try {
+      let timer: any;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after ${requestTimeout}ms`)), requestTimeout);
+      });
+
+      const apiPromise = ai.models.generateContent({
+        model,
+        contents: params.contents,
+        config: params.config
+      });
+
+      const result = await Promise.race([apiPromise, timeoutPromise]) as any;
+      clearTimeout(timer);
+      return result;
+    } catch (err: any) {
+      lastErr = err;
+      const isLast = i === models.length - 1;
+      if (isGeminiKeyError(err) || isLast) {
+        throw err;
+      }
+      console.warn(`[AI Extraction] ${model} failed (${isQuotaOrRateLimitLabel(err)}); retrying with ${models[i + 1]}...`);
+      await new Promise((r) => setTimeout(r, 350));
+    }
+  }
+
+  throw lastErr || new Error("Gemini content generation failed.");
 }
 
 // Simple JSON File Database file path
@@ -731,13 +797,12 @@ ${JSON.stringify(availability, null, 2)}`;
       });
 
       const result = await generateWithFallback({
-        primaryModel: "gemini-3.8-flash",
+        primaryModel: "gemini-4-hydrogen",
         fallbackModel: "gemini-3.1-flash-lite",
         contents: contentsPayload,
         config: {
           systemInstruction: systemPrompt,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          temperature: 0.7
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
         },
         timeoutMs: 18000
       });
@@ -838,12 +903,11 @@ Provide 3 high-impact, concrete recommendedAdjustments tailored to the user's re
 
     const userPrompt = `Goals: ${JSON.stringify(goals)}\nCompleted/Scheduled Events: ${JSON.stringify(events)}\nAvailability: ${JSON.stringify(availability)}`;
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-4-hydrogen",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.4,
         responseMimeType: "application/json"
       }
     });
@@ -900,12 +964,11 @@ Energy Chronotype: ${energyProfile.chronotype || "steady"} (Slump protection: ${
 Burnout Ceiling: ${burnoutLimits.weekdayMaxHours || 3.5}h weekday / ${burnoutLimits.weekendMaxHours || 5.0}h weekend`;
 
       const result = await generateWithFallback({
-        primaryModel: "gemini-3.8-flash",
+        primaryModel: "gemini-4-hydrogen",
         fallbackModel: "gemini-3.1-flash-lite",
         contents: userPrompt,
         config: {
           systemInstruction: systemPrompt,
-          temperature: 0.3,
           responseMimeType: "application/json"
         }
       });
@@ -1104,12 +1167,11 @@ Return ONLY valid JSON. No markdown ticks.`;
     const userPrompt = `Goal Name: "${goalName}"\nType: "${goalType}"\nCategory: "${category}"\nTotal Session Duration: ${targetDur} minutes\nDifficulty / Focus: "${difficulty}"`;
 
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-4-hydrogen",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.3,
         responseMimeType: "application/json"
       }
     });
@@ -1227,12 +1289,11 @@ Return ONLY valid JSON. No markdown ticks outside the JSON.`;
     const userPrompt = `Goal: "${goalTitle}"\nCategory: "${goalCategory}"\nSpecific Chapter/Topic: "${chapterTitle || 'Core Curriculum'}"\nTarget Exam/Milestone: "${examTitle || 'Mastery'}"`;
 
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-4-hydrogen",
       fallbackModel: "gemini-3.1-flash-lite",
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.3,
         responseMimeType: "application/json"
       }
     });
@@ -1317,8 +1378,8 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
         })
         .filter((q: any) => q.options.length >= 2);
 
-  // Detect if there are other note types (definitions, summaries, concepts, Q&A, fill-in-the-blank, etc.)
-  const hasRichNoteContext = /\[(Definition|Q&A|Fill-in-the-Blank|concept|cheat_sheet|code_snippet|summary|formula|Resource:)/i.test(safeContext);
+  // Detect if there are other note types (definitions, summaries, concepts, tables, Q&A, fill-in-the-blank, etc.)
+  const hasRichNoteContext = /\[(Definition|Q&A|Fill-in-the-Blank|Table|concept|cheat_sheet|code_snippet|summary|formula|Resource:)/i.test(safeContext);
   const directCap =
     effectiveMode === "notes_only"
       ? (hasRichNoteContext ? Math.max(1, Math.ceil(clampedCount * 0.5)) : clampedCount)
@@ -1549,10 +1610,10 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
   try {
     const noteGuidance =
       effectiveMode === "notes_only" && safeContext
-        ? `ALL ${aiCountNeeded} questions MUST be derived strictly from the student's provided Study Material Notes (covering their Definitions, Summaries, Concepts, Cheat Sheets, Formulas, Code Snippets, Q&As, and Fill-in-the-Blank items). Do not ask unrelated outside trivia. Set "sourceType": "note" and "sourceLabel": "From Your Notes" on every question.`
+        ? `ALL ${aiCountNeeded} questions MUST be derived strictly from the student's provided Study Material Notes (covering their Definitions, Tables, Summaries, Concepts, Cheat Sheets, Formulas, Code Snippets, Q&As, and Fill-in-the-Blank items). Do not ask unrelated outside trivia. Set "sourceType": "note" and "sourceLabel": "From Your Notes" on every question.`
         : effectiveMode === "hybrid" && safeContext
         ? `This is a COMBINATION assessment blending the student's saved study material with fresh AI exam questions:
-- Roughly HALF of the ${aiCountNeeded} questions must be grounded directly in the student's provided Study Material Notes (turning their Definitions, Summaries, Concepts, Cheat Sheets, Formulas, Code Snippets, Q&As, and Fill-in-the-Blank items into rigorous multiple-choice questions). For these, set "sourceType": "note" and "sourceLabel": "From Your Notes".
+- Roughly HALF of the ${aiCountNeeded} questions must be grounded directly in the student's provided Study Material Notes (turning their Definitions, Tables, Summaries, Concepts, Cheat Sheets, Formulas, Code Snippets, Q&As, and Fill-in-the-Blank items into rigorous multiple-choice questions). For these, set "sourceType": "note" and "sourceLabel": "From Your Notes".
 - The OTHER HALF of the ${aiCountNeeded} questions must be fresh, complementary AI-authored exam/scenario questions covering broader concepts and real-world applications for "${goalTitle}"${chapterTitle ? ` (${chapterTitle})` : ""}. For these, set "sourceType": "ai" and "sourceLabel": "AI Question".`
         : `Author ${aiCountNeeded} fresh certification/exam-grade multiple-choice questions testing deep conceptual and applied understanding for this goal. Set "sourceType": "ai" and "sourceLabel": "AI Question" on every question.`;
 
@@ -1597,7 +1658,6 @@ Return ONLY valid JSON. No markdown ticks outside the JSON.`;
       timeoutMs: 9000,
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.35,
         responseMimeType: "application/json"
       }
     });
@@ -2066,8 +2126,9 @@ Task (mode="${mode}"):
 
     if (canonicalYoutubeUrl) {
       try {
-        const ytResult = await ai.models.generateContent({
-          model: "gemini-4-hydrogen",
+        const ytResult = await generateContentWithModelFallback({
+          models: ["gemini-4-hydrogen", "gemini-3.1-flash-lite"],
+          timeoutMs: 32000,
           contents: [
             {
               role: "user",
@@ -2084,6 +2145,9 @@ Task (mode="${mode}"):
         });
         rawParsed = parseJsonFromModelText(ytResult.text || "");
       } catch (ytErr: any) {
+        if (isGeminiQuotaOrRateLimitError(ytErr) || isGeminiKeyError(ytErr)) {
+          throw ytErr;
+        }
         console.warn("YouTube direct fileData extraction fallback to URL context:", ytErr?.message || ytErr);
       }
     }
@@ -2124,34 +2188,64 @@ Return ONLY valid JSON matching this schema:
   ]
 }`;
 
-      const webResult = await ai.models.generateContent({
-        model: "gemini-4-hydrogen",
-        contents: urlPrompt,
-        config: {
-          tools: [{ urlContext: {} }, { googleSearch: {} }]
+      let webResult: any = null;
+      try {
+        webResult = await generateContentWithModelFallback({
+          models: ["gemini-4-hydrogen", "gemini-3.1-flash-lite"],
+          timeoutMs: 32000,
+          contents: urlPrompt,
+          config: {
+            tools: [{ urlContext: {} }, { googleSearch: {} }]
+          }
+        });
+      } catch (toolErr: any) {
+        if (isGeminiQuotaOrRateLimitError(toolErr) || isGeminiKeyError(toolErr)) {
+          throw toolErr;
         }
-      });
+        // If combined urlContext+googleSearch fails for non-quota reasons (e.g. unsupported tool on a model), retry with googleSearch or provided user notes
+        if (safeUserNotes) {
+          webResult = await generateContentWithModelFallback({
+            models: ["gemini-4-hydrogen", "gemini-3.1-flash-lite"],
+            timeoutMs: 28000,
+            contents: urlPrompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: extractionSchema
+            }
+          });
+        } else {
+          webResult = await generateContentWithModelFallback({
+            models: ["gemini-3.1-flash-lite", "gemini-4-hydrogen"],
+            timeoutMs: 28000,
+            contents: urlPrompt,
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
+          });
+        }
+      }
 
-      const chunks = webResult.candidates?.[0]?.groundingMetadata?.groundingChunks;
+      const chunks = webResult?.candidates?.[0]?.groundingMetadata?.groundingChunks;
       if (Array.isArray(chunks)) {
         groundingSources = chunks
           .map((c: any) => (c?.web?.uri ? { uri: c.web.uri, title: c.web.title || c.web.uri } : null))
           .filter(Boolean) as { uri: string; title: string }[];
       }
 
-      rawParsed = parseJsonFromModelText(webResult.text || "");
+      rawParsed = parseJsonFromModelText(webResult?.text || "");
 
       // If the tool-grounded call returned prose instead of JSON, structure it cleanly with responseSchema
-      if (!rawParsed && webResult.text && webResult.text.trim().length > 20) {
-        const formatResult = await ai.models.generateContent({
-          model: "gemini-4-hydrogen",
+      if (!rawParsed && webResult?.text && webResult.text.trim().length > 20) {
+        const formatResult = await generateContentWithModelFallback({
+          models: ["gemini-4-hydrogen", "gemini-3.1-flash-lite"],
+          timeoutMs: 25000,
           contents: `Convert the following extracted study analysis for URL "${targetUrl}" into the exact JSON structure. Preserve honest accessStatus and accessNote.\n\nAnalysis:\n${webResult.text}`,
           config: {
             responseMimeType: "application/json",
             responseSchema: extractionSchema
           }
         });
-        rawParsed = parseJsonFromModelText(formatResult.text || "");
+        rawParsed = parseJsonFromModelText(formatResult?.text || "");
       }
     }
 
@@ -2167,7 +2261,7 @@ Return ONLY valid JSON matching this schema:
       ? rawParsed.extractedTitle.trim()
       : (canonicalYoutubeUrl ? "YouTube Video Study Guide" : new URL(targetUrl).hostname);
 
-    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
+    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
     const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
     const notes = rawNotes
       .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
@@ -2263,9 +2357,14 @@ Return ONLY valid JSON matching this schema:
       sources: groundingSources.slice(0, 5)
     });
   } catch (err: any) {
-    console.error("URL extraction error:", err?.message || err);
-    const msg = String(err?.message || "");
-    if (/PERMISSION_DENIED|API_KEY_INVALID|403|400/.test(msg) && /key|api/i.test(msg)) {
+    console.warn("URL extraction notice:", isQuotaOrRateLimitLabel(err));
+    if (isGeminiQuotaOrRateLimitError(err)) {
+      return res.status(429).json({
+        error: "Gemini API quota or rate limit exceeded (429). Please wait a moment and try again, or check your Gemini API plan and billing details in AI Studio.",
+        code: "RESOURCE_EXHAUSTED"
+      });
+    }
+    if (isGeminiKeyError(err)) {
       return res.status(502).json({
         error: "Gemini API key error. Please check your key in Settings > Secrets."
       });
@@ -2556,7 +2655,8 @@ Return ONLY valid JSON matching the requested schema.`;
       const models = ["gemini-4-hydrogen", "gemini-3.1-flash-lite"];
       let lastModelErr: any = null;
 
-      for (const modelName of models) {
+      for (let i = 0; i < models.length; i++) {
+        const modelName = models[i];
         try {
           const response = await ai.models.generateContent({
             model: modelName,
@@ -2570,7 +2670,11 @@ Return ONLY valid JSON matching the requested schema.`;
           if (rawParsed) break;
         } catch (mErr: any) {
           lastModelErr = mErr;
-          console.warn(`Upload extraction with ${modelName} fallback:`, mErr?.message || mErr);
+          if (isGeminiKeyError(mErr)) break;
+          console.warn(`Upload extraction with ${modelName} fallback:`, isQuotaOrRateLimitLabel(mErr));
+          if (i < models.length - 1) {
+            await new Promise((r) => setTimeout(r, 350));
+          }
         }
       }
 
@@ -2585,7 +2689,7 @@ Return ONLY valid JSON matching the requested schema.`;
         (typeof rawParsed.extractedTitle === "string" && rawParsed.extractedTitle.trim()) ||
         (safeOriginalFileName ? safeOriginalFileName.replace(/\.[^.]+$/, "") : "Uploaded Lecture Study Guide");
 
-      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
+      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
       const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
       const notes = rawNotes
         .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
@@ -2682,13 +2786,19 @@ Return ONLY valid JSON matching the requested schema.`;
       });
     } catch (err: any) {
       await cleanupFiles();
-      console.error("Lecture upload extraction error:", err?.message || err);
-      const msg = String(err?.message || "");
-      if (/PERMISSION_DENIED|API_KEY_INVALID|403/.test(msg) && /key|api/i.test(msg)) {
+      console.warn("Lecture upload extraction notice:", isQuotaOrRateLimitLabel(err));
+      if (isGeminiQuotaOrRateLimitError(err)) {
+        return res.status(429).json({
+          error: "Gemini API quota or rate limit exceeded (429). Please wait a moment and try again, or check your Gemini API plan and billing details in AI Studio.",
+          code: "RESOURCE_EXHAUSTED"
+        });
+      }
+      if (isGeminiKeyError(err)) {
         return res.status(502).json({
           error: "Gemini API key error. Please check your key in Settings > Secrets."
         });
       }
+      const msg = String(err?.message || "");
       return res.status(500).json({
         error: msg || "Failed to analyze the uploaded video or text. Try again or include transcript text."
       });
@@ -3082,13 +3192,12 @@ Filter Requested: ${categoryFilter}
 Custom Focus/Request: ${customPrompt || "None"}`;
 
     const result = await generateWithFallback({
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-4-hydrogen",
       fallbackModel: "gemini-3.1-flash-lite",
       timeoutMs: 3500,
       contents: userPrompt,
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.4,
         responseMimeType: "application/json"
       }
     });

@@ -53,6 +53,14 @@ import {
   isRecommendationSaved,
   isSafePublicHttpUrl
 } from "../lib/readingSuggestions";
+import { TableNoteEditor, StudyNoteTableView } from "./TableNoteEditor";
+import {
+  createEmptyTableHeaders,
+  createEmptyTableRows,
+  formatTableAsMarkdown,
+  normalizeTableDraft,
+  resolveNoteTableData
+} from "../lib/tableNote";
 
 interface GoalKnowledgeHubModalProps {
   goal: Goal;
@@ -102,6 +110,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [newNoteTrueFalseAnswer, setNewNoteTrueFalseAnswer] = useState<"true" | "false">("true");
   const [newNoteTerm, setNewNoteTerm] = useState("");
   const [newNoteDefinition, setNewNoteDefinition] = useState("");
+  const [newNoteTableHeaders, setNewNoteTableHeaders] = useState<string[]>(() => createEmptyTableHeaders(3));
+  const [newNoteTableRows, setNewNoteTableRows] = useState<string[][]>(() => createEmptyTableRows(3, 3));
   const [newNoteUrl, setNewNoteUrl] = useState("");
   const [newNoteUrlContext, setNewNoteUrlContext] = useState("");
   const [newNoteRequiresLogin, setNewNoteRequiresLogin] = useState(false);
@@ -384,10 +394,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setAiNotice(data?.error || "Could not extract study material from that URL.");
-        setTimeout(() => setAiNotice(null), 5000);
+        setTimeout(() => setAiNotice(null), res.status === 429 ? 8500 : 5500);
         return;
       }
 
@@ -435,9 +445,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       setAiNotice(data.accessNote || "Study material extracted from URL!");
       setTimeout(() => setAiNotice(null), 6000);
     } catch (err) {
-      console.error("Failed to extract from URL", err);
+      console.warn("URL extraction request failed", err);
       setAiNotice("Could not extract from URL. Please check the link and try again.");
-      setTimeout(() => setAiNotice(null), 4500);
+      setTimeout(() => setAiNotice(null), 5000);
     } finally {
       setIsExtractingUrl(false);
     }
@@ -488,12 +498,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         body: formData
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const errMsg = data?.error || "Could not extract study materials from that video or transcript.";
         setUploadError(errMsg);
         setAiNotice(errMsg);
-        setTimeout(() => setAiNotice(null), 5000);
+        setTimeout(() => setAiNotice(null), res.status === 429 ? 8500 : 5500);
         return;
       }
 
@@ -529,7 +539,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       setAiNotice(`Ready! Created ${parts.join(", ")} from "${data.extractedTitle || "your lecture"}".`);
       setTimeout(() => setAiNotice(null), 6000);
     } catch (err) {
-      console.error("Failed to extract from uploaded lecture:", err);
+      console.warn("Uploaded lecture extraction request failed:", err);
       const msg = "Upload failed or timed out. Check your file size (under 250 MB) or include the transcript text.";
       setUploadError(msg);
       setAiNotice(msg);
@@ -546,6 +556,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     if (cat === "multiple_choice") return "Multiple Choice";
     if (cat === "true_false") return "True / False";
     if (cat === "definition") return "Definition";
+    if (cat === "table") return "Table";
     if (cat === "url") return "URL / Video";
     if (cat === "all") return "All";
     return cat.replace("_", " ");
@@ -647,10 +658,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const isMultipleChoice = newNoteCategory === "multiple_choice";
     const isTrueFalse = newNoteCategory === "true_false";
     const isDefinition = newNoteCategory === "definition";
+    const isTable = newNoteCategory === "table";
     const isReadingUrl = newNoteCategory === "reading_url";
     const isUrl = newNoteCategory === "url" || isReadingUrl;
     const hasScreenshots = newNoteScreenshots.length > 0;
     const resolvedMcq = isMultipleChoice ? compactMcqDraft(newNoteMcqOptions, newNoteMcqCorrectIndex) : null;
+    const resolvedTable = isTable ? normalizeTableDraft(newNoteTableHeaders, newNoteTableRows) : null;
 
     if (isQA) {
       if ((!newNoteQuestion.trim() || !newNoteAnswer.trim()) && !hasScreenshots) return;
@@ -672,6 +685,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       if (!newNoteQuestion.trim() && !hasScreenshots) return;
     } else if (isDefinition) {
       if ((!newNoteTerm.trim() || !newNoteDefinition.trim()) && !hasScreenshots) return;
+    } else if (isTable) {
+      if (!resolvedTable?.hasContent && !hasScreenshots) {
+        setAiNotice("Please fill in at least one table header or cell (or attach a screenshot).");
+        setTimeout(() => setAiNotice(null), 4000);
+        return;
+      }
     } else if (isUrl) {
       if (!newNoteUrl.trim() || !isSafeHttpUrl(newNoteUrl)) {
         setAiNotice("Please enter a valid http:// or https:// URL.");
@@ -738,11 +757,15 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         ? trimmedQuestion
         : isDefinition
         ? trimmedTerm
+        : isTable
+        ? (newNoteTitle.trim() || "Study Reference Table")
         : isUrl
         ? (newNoteTitle.trim() || defaultUrlTitle)
         : (newNoteTitle.trim() || "Screenshot Note"),
       category: isUrl ? "url" : newNoteCategory,
-      content: isMultipleChoice
+      content: isTable
+        ? (resolvedTable?.hasContent ? formatTableAsMarkdown(resolvedTable.headers, resolvedTable.rows) : "Attached table screenshot")
+        : isMultipleChoice
         ? `Q: ${trimmedQuestion}${mcqChoicesFormatted ? `\n\n${mcqChoicesFormatted}` : ""}\n\nCorrect Answer: ${mcqCorrectLabel}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isTrueFalse
         ? `Statement: ${trimmedQuestion}\n\nAnswer: ${trimmedAnswer}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
@@ -755,6 +778,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         : isUrl
         ? (trimmedUrlContext ? `${trimmedUrl}\n\n${trimmedUrlContext}` : trimmedUrl)
         : (newNoteContent.trim() || "Attached screenshot"),
+      tableHeaders: isTable && resolvedTable?.hasContent ? resolvedTable.headers : undefined,
+      tableRows: isTable && resolvedTable?.hasContent ? resolvedTable.rows : undefined,
       question: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedQuestion : undefined,
       answer: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedAnswer : undefined,
       explanation: (isQA || isFillInBlank || isMultipleChoice || isTrueFalse) && trimmedExplanation ? trimmedExplanation : undefined,
@@ -801,6 +826,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     setNewNoteTrueFalseAnswer("true");
     setNewNoteTerm("");
     setNewNoteDefinition("");
+    setNewNoteTableHeaders(createEmptyTableHeaders(3));
+    setNewNoteTableRows(createEmptyTableRows(3, 3));
     setNewNoteUrl("");
     setNewNoteUrlContext("");
     setNewNoteRequiresLogin(false);
@@ -875,7 +902,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       ? `${String.fromCharCode(65 + note.correctOptionIndex)}) ${mcqOpts[note.correctOptionIndex]}`
       : (note.answer || "");
 
-    const copyText = note.category === "multiple_choice"
+    const tableCopyData = note.category === "table" ? resolveNoteTableData(note) : null;
+    const copyText = note.category === "table" && tableCopyData
+      ? `${note.title}\n\n${formatTableAsMarkdown(tableCopyData.headers, tableCopyData.rows)}`
+      : note.category === "multiple_choice"
       ? `${note.title && note.title !== note.question ? `${note.title}\n\n` : ""}Q: ${note.question || note.title}${mcqChoicesText ? `\n\n${mcqChoicesText}` : ""}\n\nCorrect Answer: ${mcqCorrectLabel || note.content}${note.explanation ? `\n\nExplanation: ${note.explanation}` : ""}`
       : note.category === "true_false"
       ? `${note.title && note.title !== note.question ? `${note.title}\n\n` : ""}Statement: ${note.question || note.title}\n\nAnswer: ${note.answer || (note.correctOptionIndex === 1 ? "False" : "True")}${note.explanation ? `\n\nExplanation: ${note.explanation}` : ""}`
@@ -1599,6 +1629,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                             ? "Article / Website Title (Optional)"
                             : newNoteCategory === "url"
                             ? "Resource Title (Optional)"
+                            : newNoteCategory === "table"
+                            ? "Table Title (Optional)"
                             : "Artifact Title"}
                         </label>
                         <input
@@ -1608,11 +1640,13 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               ? "e.g. MDN HTTP Guide or Reading Chapter (auto-detected if blank)"
                               : newNoteCategory === "url"
                               ? "e.g. CompTIA Security+ DNS Lecture (auto-detected if blank)"
+                              : newNoteCategory === "table"
+                              ? "e.g. OSI Model Layers or Common TCP/UDP Ports"
                               : "e.g. DNS Resolution Flow & Troubleshooting Protocol"
                           }
                           value={newNoteTitle}
                           onChange={e => setNewNoteTitle(e.target.value)}
-                          required={newNoteCategory !== "url" && newNoteCategory !== "reading_url" && newNoteScreenshots.length === 0}
+                          required={newNoteCategory !== "url" && newNoteCategory !== "reading_url" && newNoteCategory !== "table" && newNoteScreenshots.length === 0}
                           className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700/60 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500"
                         />
                       </div>
@@ -1645,6 +1679,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <option value="code_snippet">Code Snippet / Commands</option>
                         <option value="summary">Chapter Summary</option>
                         <option value="formula">Formula / Algorithm</option>
+                        <option value="table">Table</option>
                         <option value="qa">Question &amp; Answer</option>
                         <option value="fill_in_blank">Fill in the Blank</option>
                         <option value="multiple_choice">Multiple Choice Question</option>
@@ -2064,6 +2099,15 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         </label>
                       )}
                     </div>
+                  ) : newNoteCategory === "table" ? (
+                    <TableNoteEditor
+                      headers={newNoteTableHeaders}
+                      rows={newNoteTableRows}
+                      onChange={(nextHeaders, nextRows) => {
+                        setNewNoteTableHeaders(nextHeaders);
+                        setNewNoteTableRows(nextRows);
+                      }}
+                    />
                   ) : (
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Content (Markdown Supported)</label>
@@ -2223,7 +2267,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
               {/* Notes Filter Category Bar */}
               <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-                {["all", "concept", "cheat_sheet", "code_snippet", "summary", "formula", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition", "url"].map((cat) => (
+                {["all", "concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition", "url"].map((cat) => (
                   <button
                     key={cat}
                     onClick={() => setSelectedNoteCategory(cat)}
@@ -2276,6 +2320,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 ? "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700/30"
                                 : note.category === "definition"
                                 ? "bg-sky-100 text-sky-800 border-sky-300 dark:bg-sky-900/40 dark:text-sky-300 dark:border-sky-700/30"
+                                : note.category === "table"
+                                ? "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-700/30"
                                 : note.category === "url"
                                 ? "bg-cyan-100 text-cyan-800 border-cyan-300 dark:bg-cyan-900/40 dark:text-cyan-300 dark:border-cyan-700/30"
                                 : "bg-violet-100 text-violet-800 border-violet-300 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-700/30"
@@ -2981,6 +3027,17 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               </button>
                             </div>
                           </div>
+                        ) : note.category === "table" ? (
+                          (() => {
+                            const tableData = resolveNoteTableData(note);
+                            return tableData ? (
+                              <StudyNoteTableView headers={tableData.headers} rows={tableData.rows} />
+                            ) : (
+                              <div className="text-xs text-slate-800 dark:text-slate-300 whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
+                                {note.content}
+                              </div>
+                            );
+                          })()
                         ) : (
                           <div className="text-xs text-slate-800 dark:text-slate-300 whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
                             {note.content}
@@ -3215,9 +3272,19 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                   </div>
                                                 </div>
                                                 {previewReviewNoteId === mn.id && (
-                                                  <p className="text-[11px] text-slate-700 dark:text-slate-300 whitespace-pre-line pt-1 border-t border-teal-200/70 dark:border-teal-800/40 max-h-32 overflow-y-auto custom-scrollbar">
-                                                    {mn.definition || mn.answer || mn.urlNotes || mn.content}
-                                                  </p>
+                                                  mn.category === "table" && resolveNoteTableData(mn) ? (
+                                                    <div className="pt-1.5 border-t border-teal-200/70 dark:border-teal-800/40">
+                                                      <StudyNoteTableView
+                                                        headers={resolveNoteTableData(mn)!.headers}
+                                                        rows={resolveNoteTableData(mn)!.rows}
+                                                        compact
+                                                      />
+                                                    </div>
+                                                  ) : (
+                                                    <p className="text-[11px] text-slate-700 dark:text-slate-300 whitespace-pre-line pt-1 border-t border-teal-200/70 dark:border-teal-800/40 max-h-32 overflow-y-auto custom-scrollbar">
+                                                      {mn.definition || mn.answer || mn.urlNotes || mn.content}
+                                                    </p>
+                                                  )
                                                 )}
                                               </div>
                                             ))}
@@ -3457,9 +3524,19 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                 </div>
                                               </div>
                                               {previewReviewNoteId === mn.id && (
-                                                <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-line pt-1.5 border-t border-slate-200 dark:border-slate-800 max-h-36 overflow-y-auto custom-scrollbar">
-                                                  {mn.definition || mn.answer || mn.urlNotes || mn.content}
-                                                </p>
+                                                mn.category === "table" && resolveNoteTableData(mn) ? (
+                                                  <div className="pt-1.5 border-t border-slate-200 dark:border-slate-800">
+                                                    <StudyNoteTableView
+                                                      headers={resolveNoteTableData(mn)!.headers}
+                                                      rows={resolveNoteTableData(mn)!.rows}
+                                                      compact
+                                                    />
+                                                  </div>
+                                                ) : (
+                                                  <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-line pt-1.5 border-t border-slate-200 dark:border-slate-800 max-h-36 overflow-y-auto custom-scrollbar">
+                                                    {mn.definition || mn.answer || mn.urlNotes || mn.content}
+                                                  </p>
+                                                )
                                               )}
                                             </div>
                                           ))}

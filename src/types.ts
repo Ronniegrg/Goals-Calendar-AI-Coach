@@ -110,8 +110,10 @@ export interface Goal {
 export interface StudyArtifactNote {
   id: string;
   title: string;
-  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "qa" | "fill_in_blank" | "multiple_choice" | "true_false" | "definition" | "url";
+  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "table" | "qa" | "fill_in_blank" | "multiple_choice" | "true_false" | "definition" | "url";
   content: string; // Markdown or formatted text
+  tableHeaders?: string[];
+  tableRows?: string[][];
   question?: string;
   answer?: string;
   explanation?: string;
