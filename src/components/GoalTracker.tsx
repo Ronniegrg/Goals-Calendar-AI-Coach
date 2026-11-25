@@ -42,9 +42,11 @@ import {
   BatteryCharging,
   StickyNote,
   ClipboardCheck,
-  Link2
+  Link2,
+  GripVertical
 } from "lucide-react";
 import { Goal, GoalType, TimePreference, AvailabilityWindow, CalendarEvent, SubTask, SessionSubStep, GoalPriority, EnergyLevel, UserEnergyProfile, DailyBurnoutLimits, GoalKnowledgeHub, GoalStepType } from "../types";
+import { isStepActive, isKnowledgeTesterStep, reorderSteps, subTaskToSessionSubStep, sessionSubStepToSubTask } from "../lib/stepOrdering";
 import { GoalIconPicker, renderGoalIcon } from "../lib/goalIcons";
 import FocusTimerModal, { triggerFocusTimer, getSavedProgress } from "./FocusTimerModal";
 import GoalStartBriefingModal from "./GoalStartBriefingModal";
@@ -234,12 +236,15 @@ export default function GoalTracker({
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [knowledgeHubGoal, setKnowledgeHubGoal] = useState<Goal | null>(null);
+  const [knowledgeHubInitialTab, setKnowledgeHubInitialTab] = useState<"notes" | "tester" | "flashcards" | "overview">("notes");
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
   const [editingMilestoneText, setEditingMilestoneText] = useState<string>("");
   const [editingSubtaskNote, setEditingSubtaskNote] = useState<{ goalId: string; stepId: string; text: string } | null>(null);
   const [showNewSubtaskNoteForGoal, setShowNewSubtaskNoteForGoal] = useState<Record<string, boolean>>({});
   const [newSubtaskNoteForGoal, setNewSubtaskNoteForGoal] = useState<Record<string, string>>({});
   const [generatingMilestonesGoalId, setGeneratingMilestonesGoalId] = useState<string | null>(null);
+  const [draggedGoalMilestone, setDraggedGoalMilestone] = useState<{ goalId: string; index: number } | null>(null);
+  const [dragOverGoalMilestone, setDragOverGoalMilestone] = useState<{ goalId: string; index: number } | null>(null);
 
   // Goal Hold / Freeze Modal State
   const [pauseModalGoal, setPauseModalGoal] = useState<Goal | null>(null);
@@ -714,40 +719,57 @@ export default function GoalTracker({
     if (direction === "up" && idx === 0) return;
     if (direction === "down" && idx === list.length - 1) return;
     const targetIdx = direction === "up" ? idx - 1 : idx + 1;
-    const temp = list[idx];
-    list[idx] = list[targetIdx];
-    list[targetIdx] = temp;
-    const mappedSubSteps: SessionSubStep[] = list.map(s => ({
-      id: s.id,
-      title: s.title,
-      durationMinutes: s.durationMinutes || 15,
-      completed: s.completed || false,
-      stepType: s.stepType,
-      assignedLinkNoteId: s.assignedLinkNoteId,
-      assignedLinkUrl: s.assignedLinkUrl,
-      assignedLinkTitle: s.assignedLinkTitle,
-      lastTestScore: s.lastTestScore,
-      carryoverNote: s.carryoverNote,
-      carryoverNoteDate: s.carryoverNoteDate
-    }));
-    onEditGoal(goal.id, { subtasks: list, subSteps: mappedSubSteps });
+    const reordered = reorderSteps(list, idx, targetIdx);
+    onEditGoal(goal.id, { subtasks: reordered, subSteps: reordered.map(subTaskToSessionSubStep) });
+  };
+
+  const handleReorderGoalMilestones = (goal: Goal, fromIdx: number, toIdx: number) => {
+    const list = [...(goal.subtasks || [])];
+    if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= list.length || toIdx >= list.length) return;
+    const reordered = reorderSteps(list, fromIdx, toIdx);
+    onEditGoal(goal.id, { subtasks: reordered, subSteps: reordered.map(subTaskToSessionSubStep) });
   };
 
   const handleUpdateGoalSubtasksSynced = (goalId: string, updatedSubtasks: SubTask[]) => {
-    const mappedSubSteps: SessionSubStep[] = updatedSubtasks.map(s => ({
-      id: s.id,
-      title: s.title,
-      durationMinutes: s.durationMinutes || 15,
-      completed: s.completed || false,
-      stepType: s.stepType,
-      assignedLinkNoteId: s.assignedLinkNoteId,
-      assignedLinkUrl: s.assignedLinkUrl,
-      assignedLinkTitle: s.assignedLinkTitle,
-      lastTestScore: s.lastTestScore,
-      carryoverNote: s.carryoverNote,
-      carryoverNoteDate: s.carryoverNoteDate
-    }));
+    const mappedSubSteps: SessionSubStep[] = updatedSubtasks.map(subTaskToSessionSubStep);
     onEditGoal(goalId, { subtasks: updatedSubtasks, subSteps: mappedSubSteps });
+  };
+
+  const handleToggleStepEnabled = (goal: Goal, stepId: string) => {
+    const baseTasks: SubTask[] = goal.subtasks && goal.subtasks.length > 0
+      ? goal.subtasks
+      : (goal.subSteps || []).map(sessionSubStepToSubTask);
+    const updated = baseTasks.map(s =>
+      s.id === stepId ? { ...s, enabled: !isStepActive(s) } : s
+    );
+    handleUpdateGoalSubtasksSynced(goal.id, updated);
+  };
+
+  const handleToggleKnowledgeTesterStep = (goal: Goal) => {
+    const baseTasks: SubTask[] = goal.subtasks && goal.subtasks.length > 0
+      ? goal.subtasks
+      : (goal.subSteps || []).map(sessionSubStepToSubTask);
+    const testerIndex = baseTasks.findIndex(s => isKnowledgeTesterStep(s));
+    if (testerIndex !== -1) {
+      const currentlyActive = isStepActive(baseTasks[testerIndex]);
+      const updated = baseTasks.map((s, idx) =>
+        idx === testerIndex
+          ? { ...s, stepType: "self_test" as GoalStepType, enabled: !currentlyActive }
+          : s
+      );
+      handleUpdateGoalSubtasksSynced(goal.id, updated);
+      return;
+    }
+    const testDur = Math.min(15, Math.max(5, Math.round((goal.durationMinutes || 60) * 0.2)));
+    const testerStep: SubTask = {
+      id: `sub_tester_${Date.now()}`,
+      title: "Knowledge Tester",
+      durationMinutes: testDur,
+      completed: false,
+      enabled: true,
+      stepType: "self_test"
+    };
+    handleUpdateGoalSubtasksSynced(goal.id, [...baseTasks, testerStep]);
   };
 
   const handleSaveGoalStepCarryoverNote = (goal: Goal, stepId: string, stepTitle: string, noteText: string) => {
@@ -977,6 +999,8 @@ export default function GoalTracker({
   const [expandedFormPhaseNoteIdx, setExpandedFormPhaseNoteIdx] = useState<number | null>(null);
   const [newSubtaskIsSelfTestForGoal, setNewSubtaskIsSelfTestForGoal] = useState<Record<string, boolean>>({});
   const [newSubtaskLinkForGoal, setNewSubtaskLinkForGoal] = useState<Record<string, string>>({});
+  const [draggedFormPhaseIdx, setDraggedFormPhaseIdx] = useState<number | null>(null);
+  const [dragOverFormPhaseIdx, setDragOverFormPhaseIdx] = useState<number | null>(null);
 
   const editingGoalObj = editingGoalId ? goals.find(g => g.id === editingGoalId) : undefined;
   const availableFormLinks = [
@@ -996,15 +1020,19 @@ export default function GoalTracker({
       : [])
   ];
 
-  const totalPhasesDuration = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
+  const totalPhasesDuration = formPhases.reduce(
+    (acc, p) => acc + (isStepActive(p) ? (Number(p.durationMinutes) || 0) : 0),
+    0
+  );
 
   const handleMovePhase = (index: number, direction: "up" | "down") => {
     const targetIndex = direction === "up" ? index - 1 : index + 1;
     if (targetIndex < 0 || targetIndex >= formPhases.length) return;
-    const updated = [...formPhases];
-    const [moved] = updated.splice(index, 1);
-    updated.splice(targetIndex, 0, moved);
-    setFormPhases(updated);
+    setFormPhases(prev => reorderSteps(prev, index, targetIndex));
+  };
+
+  const handleReorderFormPhases = (fromIndex: number, toIndex: number) => {
+    setFormPhases(prev => reorderSteps(prev, fromIndex, toIndex));
   };
 
   const handleUpdatePhase = (index: number, updates: Partial<SessionSubStep>) => {
@@ -1040,6 +1068,7 @@ export default function GoalTracker({
       title: phaseTitle,
       durationMinutes: Math.max(1, phaseDur),
       completed: false,
+      enabled: true,
       stepType: stepTypeToUse,
       ...(stepTypeToUse === "self_test" && resolvedLinkId ? { assignedLinkNoteId: resolvedLinkId } : {}),
       ...(stepTypeToUse === "self_test" && resolvedLinkUrl ? { assignedLinkUrl: resolvedLinkUrl } : {}),
@@ -1060,7 +1089,7 @@ export default function GoalTracker({
     const defaultLink = availableFormLinks.find(l => l.requiresLogin) || availableFormLinks[0];
     const testDur = Math.min(15, Math.max(5, Math.round((durationMinutes || 60) * 0.2)));
     handleAddPhase(
-      `Self Test (${testDur}m): Material Quiz & Link Review`,
+      `Knowledge Tester (${testDur}m): Material Quiz & Link Review`,
       testDur,
       "self_test",
       defaultLink ? { id: defaultLink.id, url: defaultLink.url, title: defaultLink.title } : undefined
@@ -1093,7 +1122,7 @@ export default function GoalTracker({
       newSteps = [
         { id: `phase_recall_${Date.now()}`, title: "Active Recall: Quiz & Previous Mistakes", durationMinutes: recallMins, completed: false },
         { id: `phase_deep_${Date.now()}`, title: "Deep Practice & New Material", durationMinutes: mainMins, completed: false },
-        { id: `phase_synth_${Date.now()}`, title: "Self Test: Material MCQs & Link Review", durationMinutes: recapMins, completed: false, stepType: "self_test" }
+        { id: `phase_synth_${Date.now()}`, title: "Knowledge Tester: Material MCQs & Link Review", durationMinutes: recapMins, completed: false, enabled: true, stepType: "self_test" }
       ];
     } else if (presetType === "lab_practice") {
       newSteps = [
@@ -1106,7 +1135,7 @@ export default function GoalTracker({
   };
 
   const handleAddRemainderPhase = () => {
-    const currentTotal = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
+    const currentTotal = formPhases.reduce((acc, p) => acc + (isStepActive(p) ? (Number(p.durationMinutes) || 0) : 0), 0);
     const remainder = durationMinutes - currentTotal;
     if (remainder > 0) {
       handleAddPhase(name ? `${name} Core Practice` : "Core Deep Work", remainder);
@@ -1114,12 +1143,16 @@ export default function GoalTracker({
   };
 
   const handleScalePhasesToDuration = () => {
-    const currentTotal = formPhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
-    if (currentTotal <= 0 || formPhases.length === 0) return;
+    const activePhases = formPhases.filter(p => isStepActive(p));
+    const currentTotal = activePhases.reduce((acc, p) => acc + (Number(p.durationMinutes) || 0), 0);
+    if (currentTotal <= 0 || activePhases.length === 0) return;
     const target = durationMinutes || 60;
     let remaining = target;
-    const scaled = formPhases.map((p, idx) => {
-      if (idx === formPhases.length - 1) {
+    let activeSeen = 0;
+    const scaled = formPhases.map((p) => {
+      if (!isStepActive(p)) return p;
+      activeSeen += 1;
+      if (activeSeen === activePhases.length) {
         return { ...p, durationMinutes: Math.max(1, remaining) };
       }
       const ratio = (Number(p.durationMinutes) || 1) / currentTotal;
@@ -1302,17 +1335,8 @@ export default function GoalTracker({
 
     const finalSubSteps = formPhases.length > 0 ? formPhases : undefined;
     const finalSubtasks = formPhases.length > 0 ? formPhases.map(p => ({
-      id: p.id,
-      title: p.title,
-      durationMinutes: p.durationMinutes,
-      completed: false,
-      stepType: p.stepType,
-      assignedLinkNoteId: p.assignedLinkNoteId,
-      assignedLinkUrl: p.assignedLinkUrl,
-      assignedLinkTitle: p.assignedLinkTitle,
-      lastTestScore: p.lastTestScore,
-      carryoverNote: p.carryoverNote,
-      carryoverNoteDate: p.carryoverNoteDate
+      ...sessionSubStepToSubTask(p),
+      completed: false
     })) : undefined;
 
     if (editingGoalId) {
@@ -1527,6 +1551,7 @@ export default function GoalTracker({
         return {
           ...s,
           completed: false,
+          enabled: s.enabled ?? matchingTask?.enabled,
           stepType: s.stepType ?? matchingTask?.stepType,
           assignedLinkNoteId: s.assignedLinkNoteId ?? matchingTask?.assignedLinkNoteId,
           assignedLinkUrl: s.assignedLinkUrl ?? matchingTask?.assignedLinkUrl,
@@ -1538,17 +1563,8 @@ export default function GoalTracker({
       }));
     } else if (g.subtasks && g.subtasks.length > 0) {
       setFormPhases(g.subtasks.map(s => ({
-        id: s.id,
-        title: s.title,
-        durationMinutes: s.durationMinutes || 15,
-        completed: false,
-        stepType: s.stepType,
-        assignedLinkNoteId: s.assignedLinkNoteId,
-        assignedLinkUrl: s.assignedLinkUrl,
-        assignedLinkTitle: s.assignedLinkTitle,
-        lastTestScore: s.lastTestScore,
-        carryoverNote: s.carryoverNote,
-        carryoverNoteDate: s.carryoverNoteDate
+        ...subTaskToSessionSubStep(s),
+        completed: false
       })));
     } else {
       const dur = g.durationMinutes || 60;
@@ -2452,10 +2468,10 @@ export default function GoalTracker({
                     type="button"
                     onClick={handleQuickAddSelfTestPhase}
                     className="px-2 py-1 rounded bg-violet-500/20 hover:bg-violet-500/35 text-violet-200 border border-violet-400/40 text-[10px] font-bold transition cursor-pointer flex items-center gap-1"
-                    title="Append a timed Self Test step (MCQs + login link review)"
+                    title="Append a timed Knowledge Tester step (MCQs + login link review)"
                   >
                     <ClipboardCheck className="w-3 h-3 text-violet-300" />
-                    <span>+ Self Test Step</span>
+                    <span>+ Knowledge Tester</span>
                   </button>
                 </div>
               </div>
@@ -2497,7 +2513,7 @@ export default function GoalTracker({
                       type="button"
                       onClick={handleScalePhasesToDuration}
                       className="text-[10px] font-semibold text-indigo-300 hover:text-indigo-200 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md transition cursor-pointer"
-                      title="Proportionally scale all phases to match target duration"
+                      title="Proportionally scale all active phases to match target duration"
                     >
                       ⚖️ Auto-Fit to {durationMinutes}m
                     </button>
@@ -2505,28 +2521,68 @@ export default function GoalTracker({
                 </div>
               </div>
 
-              {/* Ordered Phases List */}
+              {/* Ordered Phases List (Drag-and-Drop Reorderable) */}
               <div className="space-y-1.5">
                 {formPhases.map((phase, idx) => {
                   const isFirst = idx === 0;
                   const isLast = idx === formPhases.length - 1;
                   const isNoteOpen = expandedFormPhaseNoteIdx === idx;
                   const hasNote = Boolean(phase.carryoverNote && phase.carryoverNote.trim().length > 0);
-                  const isSelfTest = phase.stepType === "self_test";
+                  const isSelfTest = isKnowledgeTesterStep(phase);
+                  const isActivePhase = isStepActive(phase);
+                  const isDragging = draggedFormPhaseIdx === idx;
+                  const isDropTarget = dragOverFormPhaseIdx === idx && draggedFormPhaseIdx !== null && draggedFormPhaseIdx !== idx;
                   return (
                     <div
                       key={phase.id || idx}
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggedFormPhaseIdx(idx);
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", String(idx));
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        if (dragOverFormPhaseIdx !== idx) {
+                          setDragOverFormPhaseIdx(idx);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (draggedFormPhaseIdx !== null && draggedFormPhaseIdx !== idx) {
+                          handleReorderFormPhases(draggedFormPhaseIdx, idx);
+                        }
+                        setDraggedFormPhaseIdx(null);
+                        setDragOverFormPhaseIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedFormPhaseIdx(null);
+                        setDragOverFormPhaseIdx(null);
+                      }}
                       className={`p-2 rounded-lg group transition space-y-1.5 border ${
-                        isSelfTest
+                        !isActivePhase
+                          ? "bg-slate-900/40 border-dashed border-white/10 opacity-60"
+                          : isSelfTest
                           ? "bg-violet-950/25 border-violet-500/35 hover:border-violet-400/60"
                           : "bg-[#0c0e16] border-white/10 hover:border-indigo-500/40"
+                      } ${isDragging ? "opacity-40 scale-[0.99]" : ""} ${
+                        isDropTarget ? "ring-2 ring-indigo-400/80 border-indigo-400 bg-indigo-950/35" : ""
                       }`}
                     >
                       <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                        {/* Step Number & Up/Down Reorder Controls */}
+                        {/* Drag Handle, Step Number & Up/Down Reorder Controls */}
                         <div className="flex items-center gap-1 shrink-0">
+                          <span
+                            className="p-0.5 text-slate-500 hover:text-indigo-300 cursor-grab active:cursor-grabbing transition"
+                            title="Drag to reorder step"
+                          >
+                            <GripVertical className="w-3.5 h-3.5" />
+                          </span>
                           <span className={`w-5 h-5 rounded font-mono text-[10px] font-bold flex items-center justify-center border ${
-                            isSelfTest
+                            !isActivePhase
+                              ? "bg-slate-800/80 text-slate-400 border-white/10"
+                              : isSelfTest
                               ? "bg-violet-600/35 text-violet-200 border-violet-400/40"
                               : "bg-indigo-600/30 text-indigo-300 border-indigo-500/30"
                           }`}>
@@ -2558,23 +2614,49 @@ export default function GoalTracker({
                           </div>
                         </div>
 
-                        {/* Step Type Toggle (Study vs Self Test) */}
+                        {/* Step Type Toggle (Study vs Knowledge Tester) */}
                         <button
                           type="button"
                           onClick={() => handleUpdatePhase(idx, {
                             stepType: isSelfTest ? "study" : "self_test",
-                            title: !isSelfTest && !phase.title.trim() ? "Self Test: Quiz & Link Review" : phase.title
+                            enabled: true,
+                            title: !isSelfTest && !phase.title.trim() ? "Knowledge Tester" : phase.title
                           })}
                           className={`px-2 py-1 rounded-md text-[10px] font-bold border transition cursor-pointer flex items-center gap-1 shrink-0 ${
                             isSelfTest
                               ? "bg-violet-600/30 text-violet-200 border-violet-400/50"
                               : "bg-white/5 text-slate-400 hover:text-violet-300 border-white/10"
                           }`}
-                          title={isSelfTest ? "Self Test step (MCQs + login link review). Click to switch to regular Study step." : "Click to make this a Self Test step"}
+                          title={isSelfTest ? "Knowledge Tester step (MCQs + study review). Click to switch to Study step." : "Click to make this a Knowledge Tester step"}
                         >
                           <ClipboardCheck className="w-3 h-3" />
-                          <span>{isSelfTest ? "Self Test" : "Study"}</span>
+                          <span>{isSelfTest ? "Knowledge Tester" : "Study"}</span>
                         </button>
+
+                        {/* Activate / Inactivate Toggle for Knowledge Tester Step */}
+                        {isSelfTest && (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={isActivePhase}
+                            onClick={() => handleUpdatePhase(idx, { enabled: !isActivePhase })}
+                            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold border transition cursor-pointer shrink-0 ${
+                              isActivePhase
+                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                : "bg-slate-800/80 text-slate-400 border-white/10 hover:text-slate-200"
+                            }`}
+                            title={isActivePhase ? "Active step in session — click to inactivate" : "Inactive step — click to activate"}
+                          >
+                            <span className={`relative inline-flex h-3.5 w-6 shrink-0 rounded-full transition-colors ${
+                              isActivePhase ? "bg-emerald-500" : "bg-slate-600"
+                            }`}>
+                              <span className={`inline-block h-2.5 w-2.5 mt-0.5 rounded-full bg-white shadow transition-transform ${
+                                isActivePhase ? "translate-x-3" : "translate-x-0.5"
+                              }`} />
+                            </span>
+                            <span>{isActivePhase ? "Active" : "Inactive"}</span>
+                          </button>
+                        )}
 
                         {/* Phase Title Input */}
                         <div className="flex-1 min-w-0">
@@ -2582,7 +2664,7 @@ export default function GoalTracker({
                             type="text"
                             value={phase.title}
                             onChange={(e) => handleUpdatePhase(idx, { title: e.target.value })}
-                            placeholder={isSelfTest ? "e.g. Self Test: Module 2 MCQs & Coursera Review" : "e.g. 15m Concept Review & Carryover Notes"}
+                            placeholder={isSelfTest ? "e.g. Knowledge Tester: Module 2 MCQs & Review" : "e.g. 15m Concept Review & Carryover Notes"}
                             className="w-full text-xs px-2.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white focus:outline-none focus:border-indigo-400 font-medium"
                           />
                         </div>
@@ -2611,7 +2693,7 @@ export default function GoalTracker({
                             value={phase.durationMinutes}
                             onChange={(e) => handleUpdatePhase(idx, { durationMinutes: Math.max(1, Number(e.target.value) || 5) })}
                             className="w-14 text-xs px-1.5 py-1.5 bg-white/5 border border-white/5 rounded-md text-white text-center font-mono font-bold focus:outline-none focus:border-indigo-400"
-                            title={isSelfTest ? "Self Test duration (minutes)" : "Phase duration (minutes)"}
+                            title={isSelfTest ? "Knowledge Tester duration (minutes)" : "Phase duration (minutes)"}
                           />
                           <span className="text-[10px] text-slate-400 font-medium">min</span>
                         </div>
@@ -2739,9 +2821,9 @@ export default function GoalTracker({
                       const nextType: GoalStepType = newPhaseType === "self_test" ? "study" : "self_test";
                       setNewPhaseType(nextType);
                       if (nextType === "self_test" && !newPhaseTitle.trim()) {
-                        setNewPhaseTitle("Self Test: Material Quiz & Link Review");
+                        setNewPhaseTitle("Knowledge Tester");
                         setNewPhaseDuration(10);
-                      } else if (nextType === "study" && newPhaseTitle === "Self Test: Material Quiz & Link Review") {
+                      } else if (nextType === "study" && (newPhaseTitle === "Self Test: Material Quiz & Link Review" || newPhaseTitle === "Knowledge Tester")) {
                         setNewPhaseTitle("");
                       }
                     }}
@@ -2750,17 +2832,17 @@ export default function GoalTracker({
                         ? "bg-violet-600/30 text-violet-200 border-violet-400/50"
                         : "bg-[#0f111a] text-slate-300 hover:text-violet-300 border-white/10"
                     }`}
-                    title="Switch between standard Study step and Self Test step"
+                    title="Switch between Study step and Knowledge Tester step"
                   >
                     <ClipboardCheck className="w-3.5 h-3.5" />
-                    <span>{newPhaseType === "self_test" ? "Self Test" : "Study"}</span>
+                    <span>{newPhaseType === "self_test" ? "Knowledge Tester" : "Study"}</span>
                   </button>
 
                   <input
                     type="text"
                     value={newPhaseTitle}
                     onChange={(e) => setNewPhaseTitle(e.target.value)}
-                    placeholder={newPhaseType === "self_test" ? "Self Test step title (e.g. Week 2 Self Test & Link Review)..." : "Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."}
+                    placeholder={newPhaseType === "self_test" ? "Knowledge Tester step title..." : "Add custom phase (e.g. 15m Review, 35m Hands-on Lab, 10m Recap)..."}
                     className="flex-1 min-w-[160px] text-xs p-2 bg-[#0f111a] border border-white/10 rounded-lg text-white focus:outline-none focus:border-indigo-400"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
@@ -2803,7 +2885,7 @@ export default function GoalTracker({
                     }`}
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>{newPhaseType === "self_test" ? "Add Self Test" : "Add Phase"}</span>
+                    <span>{newPhaseType === "self_test" ? "Add Tester" : "Add Phase"}</span>
                   </button>
                 </div>
 
@@ -3351,17 +3433,46 @@ export default function GoalTracker({
                       const testsCount = hub?.tests?.length || 0;
                       const flashcardsCount = hub?.flashcards?.length || 0;
                       const masteryScore = hub?.overallMasteryScore || 0;
+                      const existingTesterStep = (g.subtasks || []).find(s => isKnowledgeTesterStep(s));
+                      const isTesterStepActive = existingTesterStep ? isStepActive(existingTesterStep) : false;
 
                       return (
                         <div className="p-2.5 bg-gradient-to-r from-violet-950/40 via-[#15172b] to-indigo-950/40 border border-violet-800/30 rounded-xl space-y-2 mt-2">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] font-bold text-violet-300 uppercase tracking-wider flex items-center gap-1.5">
                               <BookOpen className="w-3.5 h-3.5 text-violet-400" />
                               <span>Knowledge Hub & Tester</span>
                             </span>
-                            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/15 text-amber-300 border border-amber-500/20">
-                              {masteryScore}% Mastery
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={isTesterStepActive}
+                                onClick={() => handleToggleKnowledgeTesterStep(g)}
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold border transition cursor-pointer ${
+                                  isTesterStepActive
+                                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/35"
+                                    : "bg-slate-800/80 text-slate-400 border-white/10 hover:text-slate-200"
+                                }`}
+                                title={
+                                  existingTesterStep
+                                    ? (isTesterStepActive ? "Knowledge Tester step is Active — click to inactivate" : "Knowledge Tester step is Inactive — click to activate")
+                                    : "Add Knowledge Tester as an active step in Subtasks"
+                                }
+                              >
+                                <span className={`relative inline-flex h-3 w-5 shrink-0 rounded-full transition-colors ${
+                                  isTesterStepActive ? "bg-emerald-500" : "bg-slate-600"
+                                }`}>
+                                  <span className={`inline-block h-2 w-2 mt-0.5 rounded-full bg-white shadow transition-transform ${
+                                    isTesterStepActive ? "translate-x-2.5" : "translate-x-0.5"
+                                  }`} />
+                                </span>
+                                <span>{isTesterStepActive ? "Tester Active" : "Tester Off"}</span>
+                              </button>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/15 text-amber-300 border border-amber-500/20">
+                                {masteryScore}% Mastery
+                              </span>
+                            </div>
                           </div>
 
                           <div className="flex items-center justify-between text-[11px] text-slate-300">
@@ -3375,7 +3486,10 @@ export default function GoalTracker({
 
                             <button
                               type="button"
-                              onClick={() => setKnowledgeHubGoal(g)}
+                              onClick={() => {
+                                setKnowledgeHubInitialTab("notes");
+                                setKnowledgeHubGoal(g);
+                              }}
                               className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-bold shadow-md shadow-violet-900/30 flex items-center gap-1 transition-all cursor-pointer"
                             >
                               <span>Open Hub</span>
@@ -3389,18 +3503,20 @@ export default function GoalTracker({
                     {/* Subtasks Section */}
                     <div className="pt-3 border-t border-white/5 mt-3 space-y-2" id={`goal_subtasks_sec_${g.id}`}>
                       {(() => {
-                        const totalAllocated = (g.subtasks || []).reduce((acc, s) => acc + (s.durationMinutes || 0), 0);
-                        const targetMins = g.durationMinutes || 45;
                         const subtasksList = g.subtasks || [];
-                        const completedCount = subtasksList.filter(s => s.completed).length;
-                        const pct = subtasksList.length > 0 ? Math.round((completedCount / subtasksList.length) * 100) : 0;
+                        const activeSubtasksList = subtasksList.filter(s => isStepActive(s));
+                        const inactiveCount = subtasksList.length - activeSubtasksList.length;
+                        const totalAllocated = activeSubtasksList.reduce((acc, s) => acc + (s.durationMinutes || 0), 0);
+                        const targetMins = g.durationMinutes || 45;
+                        const completedCount = activeSubtasksList.filter(s => s.completed).length;
+                        const pct = activeSubtasksList.length > 0 ? Math.round((completedCount / activeSubtasksList.length) * 100) : 0;
                         const isGenerating = generatingMilestonesGoalId === g.id;
 
                         return (
                           <div className="space-y-1.5">
                             <div className="flex items-center justify-between gap-1 flex-wrap">
                               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">
-                                Subtasks / Milestones
+                                Subtasks / Milestones {subtasksList.length > 1 ? "· Drag to reorder" : ""}
                               </span>
 
                               <div className="flex items-center gap-1.5">
@@ -3439,19 +3555,22 @@ export default function GoalTracker({
                             {subtasksList.length > 0 && (
                               <div className="space-y-1">
                                 <div className="flex gap-1 w-full h-1.5 rounded-full overflow-hidden bg-black/40 p-0.2">
-                                  {subtasksList.map((st, sIdx) => (
+                                  {activeSubtasksList.map((st, sIdx) => (
                                     <div
                                       key={st.id || sIdx}
                                       className={`h-full rounded-full transition-all duration-300 flex-1 ${
-                                        st.completed ? "bg-emerald-400" : "bg-white/10"
+                                        st.completed ? "bg-emerald-400" : isKnowledgeTesterStep(st) ? "bg-violet-400/30" : "bg-white/10"
                                       }`}
                                       title={`${st.title} (${st.durationMinutes || 10}m) - ${st.completed ? "Done" : "Pending"}`}
                                     />
                                   ))}
                                 </div>
                                 <div className="flex items-center justify-between text-[9px] font-mono text-slate-400 px-0.5">
-                                  <span>{completedCount} of {subtasksList.length} completed</span>
-                                  <span className={pct === 100 ? "text-emerald-400 font-bold" : "text-slate-400"}>{pct}%</span>
+                                  <span>
+                                    {completedCount} of {activeSubtasksList.length} completed
+                                    {inactiveCount > 0 ? ` (${inactiveCount} inactive)` : ""}
+                                  </span>
+                                  <span className={pct === 100 && activeSubtasksList.length > 0 ? "text-emerald-400 font-bold" : "text-slate-400"}>{pct}%</span>
                                 </div>
                               </div>
                             )}
@@ -3460,38 +3579,86 @@ export default function GoalTracker({
                       })()}
                       
                       {g.subtasks && g.subtasks.length > 0 ? (
-                        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                        <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
                           {g.subtasks.map((sub, sIdx) => {
                             const isEditing = editingMilestoneId === sub.id;
                             const isEditingNote = editingSubtaskNote?.goalId === g.id && editingSubtaskNote.stepId === sub.id;
                             const hasStepNote = Boolean(sub.carryoverNote && sub.carryoverNote.trim().length > 0);
+                            const isTesterStep = isKnowledgeTesterStep(sub);
+                            const isStepEnabled = isStepActive(sub);
+                            const isDraggingThis = draggedGoalMilestone?.goalId === g.id && draggedGoalMilestone.index === sIdx;
+                            const isDropTarget = dragOverGoalMilestone?.goalId === g.id && dragOverGoalMilestone.index === sIdx && draggedGoalMilestone?.goalId === g.id && draggedGoalMilestone.index !== sIdx;
 
                             return (
-                              <div key={sub.id} className={`group px-2 py-1.5 rounded-lg border transition space-y-1 ${
-                                sub.stepType === "self_test"
-                                  ? "bg-violet-950/25 hover:bg-violet-950/40 border-violet-500/30"
-                                  : "bg-black/20 hover:bg-black/35 border-white/5"
-                              }`}>
+                              <div
+                                key={sub.id}
+                                draggable={!isEditing && !isEditingNote}
+                                onDragStart={(e) => {
+                                  setDraggedGoalMilestone({ goalId: g.id, index: sIdx });
+                                  e.dataTransfer.effectAllowed = "move";
+                                  e.dataTransfer.setData("text/plain", String(sIdx));
+                                }}
+                                onDragOver={(e) => {
+                                  if (draggedGoalMilestone?.goalId !== g.id) return;
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = "move";
+                                  if (dragOverGoalMilestone?.goalId !== g.id || dragOverGoalMilestone.index !== sIdx) {
+                                    setDragOverGoalMilestone({ goalId: g.id, index: sIdx });
+                                  }
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  if (draggedGoalMilestone?.goalId === g.id && draggedGoalMilestone.index !== sIdx) {
+                                    handleReorderGoalMilestones(g, draggedGoalMilestone.index, sIdx);
+                                  }
+                                  setDraggedGoalMilestone(null);
+                                  setDragOverGoalMilestone(null);
+                                }}
+                                onDragEnd={() => {
+                                  setDraggedGoalMilestone(null);
+                                  setDragOverGoalMilestone(null);
+                                }}
+                                className={`group px-2 py-1.5 rounded-lg border transition space-y-1 ${
+                                  !isStepEnabled
+                                    ? "bg-slate-900/35 border-dashed border-white/10 opacity-60"
+                                    : isTesterStep
+                                    ? "bg-violet-950/30 hover:bg-violet-950/45 border-violet-500/35"
+                                    : "bg-black/20 hover:bg-black/35 border-white/5"
+                                } ${isDraggingThis ? "opacity-40" : ""} ${
+                                  isDropTarget ? "ring-2 ring-indigo-400/80 border-indigo-400 bg-indigo-950/35" : ""
+                                }`}
+                              >
                                 <div className="flex items-center justify-between gap-1">
                                   <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                    <span
+                                      className="p-0.5 text-slate-500 hover:text-indigo-300 cursor-grab active:cursor-grabbing shrink-0 opacity-60 group-hover:opacity-100"
+                                      title="Drag step to reorder"
+                                    >
+                                      <GripVertical className="w-3 h-3" />
+                                    </span>
                                     <span className="text-[9px] font-mono text-slate-500 w-3 text-center shrink-0">
                                       {sIdx + 1}
                                     </span>
                                     <input
                                       type="checkbox"
                                       checked={sub.completed}
+                                      disabled={!isStepEnabled}
                                       onChange={() => {
                                         const updatedSubtasks = g.subtasks?.map(s => 
                                           s.id === sub.id ? { ...s, completed: !s.completed } : s
                                         ) || [];
                                         handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
                                       }}
-                                      className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer shrink-0"
+                                      className="rounded border-white/10 text-indigo-600 focus:ring-indigo-500/20 bg-[#0f111a] w-3 h-3 cursor-pointer shrink-0 disabled:opacity-40"
                                     />
 
-                                    {sub.stepType === "self_test" && (
-                                      <span className="px-1.5 py-0.2 rounded text-[8px] font-bold uppercase tracking-wider bg-violet-500/25 text-violet-200 border border-violet-400/40 shrink-0">
-                                        Self Test
+                                    {isTesterStep && (
+                                      <span className={`px-1.5 py-0.2 rounded text-[8px] font-bold uppercase tracking-wider border shrink-0 ${
+                                        isStepEnabled
+                                          ? "bg-violet-500/25 text-violet-200 border-violet-400/40"
+                                          : "bg-slate-800 text-slate-400 border-white/10"
+                                      }`}>
+                                        Knowledge Tester
                                       </span>
                                     )}
 
@@ -3533,7 +3700,11 @@ export default function GoalTracker({
                                           setEditingMilestoneText(sub.title);
                                         }}
                                         className={`text-[10px] truncate flex-1 min-w-0 cursor-pointer ${
-                                          sub.completed ? "line-through text-slate-500 font-medium" : "text-slate-200 font-semibold"
+                                          !isStepEnabled
+                                            ? "text-slate-400 font-medium"
+                                            : sub.completed
+                                            ? "line-through text-slate-500 font-medium"
+                                            : "text-slate-200 font-semibold"
                                         }`}
                                         title="Double-click to edit milestone"
                                       >
@@ -3543,6 +3714,46 @@ export default function GoalTracker({
                                   </div>
 
                                   <div className="flex items-center gap-1 shrink-0">
+                                    {/* Knowledge Tester Activate / Inactivate Switch & Open Launcher */}
+                                    {isTesterStep && (
+                                      <>
+                                        {isStepEnabled && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setKnowledgeHubInitialTab("tester");
+                                              setKnowledgeHubGoal(g);
+                                            }}
+                                            className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-600/80 hover:bg-violet-500 text-white transition cursor-pointer shrink-0"
+                                            title="Open Knowledge Tester"
+                                          >
+                                            Test
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          role="switch"
+                                          aria-checked={isStepEnabled}
+                                          onClick={() => handleToggleStepEnabled(g, sub.id)}
+                                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold border transition cursor-pointer shrink-0 ${
+                                            isStepEnabled
+                                              ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/35"
+                                              : "bg-slate-800 text-slate-400 border-white/15 hover:text-white"
+                                          }`}
+                                          title={isStepEnabled ? "Active — click to inactivate Knowledge Tester step" : "Inactive — click to activate Knowledge Tester step"}
+                                        >
+                                          <span className={`relative inline-flex h-2.5 w-4 shrink-0 rounded-full transition-colors ${
+                                            isStepEnabled ? "bg-emerald-500" : "bg-slate-600"
+                                          }`}>
+                                            <span className={`inline-block h-1.5 w-1.5 mt-0.5 rounded-full bg-white shadow transition-transform ${
+                                              isStepEnabled ? "translate-x-2" : "translate-x-0.5"
+                                            }`} />
+                                          </span>
+                                          <span>{isStepEnabled ? "On" : "Off"}</span>
+                                        </button>
+                                      </>
+                                    )}
+
                                     {/* Reorder Buttons */}
                                     {sIdx > 0 && (
                                       <button
@@ -3615,8 +3826,12 @@ export default function GoalTracker({
                                         ) || [];
                                         handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
                                       }}
-                                      className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition shrink-0 cursor-pointer"
-                                      title="Click to adjust duration (+5m)"
+                                      className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold border transition shrink-0 cursor-pointer ${
+                                        isStepEnabled
+                                          ? "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border-indigo-500/30"
+                                          : "bg-slate-800/70 text-slate-500 border-white/10 line-through"
+                                      }`}
+                                      title={isStepEnabled ? "Click to adjust duration (+5m)" : "Inactive step (excluded from timer budget)"}
                                     >
                                       {sub.durationMinutes ? `${sub.durationMinutes}m` : "+time"}
                                     </button>
@@ -3701,7 +3916,7 @@ export default function GoalTracker({
                                   </div>
                                 ) : null}
 
-                                {sub.stepType === "self_test" && (sub.assignedLinkTitle || sub.assignedLinkUrl || typeof sub.lastTestScore === "number") && (
+                                {isTesterStep && (sub.assignedLinkTitle || sub.assignedLinkUrl || typeof sub.lastTestScore === "number") && (
                                   <div className="ml-4 flex items-center gap-2 flex-wrap text-[9px] text-violet-200/90">
                                     {(sub.assignedLinkTitle || sub.assignedLinkUrl) && (
                                       <span className="inline-flex items-center gap-1 text-cyan-300 truncate max-w-[180px]">
@@ -3743,7 +3958,7 @@ export default function GoalTracker({
                               const input = form.elements.namedItem("subtaskTitle") as HTMLInputElement;
                               const durInput = form.elements.namedItem("subtaskMins") as HTMLInputElement;
                               const rawTitle = input.value.trim();
-                              const title = rawTitle || (isSelfTestNew ? "Self Test: Material Quiz & Link Review" : "");
+                              const title = rawTitle || (isSelfTestNew ? "Knowledge Tester" : "");
                               if (!title) return;
                               const mins = Math.max(1, parseInt(durInput?.value) || (isSelfTestNew ? 10 : 15));
                               const stepNoteText = (newSubtaskNoteForGoal[g.id] || "").trim();
@@ -3755,6 +3970,7 @@ export default function GoalTracker({
                                 title,
                                 durationMinutes: mins,
                                 completed: false,
+                                enabled: true,
                                 ...(isSelfTestNew ? { stepType: "self_test" as GoalStepType } : {}),
                                 ...(isSelfTestNew && pickedLink ? {
                                   assignedLinkNoteId: pickedLink.id,
@@ -3767,22 +3983,7 @@ export default function GoalTracker({
                                 } : {})
                               };
                               const updatedSubtasks = [...(g.subtasks || []), newSub];
-                              const updatedSubSteps: SessionSubStep[] = [
-                                ...(g.subSteps || []),
-                                {
-                                  id: newSub.id,
-                                  title: newSub.title,
-                                  durationMinutes: mins,
-                                  completed: false,
-                                  stepType: newSub.stepType,
-                                  assignedLinkNoteId: newSub.assignedLinkNoteId,
-                                  assignedLinkUrl: newSub.assignedLinkUrl,
-                                  assignedLinkTitle: newSub.assignedLinkTitle,
-                                  carryoverNote: newSub.carryoverNote,
-                                  carryoverNoteDate: newSub.carryoverNoteDate
-                                }
-                              ];
-                              onEditGoal(g.id, { subtasks: updatedSubtasks, subSteps: updatedSubSteps });
+                              handleUpdateGoalSubtasksSynced(g.id, updatedSubtasks);
                               input.value = "";
                               if (durInput) durInput.value = "15";
                               setNewSubtaskNoteForGoal(prev => ({ ...prev, [g.id]: "" }));
@@ -3801,15 +4002,15 @@ export default function GoalTracker({
                                     ? "bg-violet-600/35 text-violet-200 border-violet-400/50"
                                     : "bg-[#0f111a] text-slate-400 hover:text-violet-300 border-white/5"
                                 }`}
-                                title="Toggle to add a Self Test step (MCQs + login link review)"
+                                title="Toggle to add a Knowledge Tester step (MCQs + study review)"
                               >
                                 <ClipboardCheck className="w-2.5 h-2.5" />
-                                <span>{isSelfTestNew ? "Test" : "Step"}</span>
+                                <span>{isSelfTestNew ? "Tester" : "Step"}</span>
                               </button>
                               <input
                                 type="text"
                                 name="subtaskTitle"
-                                placeholder={isSelfTestNew ? "Self Test (MCQs + link review)..." : "Add milestone..."}
+                                placeholder={isSelfTestNew ? "Knowledge Tester (MCQs + review)..." : "Add milestone..."}
                                 className="flex-1 min-w-0 bg-[#0f111a] text-[10px] p-1.5 border border-white/5 rounded text-white focus:outline-none focus:border-indigo-400 font-semibold"
                               />
                               <button
@@ -4536,7 +4737,11 @@ export default function GoalTracker({
         <GoalKnowledgeHubModal
           goal={knowledgeHubGoal}
           isOpen={Boolean(knowledgeHubGoal)}
-          onClose={() => setKnowledgeHubGoal(null)}
+          initialTab={knowledgeHubInitialTab}
+          onClose={() => {
+            setKnowledgeHubGoal(null);
+            setKnowledgeHubInitialTab("notes");
+          }}
           onUpdateKnowledgeHub={(goalId, updatedHub) => {
             if (onUpdateGoalKnowledgeHub) {
               onUpdateGoalKnowledgeHub(goalId, updatedHub);

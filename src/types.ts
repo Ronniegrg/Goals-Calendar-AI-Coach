@@ -46,6 +46,7 @@ export interface SubTask {
   id: string;
   title: string;
   completed: boolean;
+  enabled?: boolean;
   durationMinutes?: number;
   stepType?: GoalStepType;
   assignedLinkNoteId?: string;
@@ -62,6 +63,7 @@ export interface SessionSubStep {
   durationMinutes: number;
   description?: string;
   completed?: boolean;
+  enabled?: boolean;
   stepType?: GoalStepType;
   assignedLinkNoteId?: string;
   assignedLinkUrl?: string;

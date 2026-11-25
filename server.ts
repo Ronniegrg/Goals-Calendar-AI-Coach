@@ -1929,6 +1929,133 @@ Target Exam: "${examTitle || "General Mastery"}"${missedBlock}${existingBlock}`;
   }
 });
 
+// 5c-3. GOAL KNOWLEDGE HUB - AI TOPIC LESSON / LECTURE / STUDY NOTE GENERATOR FOR MISSED QUESTIONS
+app.post("/api/coach/generate-topic-lesson", async (req, res) => {
+  const {
+    goalTitle = "Study Goal",
+    goalCategory = "General",
+    chapterTitle = "",
+    examTitle = "",
+    question = "",
+    correctAnswer = "",
+    userAnswer = "",
+    explanation = "",
+    lessonStyle = "lesson"
+  } = req.body || {};
+
+  const trimmedQuestion = typeof question === "string" ? question.trim() : "";
+  if (!trimmedQuestion) {
+    return res.status(400).json({ error: "A missed question or topic is required to generate a lesson." });
+  }
+
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
+  }
+
+  const normalizedStyle: "lesson" | "lecture" | "note" =
+    lessonStyle === "lecture" || lessonStyle === "note" ? lessonStyle : "lesson";
+
+  const styleInstruction =
+    normalizedStyle === "lecture"
+      ? "Write an engaging, professor-style mini lecture that walks the student intuitively from first principles to mastery."
+      : normalizedStyle === "note"
+      ? "Write a concise, high-yield structured study note and quick-reference review sheet."
+      : "Write a clear, structured interactive lesson with step-by-step explanation, worked example, and exam takeaways.";
+
+  const systemPrompt = `You are an expert tutor creating targeted study material when a student misses a test question and does not yet have saved notes on that topic.
+${styleInstruction}
+
+Requirements:
+- Directly teach the underlying concept behind the missed question—not just repeating the answer.
+- Clarify why the correct concept works AND why common mistakes or distractors are wrong.
+- Format "content" cleanly with clear uppercase or labeled section headings and concise bullet lines (avoid cluttered raw markdown symbols like ** or ###; write clean readable plain text with sections such as:
+  OVERVIEW
+  CORE CONCEPT EXPLAINED
+  WORKED EXAMPLE / PRACTICAL USAGE
+  WHY DISTRACTORS ARE WRONG & PITFALLS
+  KEY TAKEAWAYS).
+- Provide 4 to 6 relevant keyTerms that identify the core topic, tool, rule, or concept.`;
+
+  const userPrompt = `Goal: "${goalTitle}"
+Category: "${goalCategory}"
+Chapter / Topic: "${chapterTitle || "Core Curriculum"}"
+Target Exam: "${examTitle || "Mastery"}"
+Requested Format: ${normalizedStyle}
+
+Missed Question:
+${trimmedQuestion}
+${userAnswer ? `\nStudent's Wrong Choice: ${String(userAnswer).trim()}` : ""}
+${correctAnswer ? `\nCorrect Answer: ${String(correctAnswer).trim()}` : ""}
+${explanation ? `\nQuiz Explanation: ${String(explanation).trim()}` : ""}`;
+
+  try {
+    const result = await generateContentWithModelFallback({
+      models: ["gemini-4-hydrogen", "gemini-3.1-flash-lite"],
+      contents: userPrompt,
+      timeoutMs: 25000,
+      config: {
+        systemInstruction: systemPrompt,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            category: { type: Type.STRING },
+            content: { type: Type.STRING },
+            keyTerms: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            estimatedMinutes: { type: Type.INTEGER }
+          },
+          required: ["title", "category", "content", "keyTerms"]
+        }
+      }
+    });
+
+    const rawText = result?.text?.trim();
+    if (!rawText) {
+      return res.status(502).json({ error: "Gemini returned an empty response while generating the lesson." });
+    }
+
+    const parsed = JSON.parse(rawText);
+    const allowedCategory =
+      parsed.category === "summary" || parsed.category === "cheat_sheet" ? parsed.category : "concept";
+
+    return res.json({
+      lesson: {
+        title: String(parsed.title || `${chapterTitle || goalTitle} — Topic Lesson`).trim(),
+        category: normalizedStyle === "lecture" ? "summary" : allowedCategory,
+        content: String(parsed.content || "").trim(),
+        keyTerms: Array.isArray(parsed.keyTerms)
+          ? parsed.keyTerms.map((t: any) => String(t).trim()).filter(Boolean).slice(0, 8)
+          : [],
+        estimatedMinutes:
+          typeof parsed.estimatedMinutes === "number" && parsed.estimatedMinutes > 0
+            ? Math.min(45, Math.round(parsed.estimatedMinutes))
+            : 6,
+        style: normalizedStyle
+      }
+    });
+  } catch (err: any) {
+    console.error("[AI Topic Lesson] Generation error:", err?.message || err);
+    if (isGeminiQuotaOrRateLimitError(err)) {
+      return res.status(429).json({
+        error: err?.message || "Gemini API quota or rate limit exceeded (429 RESOURCE_EXHAUSTED). Please try again shortly."
+      });
+    }
+    if (isGeminiKeyError(err)) {
+      return res.status(401).json({
+        error: err?.message || "Gemini API key is invalid or unauthorized."
+      });
+    }
+    return res.status(500).json({
+      error: err?.message || "Could not generate topic lesson right now."
+    });
+  }
+});
+
 // 5d. GOAL KNOWLEDGE HUB - EXTRACT NOTES & TEST FROM VIDEO / RESOURCE URL
 function validatePublicStudyUrl(rawUrl: string): { valid: boolean; normalizedUrl?: string; reason?: string } {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) {

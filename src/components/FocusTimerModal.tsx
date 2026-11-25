@@ -52,9 +52,12 @@ import {
   Upload,
   Video,
   Camera,
-  ImagePlus
+  ImagePlus,
+  GripVertical,
+  ArrowRight
 } from "lucide-react";
-import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote, KnowledgeTestArtifact, GoalStepType, ReadingRecommendationItem } from "../types";
+import { SessionSubStep, CustomSessionTemplate, Goal, CalendarEvent, GoalKnowledgeHub, StudyArtifactNote, KnowledgeTestArtifact, KnowledgeQuestion, GoalStepType, ReadingRecommendationItem } from "../types";
+import { isStepActive, isKnowledgeTesterStep, reorderSteps, subTaskToSessionSubStep } from "../lib/stepOrdering";
 import { soundscapeEngine, SoundscapeType } from "../lib/soundscapes";
 import { GoalKnowledgeHubModal } from "./GoalKnowledgeHubModal";
 import { captureScreenScreenshot, extractImagesFromClipboardEvent, readImageFileAsDataUrl } from "../lib/screenshotCapture";
@@ -65,11 +68,14 @@ import {
   TestSourceMode
 } from "../lib/studyNotesContext";
 import {
+  buildGeneratedTopicLessonNote,
   buildSavedReadingNote,
   findMatchingNotesForQuestion,
   getRecommendationOpenUrl,
   isRecommendationSaved,
-  isSafePublicHttpUrl
+  isSafePublicHttpUrl,
+  mergeMatchedNotesWithGenerated,
+  TopicLessonStyle
 } from "../lib/readingSuggestions";
 import { TableNoteEditor } from "./TableNoteEditor";
 import {
@@ -585,6 +591,7 @@ function resolveAndBalanceSubSteps(
       if (!match) return s;
       return {
         ...s,
+        enabled: s.enabled ?? match.enabled,
         stepType: s.stepType ?? match.stepType,
         assignedLinkNoteId: s.assignedLinkNoteId ?? match.assignedLinkNoteId,
         assignedLinkUrl: s.assignedLinkUrl ?? match.assignedLinkUrl,
@@ -605,6 +612,7 @@ function resolveAndBalanceSubSteps(
         );
         return {
           ...s,
+          enabled: s.enabled ?? matchTask?.enabled,
           stepType: s.stepType ?? matchTask?.stepType,
           assignedLinkNoteId: s.assignedLinkNoteId ?? matchTask?.assignedLinkNoteId,
           assignedLinkUrl: s.assignedLinkUrl ?? matchTask?.assignedLinkUrl,
@@ -615,26 +623,17 @@ function resolveAndBalanceSubSteps(
         };
       });
     } else if (targetGoal.subtasks && targetGoal.subtasks.length > 0) {
-      steps = targetGoal.subtasks.map(s => ({
-        id: s.id,
-        title: s.title,
-        durationMinutes: s.durationMinutes || 15,
-        completed: s.completed || false,
-        stepType: s.stepType,
-        assignedLinkNoteId: s.assignedLinkNoteId,
-        assignedLinkUrl: s.assignedLinkUrl,
-        assignedLinkTitle: s.assignedLinkTitle,
-        lastTestScore: s.lastTestScore,
-        carryoverNote: s.carryoverNote,
-        carryoverNoteDate: s.carryoverNoteDate
-      }));
+      steps = targetGoal.subtasks.map(subTaskToSessionSubStep);
     }
   }
 
   if (!steps || steps.length === 0) return undefined;
 
-  // Check if steps sum to less than total session minutes (e.g. 15m review for a 60m session)
-  const totalAllocated = steps.reduce((sum, s) => sum + (Number(s.durationMinutes) || 10), 0);
+  // Check if active steps sum to less than total session minutes (e.g. 15m review for a 60m session)
+  const totalAllocated = steps.reduce(
+    (sum, s) => sum + (isStepActive(s) ? (Number(s.durationMinutes) || 10) : 0),
+    0
+  );
   if (sessionMinutes > totalAllocated && (sessionMinutes - totalAllocated) >= 5) {
     const remainderMins = sessionMinutes - totalAllocated;
     const remainderTitle = sessionTitle ? `${sessionTitle} Practice & Focus` : "Core Practice & Deep Focus";
@@ -705,6 +704,7 @@ export default function FocusTimerModal({
   const [noteSavedFeedback, setNoteSavedFeedback] = useState<string | null>(null);
   const [showKnowledgeHubModal, setShowKnowledgeHubModal] = useState(false);
   const [knowledgeHubInitialTab, setKnowledgeHubInitialTab] = useState<"notes" | "tester" | "flashcards" | "overview">("notes");
+  const [knowledgeHubInitialNoteId, setKnowledgeHubInitialNoteId] = useState<string | null>(null);
 
   // Embedded Self Test Step Runner State
   const [showSelfTestPanel, setShowSelfTestPanel] = useState(false);
@@ -716,6 +716,10 @@ export default function FocusTimerModal({
   const [selfTestError, setSelfTestError] = useState<string | null>(null);
   const [selfTestReadingRecs, setSelfTestReadingRecs] = useState<ReadingRecommendationItem[]>([]);
   const [isGeneratingSelfTestReadings, setIsGeneratingSelfTestReadings] = useState(false);
+  const [generatingSelfTestLessonTarget, setGeneratingSelfTestLessonTarget] = useState<{ qId: string; style: TopicLessonStyle } | null>(null);
+  const [generatedSelfTestLessonNoteByQId, setGeneratedSelfTestLessonNoteByQId] = useState<Record<string, string>>({});
+  const [standaloneGeneratedLessonsByQId, setStandaloneGeneratedLessonsByQId] = useState<Record<string, StudyArtifactNote>>({});
+  const [selfTestLessonErrorByQId, setSelfTestLessonErrorByQId] = useState<Record<string, string>>({});
   const [reviewedCustomStepLinkIds, setReviewedCustomStepLinkIds] = useState<Record<string, boolean>>({});
 
   const [timerState, setTimerState] = useState<ActiveTimerData | null>(() => {
@@ -804,6 +808,8 @@ export default function FocusTimerModal({
   const [showSubStepsEditor, setShowSubStepsEditor] = useState<boolean>(false);
   const [showCustomBreakdownBuilder, setShowCustomBreakdownBuilder] = useState<boolean>(false);
   const [draftSubSteps, setDraftSubSteps] = useState<SessionSubStep[]>([]);
+  const [draggedDraftIdx, setDraggedDraftIdx] = useState<number | null>(null);
+  const [dragOverDraftIdx, setDragOverDraftIdx] = useState<number | null>(null);
   const [isTestingSound, setIsTestingSound] = useState<boolean>(false);
   const [isAlarmRinging, setIsAlarmRinging] = useState<boolean>(false);
   const [isGeneratingAiSteps, setIsGeneratingAiSteps] = useState<boolean>(false);
@@ -1123,6 +1129,75 @@ export default function FocusTimerModal({
       ...currentHub,
       notes: [savedNote, ...currentHub.notes]
     });
+  };
+
+  const handleOpenSavedNoteFromSelfTest = (noteId: string) => {
+    setKnowledgeHubInitialTab("notes");
+    setKnowledgeHubInitialNoteId(noteId);
+    setShowKnowledgeHubModal(true);
+  };
+
+  const handleGenerateLessonForSelfTestQuestion = async (
+    q: KnowledgeQuestion,
+    pickedOptionText: string,
+    style: TopicLessonStyle = "lesson"
+  ) => {
+    setGeneratingSelfTestLessonTarget({ qId: q.id, style });
+    setSelfTestLessonErrorByQId(prev => {
+      const next = { ...prev };
+      delete next[q.id];
+      return next;
+    });
+    try {
+      const activeChapter = activeGoal?.chapters?.find(c => !c.completed)?.title || activeStepInfo?.title || "";
+      const res = await fetch("/api/coach/generate-topic-lesson", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalTitle: activeGoal?.name || timerState?.title || "Study Session",
+          goalCategory: activeGoal?.category || timerState?.category || "Study",
+          chapterTitle: activeChapter,
+          examTitle: activeGoal?.targetExamTitle || "",
+          question: q.question,
+          correctAnswer: q.options[q.correctIndex] || "",
+          userAnswer: pickedOptionText,
+          explanation: q.explanation || "",
+          lessonStyle: style
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.lesson?.content) {
+        setSelfTestLessonErrorByQId(prev => ({
+          ...prev,
+          [q.id]: data?.error || "Could not generate study material for this topic right now."
+        }));
+        return;
+      }
+
+      const savedNote = buildGeneratedTopicLessonNote(data.lesson, activeChapter);
+      if (activeGoal) {
+        const currentHub: GoalKnowledgeHub = activeGoal.knowledgeHub || {
+          notes: [],
+          tests: [],
+          flashcards: [],
+          overallMasteryScore: 0
+        };
+        persistGoalKnowledgeHub(activeGoal.id, {
+          ...currentHub,
+          notes: [savedNote, ...currentHub.notes]
+        });
+        setGeneratedSelfTestLessonNoteByQId(prev => ({ ...prev, [q.id]: savedNote.id }));
+      } else {
+        setStandaloneGeneratedLessonsByQId(prev => ({ ...prev, [q.id]: savedNote }));
+      }
+    } catch {
+      setSelfTestLessonErrorByQId(prev => ({
+        ...prev,
+        [q.id]: "Network error while generating topic lesson."
+      }));
+    } finally {
+      setGeneratingSelfTestLessonTarget(null);
+    }
   };
 
   const handleSubmitSelfTest = () => {
@@ -2142,9 +2217,9 @@ export default function FocusTimerModal({
     };
   }, [timerState]);
 
-  // Sub-step calculations with cumulative offsets
+  // Sub-step calculations with cumulative offsets (excluding inactivated steps)
   const subStepsWithOffsets = useMemo(() => {
-    const steps = timerState?.subSteps;
+    const steps = timerState?.subSteps?.filter(step => isStepActive(step));
     if (!steps || steps.length === 0) return [];
     
     let currentOffsetSec = 0;
@@ -2223,7 +2298,7 @@ export default function FocusTimerModal({
     previousActiveStepKeyRef.current = stepKey;
 
     const isSelfTestStep = Boolean(
-      activeStepInfo && (activeStepInfo.stepType === "self_test" || /self[\s_-]*test/i.test(activeStepInfo.title || ""))
+      activeStepInfo && isKnowledgeTesterStep(activeStepInfo)
     );
 
     setActiveSelfTest(null);
@@ -3110,8 +3185,9 @@ export default function FocusTimerModal({
       ...prev,
       {
         id: `step_test_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        title: "Self Test: Material MCQs & Link Review",
+        title: "Knowledge Tester: Material MCQs & Link Review",
         durationMinutes: 10,
+        enabled: true,
         stepType: "self_test",
         ...(pendingLoginLink ? {
           assignedLinkNoteId: pendingLoginLink.id,
@@ -3127,26 +3203,26 @@ export default function FocusTimerModal({
   };
 
   const handleDraftMovePhase = (index: number, direction: -1 | 1) => {
-    setDraftSubSteps((prev) => {
-      const nextIdx = index + direction;
-      if (nextIdx < 0 || nextIdx >= prev.length) return prev;
-      const copy = [...prev];
-      const temp = copy[index];
-      copy[index] = copy[nextIdx];
-      copy[nextIdx] = temp;
-      return copy;
-    });
+    setDraftSubSteps((prev) => reorderSteps(prev, index, index + direction));
+  };
+
+  const handleDraftReorderPhase = (fromIndex: number, toIndex: number) => {
+    setDraftSubSteps((prev) => reorderSteps(prev, fromIndex, toIndex));
   };
 
   const handleAutoScaleToTimer = () => {
-    if (!timerState || draftSubSteps.length === 0) return;
+    const activeDrafts = draftSubSteps.filter(s => isStepActive(s));
+    if (!timerState || activeDrafts.length === 0) return;
     const targetMins = Math.max(5, Math.round(timerState.totalSec / 60));
-    const currentSum = draftSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+    const currentSum = activeDrafts.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
     if (currentSum <= 0) return;
 
     let allocated = 0;
-    const scaled = draftSubSteps.map((step, idx) => {
-      if (idx === draftSubSteps.length - 1) {
+    let activeSeen = 0;
+    const scaled = draftSubSteps.map((step) => {
+      if (!isStepActive(step)) return step;
+      activeSeen += 1;
+      if (activeSeen === activeDrafts.length) {
         const remaining = Math.max(1, targetMins - allocated);
         return { ...step, durationMinutes: remaining };
       }
@@ -3158,7 +3234,10 @@ export default function FocusTimerModal({
   };
 
   const handleSyncTimerToPhases = () => {
-    const sumMins = draftSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+    const sumMins = draftSubSteps.reduce(
+      (acc, s) => acc + (isStepActive(s) ? (Number(s.durationMinutes) || 0) : 0),
+      0
+    );
     if (sumMins <= 0 || !timerState) return;
     const newTotalSec = sumMins * 60;
     updateTimerState((prev) => {
@@ -4778,7 +4857,7 @@ export default function FocusTimerModal({
 
             {/* Active Phase Focus Pill Banner */}
             {(() => {
-              const isSelfTestPhase = activeStepInfo.stepType === "self_test" || /self[\s_-]*test/i.test(activeStepInfo.title || "");
+              const isSelfTestPhase = isKnowledgeTesterStep(activeStepInfo);
               const assignedNoteObj = activeStepInfo.assignedLinkNoteId
                 ? activeGoal?.knowledgeHub?.notes?.find(n => n.id === activeStepInfo.assignedLinkNoteId)
                 : undefined;
@@ -4828,7 +4907,7 @@ export default function FocusTimerModal({
                               ? "text-violet-200 bg-violet-500/30"
                               : "text-indigo-300 bg-indigo-500/20"
                           }`}>
-                            {isSelfTestPhase ? `Self Test · Phase ${activeStepInfo.index + 1}` : `Phase ${activeStepInfo.index + 1}`}
+                            {isSelfTestPhase ? `Knowledge Tester · Phase ${activeStepInfo.index + 1}` : `Phase ${activeStepInfo.index + 1}`}
                           </span>
                           <span className="text-[10px] text-slate-300 font-mono">
                             {formatTime(activeStepInfo.stepRemainingSec)} left in phase
@@ -4850,27 +4929,42 @@ export default function FocusTimerModal({
                       </div>
                     </div>
 
-                    {/* Step Self Test + Note + Next Phase Controls */}
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Step Knowledge Tester + Note + Next Phase Controls */}
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
                       {isSelfTestPhase && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextOpen = !showSelfTestPanel;
-                            setShowSelfTestPanel(nextOpen);
-                            if (nextOpen && !activeSelfTest && !isGeneratingSelfTest) {
-                              handleLoadOrGenerateSelfTest(false);
-                            }
-                          }}
-                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border transition flex items-center gap-1 cursor-pointer ${
-                            showSelfTestPanel
-                              ? "bg-violet-600 text-white border-violet-400"
-                              : "bg-violet-600/35 hover:bg-violet-600 border-violet-400/50 text-violet-100"
-                          }`}
-                        >
-                          <ClipboardCheck className="w-3.5 h-3.5" />
-                          <span>{showSelfTestPanel ? "Hide Self Test" : "Take Self Test"}</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextOpen = !showSelfTestPanel;
+                              setShowSelfTestPanel(nextOpen);
+                              if (nextOpen && !activeSelfTest && !isGeneratingSelfTest) {
+                                handleLoadOrGenerateSelfTest(false);
+                              }
+                            }}
+                            className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border transition flex items-center gap-1 cursor-pointer ${
+                              showSelfTestPanel
+                                ? "bg-violet-600 text-white border-violet-400"
+                                : "bg-violet-600/35 hover:bg-violet-600 border-violet-400/50 text-violet-100"
+                            }`}
+                          >
+                            <ClipboardCheck className="w-3.5 h-3.5" />
+                            <span>{showSelfTestPanel ? "Hide Tester" : "Take Test"}</span>
+                          </button>
+                          {activeGoal && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setKnowledgeHubInitialTab("tester");
+                                setShowKnowledgeHubModal(true);
+                              }}
+                              className="px-2 py-1.5 rounded-xl text-[10px] font-bold bg-white/5 hover:bg-violet-500/25 border border-violet-400/30 text-violet-200 transition cursor-pointer"
+                              title="Open full Knowledge Tester modal"
+                            >
+                              Hub Tester
+                            </button>
+                          )}
+                        </>
                       )}
 
                       <button
@@ -5109,36 +5203,133 @@ export default function FocusTimerModal({
                                     </p>
                                   )}
                                   {selfTestSubmitted && picked !== q.correctIndex && (() => {
-                                    const matchedNotes = findMatchingNotesForQuestion(
+                                    const allNotes = activeGoal?.knowledgeHub?.notes || [];
+                                    const rawMatched = findMatchingNotesForQuestion(
                                       q.question,
                                       q.explanation || "",
                                       q.options[q.correctIndex] || "",
-                                      activeGoal?.knowledgeHub?.notes || [],
+                                      allNotes,
                                       2
                                     );
-                                    if (matchedNotes.length === 0) return null;
-                                    return (
-                                      <div className="p-2 rounded bg-amber-950/35 border border-amber-500/30 space-y-1">
-                                        <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
-                                          <BookOpen className="w-3 h-3" />
-                                          <span>Review From Your Notes:</span>
-                                        </span>
-                                        {matchedNotes.map(mn => (
-                                          <div key={mn.id} className="text-[10.5px] text-amber-100/90 flex items-center justify-between gap-2">
-                                            <span className="truncate">• {mn.title}</span>
-                                            {mn.url && isSafePublicHttpUrl(mn.url) && (
-                                              <a
-                                                href={mn.url}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="text-cyan-300 hover:underline shrink-0 inline-flex items-center gap-0.5"
+                                    const matchedNotes = mergeMatchedNotesWithGenerated(
+                                      rawMatched,
+                                      generatedSelfTestLessonNoteByQId[q.id],
+                                      allNotes,
+                                      3
+                                    );
+                                    const standaloneLesson = !activeGoal ? standaloneGeneratedLessonsByQId[q.id] : undefined;
+                                    const isGeneratingThis = generatingSelfTestLessonTarget?.qId === q.id;
+                                    const genError = selfTestLessonErrorByQId[q.id];
+
+                                    if (matchedNotes.length > 0) {
+                                      return (
+                                        <div className="p-2 rounded-lg bg-amber-950/35 border border-amber-500/30 space-y-1.5">
+                                          <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                                            <BookOpen className="w-3 h-3" />
+                                            <span>Review From Your Notes (click to open):</span>
+                                          </span>
+                                          <div className="space-y-1">
+                                            {matchedNotes.map(mn => (
+                                              <div
+                                                key={mn.id}
+                                                className="flex items-center justify-between gap-2 rounded-md bg-black/25 hover:bg-amber-500/15 border border-amber-500/20 hover:border-amber-400/50 transition px-2 py-1"
                                               >
-                                                <span>Open</span>
-                                                <ExternalLink className="w-2.5 h-2.5" />
-                                              </a>
-                                            )}
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleOpenSavedNoteFromSelfTest(mn.id)}
+                                                  title="Open this saved note"
+                                                  className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-[10.5px] text-amber-100 hover:text-white cursor-pointer group/stnote"
+                                                >
+                                                  <span className="truncate group-hover/stnote:underline">• {mn.title}</span>
+                                                  <span className="text-[9.5px] font-semibold text-amber-300 shrink-0 inline-flex items-center gap-0.5">
+                                                    <span>Open Note</span>
+                                                    <ArrowRight className="w-2.5 h-2.5" />
+                                                  </span>
+                                                </button>
+                                                {mn.url && isSafePublicHttpUrl(mn.url) && (
+                                                  <a
+                                                    href={mn.url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="text-[10px] text-cyan-300 hover:underline shrink-0 inline-flex items-center gap-0.5"
+                                                  >
+                                                    <span>Link</span>
+                                                    <ExternalLink className="w-2.5 h-2.5" />
+                                                  </a>
+                                                )}
+                                              </div>
+                                            ))}
                                           </div>
-                                        ))}
+                                        </div>
+                                      );
+                                    }
+
+                                    if (standaloneLesson) {
+                                      return (
+                                        <div className="p-2.5 rounded-lg bg-violet-950/35 border border-violet-500/35 space-y-1.5">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="text-[10.5px] font-bold text-violet-200 flex items-center gap-1">
+                                              <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
+                                              <span>{standaloneLesson.title}</span>
+                                            </span>
+                                          </div>
+                                          <p className="text-[10.5px] text-slate-200 whitespace-pre-line max-h-40 overflow-y-auto pr-1 leading-relaxed">
+                                            {standaloneLesson.content}
+                                          </p>
+                                        </div>
+                                      );
+                                    }
+
+                                    return (
+                                      <div className="p-2 rounded-lg bg-amber-950/30 border border-amber-500/25 space-y-1.5">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <span className="text-[10px] font-semibold text-amber-200 flex items-center gap-1">
+                                            <BookOpen className="w-3 h-3 text-amber-300 shrink-0" />
+                                            <span>No saved note for this topic yet — generate &amp; save:</span>
+                                          </span>
+                                          <div className="flex items-center gap-1 flex-wrap">
+                                            {(["lesson", "lecture", "note"] as TopicLessonStyle[]).map(style => {
+                                              const isThisSpinning =
+                                                isGeneratingThis && generatingSelfTestLessonTarget?.style === style;
+                                              return (
+                                                <button
+                                                  key={style}
+                                                  type="button"
+                                                  disabled={Boolean(generatingSelfTestLessonTarget)}
+                                                  onClick={() =>
+                                                    handleGenerateLessonForSelfTestQuestion(
+                                                      q,
+                                                      picked !== undefined ? (q.options[picked] || "") : "",
+                                                      style
+                                                    )
+                                                  }
+                                                  className="px-2 py-0.5 rounded bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                                >
+                                                  {isThisSpinning ? (
+                                                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                                  ) : (
+                                                    <Sparkles className="w-2.5 h-2.5 text-amber-200" />
+                                                  )}
+                                                  <span>
+                                                    AI {style === "lesson" ? "Lesson" : style === "lecture" ? "Lecture" : "Note"}
+                                                  </span>
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                        {isGeneratingThis && (
+                                          <p className="text-[10px] text-violet-200 flex items-center gap-1">
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                            <span>Generating &amp; saving topic study material...</span>
+                                          </p>
+                                        )}
+                                        {genError && (
+                                          <p className="text-[10px] text-rose-200 bg-rose-950/50 border border-rose-500/35 rounded px-2 py-1">
+                                            {genError}
+                                          </p>
+                                        )}
                                       </div>
                                     );
                                   })()}
@@ -5375,9 +5566,9 @@ export default function FocusTimerModal({
                             <span className={`truncate ${isDone ? "line-through text-slate-500" : ""}`}>
                               {step.title}
                             </span>
-                            {(step.stepType === "self_test" || /self[\s_-]*test/i.test(step.title || "")) && (
+                            {isKnowledgeTesterStep(step) && (
                               <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded bg-violet-500/25 text-violet-200 border border-violet-400/35 shrink-0">
-                                Self Test
+                                Knowledge Tester
                               </span>
                             )}
                           </div>
@@ -5447,6 +5638,40 @@ export default function FocusTimerModal({
                     </div>
                   );
                 })}
+                {(timerState?.subSteps || []).filter(s => !isStepActive(s)).map((step) => (
+                  <div
+                    key={step.id}
+                    className="p-2 rounded-xl border border-dashed border-white/10 bg-slate-900/40 text-xs text-slate-400 flex items-center justify-between gap-2 opacity-75"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="px-1.5 py-0.2 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-white/10 shrink-0">
+                        Inactive
+                      </span>
+                      {isKnowledgeTesterStep(step) && (
+                        <span className="px-1.5 py-0.2 rounded text-[8px] font-bold uppercase tracking-wider bg-violet-500/20 text-violet-300 border border-violet-400/30 shrink-0">
+                          Knowledge Tester
+                        </span>
+                      )}
+                      <span className="truncate">{step.title}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateTimerState((prev) => {
+                          if (!prev?.subSteps) return prev;
+                          return {
+                            ...prev,
+                            subSteps: prev.subSteps.map(s => s.id === step.id ? { ...s, enabled: true } : s)
+                          };
+                        });
+                      }}
+                      className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold cursor-pointer shrink-0 transition"
+                    >
+                      Activate
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -5886,18 +6111,59 @@ export default function FocusTimerModal({
                   )}
                 </div>
 
-                {/* Custom Phase Rows List */}
+                {/* Custom Phase Rows List (Draggable to reorder) */}
                 <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                   {draftSubSteps.map((step, idx) => {
-                    const isSelfTestStepRow = step.stepType === "self_test";
+                    const isSelfTestStepRow = isKnowledgeTesterStep(step);
+                    const isActiveDraftStep = isStepActive(step);
+                    const isDraggingDraft = draggedDraftIdx === idx;
+                    const isDropTargetDraft = dragOverDraftIdx === idx && draggedDraftIdx !== null && draggedDraftIdx !== idx;
                     return (
-                      <div key={step.id || idx} className={`p-2 rounded-xl border space-y-1.5 ${
-                        isSelfTestStepRow
-                          ? "bg-violet-950/30 border-violet-500/40"
-                          : "bg-black/40 border-white/10"
-                      }`}>
-                        <div className="flex items-center gap-2">
-                          <div className="flex flex-col items-center justify-center">
+                      <div
+                        key={step.id || idx}
+                        draggable
+                        onDragStart={(e) => {
+                          setDraggedDraftIdx(idx);
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", String(idx));
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          if (dragOverDraftIdx !== idx) {
+                            setDragOverDraftIdx(idx);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (draggedDraftIdx !== null && draggedDraftIdx !== idx) {
+                            handleDraftReorderPhase(draggedDraftIdx, idx);
+                          }
+                          setDraggedDraftIdx(null);
+                          setDragOverDraftIdx(null);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedDraftIdx(null);
+                          setDragOverDraftIdx(null);
+                        }}
+                        className={`p-2 rounded-xl border space-y-1.5 transition ${
+                          !isActiveDraftStep
+                            ? "bg-slate-900/45 border-dashed border-white/10 opacity-60"
+                            : isSelfTestStepRow
+                            ? "bg-violet-950/30 border-violet-500/40"
+                            : "bg-black/40 border-white/10"
+                        } ${isDraggingDraft ? "opacity-40 scale-[0.99]" : ""} ${
+                          isDropTargetDraft ? "ring-2 ring-indigo-400/80 border-indigo-400 bg-indigo-950/35" : ""
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
+                          <span
+                            className="p-0.5 text-slate-500 hover:text-indigo-300 cursor-grab active:cursor-grabbing shrink-0"
+                            title="Drag to reorder phase"
+                          >
+                            <GripVertical className="w-3.5 h-3.5" />
+                          </span>
+                          <div className="flex flex-col items-center justify-center shrink-0">
                             <button
                               type="button"
                               disabled={idx === 0}
@@ -5923,18 +6189,44 @@ export default function FocusTimerModal({
                             type="button"
                             onClick={() => {
                               const nextType: GoalStepType = isSelfTestStepRow ? "study" : "self_test";
-                              setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, stepType: nextType } : s));
+                              setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, stepType: nextType, enabled: true } : s));
                             }}
                             className={`px-2 py-1 rounded-lg border text-[10px] font-bold transition cursor-pointer shrink-0 flex items-center gap-1 ${
                               isSelfTestStepRow
                                 ? "bg-violet-600/35 text-violet-200 border-violet-400/50"
                                 : "bg-white/5 text-slate-400 hover:text-violet-300 border-white/10"
                             }`}
-                            title="Switch between Study phase and Self Test phase"
+                            title="Switch between Study phase and Knowledge Tester phase"
                           >
                             <ClipboardCheck className="w-3 h-3" />
-                            <span>{isSelfTestStepRow ? "Test" : "Study"}</span>
+                            <span>{isSelfTestStepRow ? "Tester" : "Study"}</span>
                           </button>
+
+                          {isSelfTestStepRow && (
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={isActiveDraftStep}
+                              onClick={() => {
+                                setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, enabled: !isActiveDraftStep } : s));
+                              }}
+                              className={`inline-flex items-center gap-1 px-1.5 py-1 rounded-lg border text-[9px] font-bold transition cursor-pointer shrink-0 ${
+                                isActiveDraftStep
+                                  ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                  : "bg-slate-800 text-slate-400 border-white/10 hover:text-white"
+                              }`}
+                              title={isActiveDraftStep ? "Active — click to inactivate" : "Inactive — click to activate"}
+                            >
+                              <span className={`relative inline-flex h-3 w-5 shrink-0 rounded-full transition-colors ${
+                                isActiveDraftStep ? "bg-emerald-500" : "bg-slate-600"
+                              }`}>
+                                <span className={`inline-block h-2 w-2 mt-0.5 rounded-full bg-white shadow transition-transform ${
+                                  isActiveDraftStep ? "translate-x-2.5" : "translate-x-0.5"
+                                }`} />
+                              </span>
+                              <span>{isActiveDraftStep ? "On" : "Off"}</span>
+                            </button>
+                          )}
 
                           <div className="flex-1 min-w-0">
                             <input
@@ -5944,7 +6236,7 @@ export default function FocusTimerModal({
                                 const val = e.target.value;
                                 setDraftSubSteps(draftSubSteps.map((s, i) => i === idx ? { ...s, title: val } : s));
                               }}
-                              placeholder={isSelfTestStepRow ? "Self Test Title" : `Phase ${idx + 1} Title`}
+                              placeholder={isSelfTestStepRow ? "Knowledge Tester Title" : `Phase ${idx + 1} Title`}
                               className="w-full text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400 font-medium"
                             />
                           </div>
@@ -6050,20 +6342,23 @@ export default function FocusTimerModal({
                         className="px-2.5 py-1 bg-violet-600/25 hover:bg-violet-600/45 border border-violet-400/40 text-violet-200 hover:text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
                       >
                         <ClipboardCheck className="w-3 h-3 text-violet-300" />
-                        <span>+ Self Test</span>
+                        <span>+ Knowledge Tester</span>
                       </button>
                     </div>
 
                     {/* Phase Sum vs Timer Target Calculation */}
                     {(() => {
-                      const draftSum = draftSubSteps.reduce((acc, s) => acc + (Number(s.durationMinutes) || 0), 0);
+                      const draftSum = draftSubSteps.reduce(
+                        (acc, s) => acc + (isStepActive(s) ? (Number(s.durationMinutes) || 0) : 0),
+                        0
+                      );
                       const timerMins = timerState ? Math.round(timerState.totalSec / 60) : 60;
                       const diff = draftSum - timerMins;
 
                       return (
                         <div className="flex items-center gap-2 text-[10px] font-mono">
                           <span className={`font-bold ${diff === 0 ? "text-emerald-400" : "text-amber-400"}`}>
-                            Phases: {draftSum}m / Target: {timerMins}m
+                            Active: {draftSum}m / Target: {timerMins}m
                           </span>
                           {diff !== 0 && (
                             <div className="flex items-center gap-1">
@@ -6071,7 +6366,7 @@ export default function FocusTimerModal({
                                 type="button"
                                 onClick={handleAutoScaleToTimer}
                                 className="px-1.5 py-0.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-md text-[9px] font-bold cursor-pointer transition"
-                                title={`Scale phases proportionally to fit ${timerMins}m`}
+                                title={`Scale active phases proportionally to fit ${timerMins}m`}
                               >
                                 Fit {timerMins}m
                               </button>
@@ -6140,7 +6435,11 @@ export default function FocusTimerModal({
           <div className="mb-4 p-2.5 bg-[#0a0c16] border border-white/5 rounded-2xl flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <ListOrdered className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-              <span className="text-[11px] text-slate-300 font-medium">Break session into study phases?</span>
+              <span className="text-[11px] text-slate-300 font-medium">
+                {timerState?.subSteps && timerState.subSteps.some(s => !isStepActive(s))
+                  ? `${timerState.subSteps.filter(s => !isStepActive(s)).length} inactive step(s) paused — edit phases to activate`
+                  : "Break session into study phases?"}
+              </span>
             </div>
             <div className="flex items-center gap-1.5">
               <button
@@ -6460,7 +6759,11 @@ export default function FocusTimerModal({
           goal={activeGoal}
           isOpen={showKnowledgeHubModal}
           initialTab={knowledgeHubInitialTab}
-          onClose={() => setShowKnowledgeHubModal(false)}
+          initialNoteId={knowledgeHubInitialNoteId}
+          onClose={() => {
+            setShowKnowledgeHubModal(false);
+            setKnowledgeHubInitialNoteId(null);
+          }}
           onUpdateKnowledgeHub={(goalId, updatedHub) => {
             if (onUpdateGoalKnowledgeHub) {
               onUpdateGoalKnowledgeHub(goalId, updatedHub);

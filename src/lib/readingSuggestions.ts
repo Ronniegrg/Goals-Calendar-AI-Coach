@@ -136,3 +136,52 @@ export function buildSavedReadingNote(
     updatedAt: nowIso
   };
 }
+
+export type TopicLessonStyle = "lesson" | "lecture" | "note";
+
+export interface GeneratedTopicLessonPayload {
+  title: string;
+  category?: "concept" | "summary" | "cheat_sheet";
+  content: string;
+  keyTerms?: string[];
+  estimatedMinutes?: number;
+  style?: TopicLessonStyle;
+}
+
+export function buildGeneratedTopicLessonNote(
+  lesson: GeneratedTopicLessonPayload,
+  chapterTitle?: string
+): StudyArtifactNote {
+  const nowIso = new Date().toISOString();
+  const validCategory: StudyArtifactNote["category"] =
+    lesson.category === "summary" || lesson.category === "cheat_sheet"
+      ? lesson.category
+      : "concept";
+
+  return {
+    id: `note_ai_lesson_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    title: (lesson.title || "AI Topic Lesson").trim(),
+    category: validCategory,
+    content: (lesson.content || "").trim(),
+    chapterTitle: chapterTitle?.trim() || undefined,
+    keyTerms: Array.isArray(lesson.keyTerms)
+      ? lesson.keyTerms.map(t => String(t).trim()).filter(Boolean).slice(0, 8)
+      : undefined,
+    createdAt: nowIso,
+    updatedAt: nowIso
+  };
+}
+
+export function mergeMatchedNotesWithGenerated(
+  matchedNotes: StudyArtifactNote[],
+  generatedNoteId: string | undefined,
+  allNotes: StudyArtifactNote[],
+  limit = 3
+): StudyArtifactNote[] {
+  if (!generatedNoteId) return matchedNotes.slice(0, limit);
+  const generatedNote = allNotes.find(n => n.id === generatedNoteId);
+  if (!generatedNote) return matchedNotes.slice(0, limit);
+  const withoutDuplicate = matchedNotes.filter(n => n.id !== generatedNote.id);
+  return [generatedNote, ...withoutDuplicate].slice(0, limit);
+}
+

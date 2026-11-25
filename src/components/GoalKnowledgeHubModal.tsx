@@ -22,6 +22,7 @@ import {
   Award, 
   Layers, 
   FileText, 
+  ArrowLeft,
   ArrowRight, 
   ChevronRight,
   Brain,
@@ -47,11 +48,14 @@ import {
   TestSourceMode
 } from "../lib/studyNotesContext";
 import {
+  buildGeneratedTopicLessonNote,
   buildSavedReadingNote,
   findMatchingNotesForQuestion,
   getRecommendationOpenUrl,
   isRecommendationSaved,
-  isSafePublicHttpUrl
+  isSafePublicHttpUrl,
+  mergeMatchedNotesWithGenerated,
+  TopicLessonStyle
 } from "../lib/readingSuggestions";
 import { TableNoteEditor, StudyNoteTableView } from "./TableNoteEditor";
 import {
@@ -68,6 +72,7 @@ interface GoalKnowledgeHubModalProps {
   onClose: () => void;
   onUpdateKnowledgeHub: (goalId: string, updatedHub: GoalKnowledgeHub) => void;
   initialTab?: "notes" | "tester" | "flashcards" | "overview";
+  initialNoteId?: string | null;
 }
 
 export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
@@ -75,7 +80,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   isOpen,
   onClose,
   onUpdateKnowledgeHub,
-  initialTab = "notes"
+  initialTab = "notes",
+  initialNoteId = null
 }) => {
   if (!isOpen) return null;
 
@@ -89,12 +95,30 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
   const [activeTab, setActiveTab] = useState<"notes" | "tester" | "flashcards" | "overview">(initialTab);
   const [selectedNoteCategory, setSelectedNoteCategory] = useState<string>("all");
+  const [highlightedNoteId, setHighlightedNoteId] = useState<string | null>(initialNoteId || null);
+  const [jumpedFromTestReview, setJumpedFromTestReview] = useState(false);
 
   React.useEffect(() => {
-    if (isOpen && initialTab) {
+    if (isOpen && initialNoteId) {
+      setActiveTab("notes");
+      setSelectedNoteCategory("all");
+      setHighlightedNoteId(initialNoteId);
+      setJumpedFromTestReview(false);
+    } else if (isOpen && initialTab) {
       setActiveTab(initialTab);
     }
-  }, [isOpen, initialTab]);
+  }, [isOpen, initialTab, initialNoteId]);
+
+  React.useEffect(() => {
+    if (!isOpen || activeTab !== "notes" || !highlightedNoteId) return;
+    const scrollTimer = window.setTimeout(() => {
+      const targetEl = document.querySelector(`[data-note-id="${highlightedNoteId}"]`);
+      if (targetEl && "scrollIntoView" in targetEl) {
+        (targetEl as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 90);
+    return () => window.clearTimeout(scrollTimer);
+  }, [isOpen, activeTab, highlightedNoteId]);
   
   // Note creation modal/form state
   const [isAddingNote, setIsAddingNote] = useState(false);
@@ -173,6 +197,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [isGeneratingReadings, setIsGeneratingReadings] = useState(false);
   const [readingRecContextLabel, setReadingRecContextLabel] = useState<string | null>(null);
   const [previewReviewNoteId, setPreviewReviewNoteId] = useState<string | null>(null);
+  const [topicLessonStyle, setTopicLessonStyle] = useState<TopicLessonStyle>("lesson");
+  const [generatingLessonQKey, setGeneratingLessonQKey] = useState<string | null>(null);
+  const [generatedLessonNoteByQKey, setGeneratedLessonNoteByQKey] = useState<Record<string, string>>({});
+  const [topicLessonErrorByQKey, setTopicLessonErrorByQKey] = useState<Record<string, string>>({});
 
   // 1. Helpers to update hub
   const saveHub = (updatedHub: GoalKnowledgeHub) => {
@@ -1062,6 +1090,75 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     });
     setAiNotice(`Saved "${rec.title}" to your Study Notes!`);
     setTimeout(() => setAiNotice(null), 3500);
+  };
+
+  const handleOpenSavedNote = (noteId: string, fromTest = false) => {
+    setSelectedNoteCategory("all");
+    setHighlightedNoteId(noteId);
+    setJumpedFromTestReview(fromTest);
+    setActiveTab("notes");
+  };
+
+  const handleGenerateTopicLessonForQuestion = async (
+    qKey: string,
+    payload: {
+      question: string;
+      correctAnswer: string;
+      userAnswer?: string;
+      explanation?: string;
+    },
+    styleOverride?: TopicLessonStyle
+  ) => {
+    const styleToUse = styleOverride || topicLessonStyle;
+    setTopicLessonStyle(styleToUse);
+    setGeneratingLessonQKey(qKey);
+    setTopicLessonErrorByQKey(prev => {
+      const next = { ...prev };
+      delete next[qKey];
+      return next;
+    });
+    try {
+      const chapter = activeTest?.chapterTitle || (goal.chapters && goal.chapters[0]?.title) || "";
+      const res = await fetch("/api/coach/generate-topic-lesson", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalTitle: goal.name,
+          goalCategory: goal.category || "General",
+          chapterTitle: chapter,
+          examTitle: goal.targetExamTitle || "",
+          question: payload.question,
+          correctAnswer: payload.correctAnswer,
+          userAnswer: payload.userAnswer || "",
+          explanation: payload.explanation || "",
+          lessonStyle: styleToUse
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.lesson?.content) {
+        setTopicLessonErrorByQKey(prev => ({
+          ...prev,
+          [qKey]: data?.error || "Could not generate a lesson for this topic right now."
+        }));
+        return;
+      }
+
+      const savedNote = buildGeneratedTopicLessonNote(data.lesson, chapter);
+      saveHub({
+        ...currentHub,
+        notes: [savedNote, ...currentHub.notes]
+      });
+      setGeneratedLessonNoteByQKey(prev => ({ ...prev, [qKey]: savedNote.id }));
+      setAiNotice(`Saved AI ${styleToUse} "${savedNote.title}" to your Study Notes!`);
+      setTimeout(() => setAiNotice(null), 4000);
+    } catch {
+      setTopicLessonErrorByQKey(prev => ({
+        ...prev,
+        [qKey]: "Network error while generating topic lesson."
+      }));
+    } finally {
+      setGeneratingLessonQKey(null);
+    }
   };
 
   const handleSaveAllReadingRecommendations = () => {
@@ -2282,6 +2379,40 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                 ))}
               </div>
 
+              {highlightedNoteId && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-300 dark:bg-amber-950/35 dark:border-amber-600/40 text-xs">
+                  <div className="flex items-center gap-2 text-amber-950 dark:text-amber-200 font-medium">
+                    <BookOpen className="w-4 h-4 text-amber-600 dark:text-amber-300 shrink-0" />
+                    <span>Highlighted your saved review material below.</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {jumpedFromTestReview && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("tester");
+                          setJumpedFromTestReview(false);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3 h-3" />
+                        <span>Back to Test Review</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHighlightedNoteId(null);
+                        setJumpedFromTestReview(false);
+                      }}
+                      className="text-[11px] font-medium text-amber-800 hover:text-amber-950 dark:text-amber-300 dark:hover:text-white underline cursor-pointer"
+                    >
+                      Clear highlight
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Notes List */}
               {filteredNotes.length === 0 ? (
                 <div className="text-center py-16 px-4 border border-dashed border-violet-300 dark:border-violet-900/30 rounded-2xl bg-white dark:bg-violet-950/10">
@@ -2304,7 +2435,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                   {filteredNotes.map((note) => (
                     <div
                       key={note.id}
-                      className="p-5 rounded-xl bg-white dark:bg-[#141727] border border-slate-200 dark:border-violet-900/30 hover:border-violet-400 dark:hover:border-violet-700/50 transition-all flex flex-col justify-between group shadow-sm dark:shadow-lg"
+                      data-note-id={note.id}
+                      className={`p-5 rounded-xl bg-white dark:bg-[#141727] border transition-all flex flex-col justify-between group shadow-sm dark:shadow-lg ${
+                        highlightedNoteId === note.id
+                          ? "border-amber-500 ring-2 ring-amber-400/60 dark:border-amber-400 dark:ring-amber-400/40 shadow-amber-500/15"
+                          : "border-slate-200 dark:border-violet-900/30 hover:border-violet-400 dark:hover:border-violet-700/50"
+                      }`}
                     >
                       <div className="space-y-3">
                         <div className="flex items-start justify-between gap-2">
@@ -3203,13 +3339,22 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
                                 <div className="space-y-2.5">
                                   {missedItems.map(({ q, idx, userChoice }) => {
-                                    const matchingNotes = findMatchingNotesForQuestion(
+                                    const qKey = `score_${q.id || idx}`;
+                                    const rawMatched = findMatchingNotesForQuestion(
                                       q.question,
                                       q.explanation || "",
                                       q.options[q.correctIndex] || "",
                                       currentHub.notes,
                                       2
                                     );
+                                    const matchingNotes = mergeMatchedNotesWithGenerated(
+                                      rawMatched,
+                                      generatedLessonNoteByQKey[qKey],
+                                      currentHub.notes,
+                                      3
+                                    );
+                                    const isGeneratingThis = generatingLessonQKey === qKey;
+                                    const genError = topicLessonErrorByQKey[qKey];
                                     return (
                                       <div
                                         key={q.id}
@@ -3232,42 +3377,53 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                         {matchingNotes.length > 0 ? (
                                           <div className="pt-1.5 border-t border-slate-200 dark:border-slate-800 space-y-1.5">
                                             <span className="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 block">
-                                              Suggested From Your Notes:
+                                              Suggested From Your Notes (click to open saved note):
                                             </span>
                                             {matchingNotes.map((mn) => (
                                               <div
                                                 key={mn.id}
-                                                className="p-2 rounded-lg bg-teal-50/80 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800/35 space-y-1"
+                                                className="p-2 rounded-lg bg-teal-50/80 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800/35 space-y-1 hover:border-teal-400 dark:hover:border-teal-500/60 transition-colors"
                                               >
                                                 <div className="flex items-center justify-between gap-2">
-                                                  <div className="flex items-center gap-1.5 min-w-0">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleOpenSavedNote(mn.id, true)}
+                                                    title="Open this saved note in Study Notes"
+                                                    className="flex items-center gap-1.5 min-w-0 flex-1 text-left group/note cursor-pointer"
+                                                  >
                                                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 dark:bg-teal-900/60 dark:text-teal-200 uppercase font-semibold shrink-0">
                                                       {formatCategoryLabel(mn.category)}
                                                     </span>
-                                                    <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                                                    <span className="text-xs font-semibold text-teal-950 dark:text-teal-100 group-hover/note:text-teal-700 dark:group-hover/note:text-amber-300 group-hover/note:underline truncate">
                                                       {mn.title}
                                                     </span>
-                                                  </div>
+                                                    <span className="text-[10px] font-semibold text-teal-700 dark:text-teal-300 shrink-0 inline-flex items-center gap-0.5 opacity-80 group-hover/note:opacity-100">
+                                                      <span>Open Note</span>
+                                                      <ArrowRight className="w-2.5 h-2.5" />
+                                                    </span>
+                                                  </button>
                                                   <div className="flex items-center gap-2 shrink-0">
                                                     {mn.url && isSafePublicHttpUrl(mn.url) && (
                                                       <a
                                                         href={mn.url}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
+                                                        onClick={(e) => e.stopPropagation()}
                                                         className="text-[10px] font-semibold text-cyan-700 hover:underline dark:text-cyan-300 inline-flex items-center gap-0.5"
                                                       >
-                                                        <span>Open</span>
+                                                        <span>Link</span>
                                                         <ExternalLink className="w-2.5 h-2.5" />
                                                       </a>
                                                     )}
                                                     <button
                                                       type="button"
-                                                      onClick={() =>
-                                                        setPreviewReviewNoteId(prev => (prev === mn.id ? null : mn.id))
-                                                      }
-                                                      className="text-[10px] font-semibold text-teal-700 hover:text-teal-900 dark:text-teal-300 underline cursor-pointer"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setPreviewReviewNoteId(prev => (prev === mn.id ? null : mn.id));
+                                                      }}
+                                                      className="text-[10px] font-semibold text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white underline cursor-pointer"
                                                     >
-                                                      {previewReviewNoteId === mn.id ? "Hide" : "Review"}
+                                                      {previewReviewNoteId === mn.id ? "Hide" : "Quick Preview"}
                                                     </button>
                                                   </div>
                                                 </div>
@@ -3290,9 +3446,53 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                             ))}
                                           </div>
                                         ) : (
-                                          <p className="text-[11px] italic text-slate-500 dark:text-slate-400">
-                                            No matching note found yet — use &quot;AI Recommend Readings&quot; above to generate &amp; save study material for this topic.
-                                          </p>
+                                          <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                              <span className="text-[11px] text-amber-900 dark:text-amber-200/90 font-medium">
+                                                No saved note covers this topic yet. Generate study material &amp; save to Notes:
+                                              </span>
+                                              <div className="flex items-center gap-1.5 flex-wrap">
+                                                {(["lesson", "lecture", "note"] as TopicLessonStyle[]).map(style => (
+                                                  <button
+                                                    key={style}
+                                                    type="button"
+                                                    disabled={Boolean(generatingLessonQKey)}
+                                                    onClick={() =>
+                                                      handleGenerateTopicLessonForQuestion(
+                                                        qKey,
+                                                        {
+                                                          question: q.question,
+                                                          correctAnswer: q.options[q.correctIndex] || "",
+                                                          userAnswer: userChoice !== undefined ? q.options[userChoice] || "" : "",
+                                                          explanation: q.explanation || ""
+                                                        },
+                                                        style
+                                                      )
+                                                    }
+                                                    className="keep-white px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-[10.5px] font-semibold !text-white inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                                  >
+                                                    {isGeneratingThis && topicLessonStyle === style ? (
+                                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                                    ) : (
+                                                      <Sparkles className="w-3 h-3 text-amber-200" />
+                                                    )}
+                                                    <span className="capitalize">AI {style === "note" ? "Note" : style}</span>
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            </div>
+                                            {isGeneratingThis && (
+                                              <p className="text-[10.5px] text-violet-700 dark:text-violet-300 flex items-center gap-1.5">
+                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                <span>Generating &amp; saving study material on this topic...</span>
+                                              </p>
+                                            )}
+                                            {genError && (
+                                              <p className="text-[11px] text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/40 rounded-lg px-2.5 py-1.5">
+                                                {genError}
+                                              </p>
+                                            )}
+                                          </div>
                                         )}
                                       </div>
                                     );
@@ -3438,13 +3638,22 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 </div>
 
                                 {selectedOptionIndex !== null && selectedOptionIndex !== q.correctIndex && (() => {
-                                  const matchingNotes = findMatchingNotesForQuestion(
+                                  const qKey = `active_${q.id || currentQuestionIndex}`;
+                                  const rawMatched = findMatchingNotesForQuestion(
                                     q.question,
                                     q.explanation || "",
                                     q.options[q.correctIndex] || "",
                                     currentHub.notes,
                                     3
                                   );
+                                  const matchingNotes = mergeMatchedNotesWithGenerated(
+                                    rawMatched,
+                                    generatedLessonNoteByQKey[qKey],
+                                    currentHub.notes,
+                                    3
+                                  );
+                                  const isGeneratingThis = generatingLessonQKey === qKey;
+                                  const genError = topicLessonErrorByQKey[qKey];
                                   return (
                                     <div className="p-4 rounded-xl bg-amber-50/90 border border-amber-200 dark:bg-amber-950/25 dark:border-amber-700/35 space-y-3">
                                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3484,28 +3693,38 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                       {matchingNotes.length > 0 ? (
                                         <div className="space-y-2">
                                           <p className="text-[11px] text-amber-900 dark:text-amber-200/80">
-                                            Related study notes &amp; links in your hub:
+                                            Related study notes &amp; links in your hub (click a note to open it):
                                           </p>
                                           {matchingNotes.map((mn) => (
                                             <div
                                               key={mn.id}
-                                              className="p-2.5 rounded-lg bg-white dark:bg-slate-900/75 border border-amber-200/80 dark:border-amber-800/30 space-y-1.5"
+                                              className="p-2.5 rounded-lg bg-white dark:bg-slate-900/75 border border-amber-200/80 dark:border-amber-800/30 hover:border-amber-400 dark:hover:border-amber-500/60 transition-colors space-y-1.5"
                                             >
                                               <div className="flex items-center justify-between gap-2">
-                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleOpenSavedNote(mn.id, true)}
+                                                  title="Open this saved note in Study Notes"
+                                                  className="flex items-center gap-1.5 min-w-0 flex-1 text-left group/note cursor-pointer"
+                                                >
                                                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 dark:bg-teal-900/50 dark:text-teal-200 uppercase font-semibold shrink-0">
                                                     {formatCategoryLabel(mn.category)}
                                                   </span>
-                                                  <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                                                  <span className="text-xs font-semibold text-slate-900 dark:text-white group-hover/note:text-amber-700 dark:group-hover/note:text-amber-300 group-hover/note:underline truncate">
                                                     {mn.title}
                                                   </span>
-                                                </div>
+                                                  <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 shrink-0 inline-flex items-center gap-0.5">
+                                                    <span>Open Note</span>
+                                                    <ArrowRight className="w-2.5 h-2.5" />
+                                                  </span>
+                                                </button>
                                                 <div className="flex items-center gap-2 shrink-0">
                                                   {mn.url && isSafePublicHttpUrl(mn.url) && (
                                                     <a
                                                       href={mn.url}
                                                       target="_blank"
                                                       rel="noopener noreferrer"
+                                                      onClick={(e) => e.stopPropagation()}
                                                       className="text-[11px] font-semibold text-cyan-700 hover:underline dark:text-cyan-300 inline-flex items-center gap-0.5"
                                                     >
                                                       <span>Open Link</span>
@@ -3514,9 +3733,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                   )}
                                                   <button
                                                     type="button"
-                                                    onClick={() =>
-                                                      setPreviewReviewNoteId(prev => (prev === mn.id ? null : mn.id))
-                                                    }
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setPreviewReviewNoteId(prev => (prev === mn.id ? null : mn.id));
+                                                    }}
                                                     className="text-[11px] font-semibold text-indigo-700 hover:text-indigo-900 dark:text-indigo-300 underline cursor-pointer"
                                                   >
                                                     {previewReviewNoteId === mn.id ? "Hide Note" : "Preview Note"}
@@ -3542,9 +3762,53 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                           ))}
                                         </div>
                                       ) : (
-                                        <p className="text-[11px] text-amber-900 dark:text-amber-200/80">
-                                          Review the explanation above or click <strong>AI Recommend Reading</strong> to generate &amp; save study material for this concept.
-                                        </p>
+                                        <div className="p-3 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-amber-200 dark:border-amber-800/35 space-y-2">
+                                          <p className="text-[11px] text-amber-950 dark:text-amber-200 font-medium">
+                                            No saved note matches this topic yet. Let AI generate study material &amp; save it to your Notes:
+                                          </p>
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            {(["lesson", "lecture", "note"] as TopicLessonStyle[]).map(style => (
+                                              <button
+                                                key={style}
+                                                type="button"
+                                                disabled={Boolean(generatingLessonQKey)}
+                                                onClick={() =>
+                                                  handleGenerateTopicLessonForQuestion(
+                                                    qKey,
+                                                    {
+                                                      question: q.question,
+                                                      correctAnswer: q.options[q.correctIndex] || "",
+                                                      userAnswer: q.options[selectedOptionIndex] || "",
+                                                      explanation: q.explanation || ""
+                                                    },
+                                                    style
+                                                  )
+                                                }
+                                                className="keep-white px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-[11px] font-semibold !text-white inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                              >
+                                                {isGeneratingThis && topicLessonStyle === style ? (
+                                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                                ) : (
+                                                  <Sparkles className="w-3 h-3 text-amber-200" />
+                                                )}
+                                                <span>
+                                                  Generate {style === "lesson" ? "Lesson" : style === "lecture" ? "Lecture" : "Study Note"}
+                                                </span>
+                                              </button>
+                                            ))}
+                                          </div>
+                                          {isGeneratingThis && (
+                                            <p className="text-[11px] text-violet-700 dark:text-violet-300 flex items-center gap-1.5">
+                                              <Loader2 className="w-3 h-3 animate-spin" />
+                                              <span>Writing &amp; saving study material for this concept...</span>
+                                            </p>
+                                          )}
+                                          {genError && (
+                                            <p className="text-[11px] text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/40 rounded-lg px-2.5 py-1.5">
+                                              {genError}
+                                            </p>
+                                          )}
+                                        </div>
                                       )}
 
                                       {renderReadingRecommendationsPanel()}

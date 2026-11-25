@@ -31,9 +31,12 @@ import {
   Loader2,
   RefreshCw,
   X,
-  StickyNote
+  StickyNote,
+  GripVertical,
+  ClipboardCheck
 } from "lucide-react";
-import { CalendarEvent, Goal, SubTask, SessionSubStep } from "../types";
+import { CalendarEvent, Goal, SubTask, SessionSubStep, GoalStepType } from "../types";
+import { isStepActive, isKnowledgeTesterStep, reorderSteps, subTaskToSessionSubStep, sessionSubStepToSubTask } from "../lib/stepOrdering";
 import { 
   triggerFocusTimer, 
   pauseFocusTimer, 
@@ -98,6 +101,7 @@ export default function ActiveExecutionHUD({
   const [showGoalPicker, setShowGoalPicker] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [newSubtaskMinutes, setNewSubtaskMinutes] = useState<number>(15);
+  const [newSubtaskIsTester, setNewSubtaskIsTester] = useState(false);
   const [newSubtaskCarryoverNote, setNewSubtaskCarryoverNote] = useState("");
   const [showNewSubtaskNote, setShowNewSubtaskNote] = useState(false);
   const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
@@ -106,6 +110,8 @@ export default function ActiveExecutionHUD({
   const [editingSubtaskNoteText, setEditingSubtaskNoteText] = useState<string>("");
   const [isGeneratingAiSteps, setIsGeneratingAiSteps] = useState(false);
   const [showTemplatesMenu, setShowTemplatesMenu] = useState(false);
+  const [draggedHudStepIdx, setDraggedHudStepIdx] = useState<number | null>(null);
+  const [dragOverHudStepIdx, setDragOverHudStepIdx] = useState<number | null>(null);
 
   // Compact HUD mode for minimal vertical footprint on laptop screens
   const [isCompact, setIsCompact] = useState<boolean>(() => {
@@ -582,60 +588,64 @@ export default function ActiveExecutionHUD({
       ...(effectiveEvent?.subtasks || []),
       ...(effectiveEvent?.subSteps || [])
     ];
-    const enrichNote = (step: { id: string; title: string; carryoverNote?: string; carryoverNoteDate?: string }) => {
-      if (step.carryoverNote) return { carryoverNote: step.carryoverNote, carryoverNoteDate: step.carryoverNoteDate };
+    const enrichStep = <T extends { id: string; title: string; carryoverNote?: string; carryoverNoteDate?: string }>(step: T) => {
       const match = fallbackNotesSource.find(
-        f => (f.id === step.id || f.title.trim().toLowerCase() === step.title.trim().toLowerCase()) && f.carryoverNote
+        f => (f.id === step.id || f.title.trim().toLowerCase() === step.title.trim().toLowerCase())
       );
-      return { carryoverNote: match?.carryoverNote, carryoverNoteDate: match?.carryoverNoteDate };
+      return {
+        carryoverNote: step.carryoverNote ?? match?.carryoverNote,
+        carryoverNoteDate: step.carryoverNoteDate ?? match?.carryoverNoteDate,
+        enabled: (step as any).enabled ?? match?.enabled,
+        stepType: (step as any).stepType ?? match?.stepType,
+        assignedLinkNoteId: (step as any).assignedLinkNoteId ?? match?.assignedLinkNoteId,
+        assignedLinkUrl: (step as any).assignedLinkUrl ?? match?.assignedLinkUrl,
+        assignedLinkTitle: (step as any).assignedLinkTitle ?? match?.assignedLinkTitle,
+        lastTestScore: (step as any).lastTestScore ?? match?.lastTestScore
+      };
     };
 
     if (activeTimer?.subSteps && activeTimer.subSteps.length > 0) {
       return activeTimer.subSteps.map(s => ({
-        id: s.id,
-        title: s.title,
-        durationMinutes: s.durationMinutes,
-        completed: s.completed || false,
-        ...enrichNote(s)
+        ...sessionSubStepToSubTask(s),
+        ...enrichStep(s)
       }));
     }
     if (effectiveEvent?.subSteps && effectiveEvent.subSteps.length > 0) {
       return effectiveEvent.subSteps.map(s => ({
-        id: s.id,
-        title: s.title,
-        durationMinutes: s.durationMinutes,
-        completed: s.completed || false,
-        ...enrichNote(s)
+        ...sessionSubStepToSubTask(s),
+        ...enrichStep(s)
       }));
     }
     if (effectiveEvent?.subtasks && effectiveEvent.subtasks.length > 0) {
-      return effectiveEvent.subtasks.map(s => ({ ...s, ...enrichNote(s) }));
+      return effectiveEvent.subtasks.map(s => ({ ...s, ...enrichStep(s) }));
     }
     if (effectiveGoal?.subSteps && effectiveGoal.subSteps.length > 0) {
       return effectiveGoal.subSteps.map(s => ({
-        id: s.id,
-        title: s.title,
-        durationMinutes: s.durationMinutes,
-        completed: s.completed || false,
-        ...enrichNote(s)
+        ...sessionSubStepToSubTask(s),
+        ...enrichStep(s)
       }));
     }
     if (effectiveGoal?.subtasks && effectiveGoal.subtasks.length > 0) {
-      return effectiveGoal.subtasks.map(s => ({ ...s, ...enrichNote(s) }));
+      return effectiveGoal.subtasks.map(s => ({ ...s, ...enrichStep(s) }));
     }
     return [];
   }, [activeTimer, effectiveEvent, effectiveGoal]);
 
-  const completedSubtasksCount = activeSubtasks.filter(t => t.completed).length;
+  const activeEnabledSubtasks = useMemo(
+    () => activeSubtasks.filter(t => isStepActive(t)),
+    [activeSubtasks]
+  );
 
-  // Time-budget calculations for micro-tasks
+  const completedSubtasksCount = activeEnabledSubtasks.filter(t => t.completed).length;
+
+  // Time-budget calculations for micro-tasks (active steps only)
   const allocatedMinutes = useMemo(() => {
-    return activeSubtasks.reduce((sum, t) => sum + (t.durationMinutes || 0), 0);
-  }, [activeSubtasks]);
+    return activeEnabledSubtasks.reduce((sum, t) => sum + (t.durationMinutes || 0), 0);
+  }, [activeEnabledSubtasks]);
 
   const unallocatedMinutes = totalSessionMinutes - allocatedMinutes;
   const isOverallocated = allocatedMinutes > totalSessionMinutes;
-  const hasTimingOnSteps = activeSubtasks.some(t => typeof t.durationMinutes === "number" && t.durationMinutes > 0);
+  const hasTimingOnSteps = activeEnabledSubtasks.some(t => typeof t.durationMinutes === "number" && t.durationMinutes > 0);
 
   const hudSessionSavedStepKeysRef = React.useRef<Set<string>>(new Set());
   const hudStudyStartRef = React.useRef<number>(Date.now());
@@ -647,14 +657,7 @@ export default function ActiveExecutionHUD({
 
   // Synchronize subtasks cleanly to goal (which also syncs uncompleted events), standalone event, and active timer
   const persistSubtasks = (updated: SubTask[]) => {
-    const convertedSteps: SessionSubStep[] = updated.map((t) => ({
-      id: t.id,
-      title: t.title,
-      durationMinutes: t.durationMinutes || 10,
-      completed: t.completed,
-      carryoverNote: t.carryoverNote,
-      carryoverNoteDate: t.carryoverNoteDate
-    }));
+    const convertedSteps: SessionSubStep[] = updated.map(subTaskToSessionSubStep);
 
     if (effectiveGoal?.id && onEditGoal) {
       onEditGoal(effectiveGoal.id, { subtasks: updated, subSteps: convertedSteps });
@@ -744,14 +747,17 @@ export default function ActiveExecutionHUD({
 
   const handleAddSubtask = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSubtaskTitle.trim()) return;
-    const dur = Math.max(1, Number(newSubtaskMinutes) || 15);
+    const resolvedTitle = newSubtaskTitle.trim() || (newSubtaskIsTester ? "Knowledge Tester" : "");
+    if (!resolvedTitle) return;
+    const dur = Math.max(1, Number(newSubtaskMinutes) || (newSubtaskIsTester ? 10 : 15));
     const trimmedNote = newSubtaskCarryoverNote.trim();
     const newTask: SubTask = {
       id: `task_${Date.now()}`,
-      title: newSubtaskTitle.trim(),
+      title: resolvedTitle,
       durationMinutes: dur,
       completed: false,
+      enabled: true,
+      ...(newSubtaskIsTester ? { stepType: "self_test" as GoalStepType } : {}),
       ...(trimmedNote ? {
         carryoverNote: trimmedNote,
         carryoverNoteDate: new Date().toISOString()
@@ -759,6 +765,7 @@ export default function ActiveExecutionHUD({
     };
     const nextList = [...activeSubtasks, newTask];
     setNewSubtaskTitle("");
+    setNewSubtaskIsTester(false);
     setNewSubtaskCarryoverNote("");
     setShowNewSubtaskNote(false);
     persistSubtasks(nextList);
@@ -777,11 +784,18 @@ export default function ActiveExecutionHUD({
     if (direction === "up" && idx === 0) return;
     if (direction === "down" && idx === activeSubtasks.length - 1) return;
     const targetIdx = direction === "up" ? idx - 1 : idx + 1;
-    const nextList = [...activeSubtasks];
-    const temp = nextList[idx];
-    nextList[idx] = nextList[targetIdx];
-    nextList[targetIdx] = temp;
-    persistSubtasks(nextList);
+    persistSubtasks(reorderSteps(activeSubtasks, idx, targetIdx));
+  };
+
+  const handleReorderSubtasks = (fromIndex: number, toIndex: number) => {
+    persistSubtasks(reorderSteps(activeSubtasks, fromIndex, toIndex));
+  };
+
+  const handleToggleSubtaskEnabled = (taskId: string) => {
+    const updated = activeSubtasks.map(t =>
+      t.id === taskId ? { ...t, enabled: !isStepActive(t) } : t
+    );
+    persistSubtasks(updated);
   };
 
   const handleResetAllSubtasks = () => {
@@ -1214,11 +1228,11 @@ export default function ActiveExecutionHUD({
     }
   }
 
-  // Calculate live pacing and which micro-task should be active now based on elapsed time
+  // Calculate live pacing and which micro-task should be active now based on elapsed time (active steps only)
   const subtasksTimeline = useMemo(() => {
     let runningSec = 0;
-    return activeSubtasks.map((task, idx) => {
-      const durMins = task.durationMinutes || Math.max(5, Math.floor(totalSessionMinutes / Math.max(1, activeSubtasks.length)));
+    return activeEnabledSubtasks.map((task, idx) => {
+      const durMins = task.durationMinutes || Math.max(5, Math.floor(totalSessionMinutes / Math.max(1, activeEnabledSubtasks.length)));
       const durSec = durMins * 60;
       const startSec = runningSec;
       const endSec = runningSec + durSec;
@@ -1232,7 +1246,7 @@ export default function ActiveExecutionHUD({
         durSec
       };
     });
-  }, [activeSubtasks, totalSessionMinutes]);
+  }, [activeEnabledSubtasks, totalSessionMinutes]);
 
   // Current paced step
   const currentPacedStep = useMemo(() => {
@@ -2352,29 +2366,71 @@ export default function ActiveExecutionHUD({
               </div>
             </div>
 
-            {/* List of subtasks with step duration indicators, inline editing & reordering */}
+            {/* List of subtasks with drag-and-drop reordering, Knowledge Tester toggles & duration controls */}
             {activeSubtasks.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {subtasksTimeline.map((task, idx) => {
-                  const isCurrentPaced = isTimerRunning && currentPacedStep?.step?.id === task.id;
+                {activeSubtasks.map((task, idx) => {
+                  const isStepEnabled = isStepActive(task);
+                  const isTesterStep = isKnowledgeTesterStep(task);
+                  const isCurrentPaced = isStepEnabled && isTimerRunning && currentPacedStep?.step?.id === task.id;
                   const isEditingThis = editingSubtaskId === task.id;
                   const isEditingThisNote = editingSubtaskNoteId === task.id;
                   const hasStepNote = Boolean(task.carryoverNote && task.carryoverNote.trim().length > 0);
+                  const isDraggingThis = draggedHudStepIdx === idx;
+                  const isDropTarget = dragOverHudStepIdx === idx && draggedHudStepIdx !== null && draggedHudStepIdx !== idx;
 
                   return (
                     <div
                       key={task.id}
+                      draggable={!isEditingThis && !isEditingThisNote}
+                      onDragStart={(e) => {
+                        setDraggedHudStepIdx(idx);
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", String(idx));
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        if (dragOverHudStepIdx !== idx) {
+                          setDragOverHudStepIdx(idx);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (draggedHudStepIdx !== null && draggedHudStepIdx !== idx) {
+                          handleReorderSubtasks(draggedHudStepIdx, idx);
+                        }
+                        setDraggedHudStepIdx(null);
+                        setDragOverHudStepIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedHudStepIdx(null);
+                        setDragOverHudStepIdx(null);
+                      }}
                       className={`relative flex flex-col gap-2 p-2.5 rounded-xl border transition group ${
-                        task.completed
+                        !isStepEnabled
+                          ? "bg-slate-100/50 dark:bg-slate-900/40 border-dashed border-slate-300/60 dark:border-white/10 opacity-60 text-slate-400"
+                          : task.completed
                           ? "bg-slate-50/60 dark:bg-white/5 border-slate-200/60 dark:border-white/5 text-slate-400 dark:text-slate-500"
                           : isCurrentPaced
                             ? "bg-indigo-950/40 border-indigo-500/50 shadow-sm shadow-indigo-500/20 text-white"
+                            : isTesterStep
+                            ? "bg-violet-950/25 border-violet-500/35 text-slate-800 dark:text-slate-200 hover:border-violet-400/60"
                             : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 hover:border-indigo-400/50"
+                      } ${isDraggingThis ? "opacity-40 scale-[0.99]" : ""} ${
+                        isDropTarget ? "ring-2 ring-indigo-400/80 border-indigo-400 bg-indigo-950/30" : ""
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2.5">
-                        {/* Checkbox, Step Number & Title */}
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                        {/* Drag Handle, Checkbox, Step Number & Title */}
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          <span
+                            className="p-0.5 text-slate-400 hover:text-indigo-400 cursor-grab active:cursor-grabbing shrink-0 opacity-60 group-hover:opacity-100"
+                            title="Drag step to reorder"
+                          >
+                            <GripVertical className="w-3.5 h-3.5" />
+                          </span>
+
                           {/* Step Sequence Badge */}
                           <span className="w-4 text-center font-mono text-[10px] font-bold text-slate-400 shrink-0">
                             {idx + 1}
@@ -2382,11 +2438,15 @@ export default function ActiveExecutionHUD({
 
                           {/* Completion Checkbox */}
                           <div 
-                            onClick={() => handleToggleSubtask(task.id)}
-                            className={`w-4 h-4 rounded-md flex items-center justify-center border transition shrink-0 cursor-pointer ${
-                              task.completed
-                                ? "bg-emerald-500 border-emerald-500 text-white"
-                                : "border-slate-300 dark:border-white/20 hover:border-indigo-400"
+                            onClick={() => {
+                              if (isStepEnabled) handleToggleSubtask(task.id);
+                            }}
+                            className={`w-4 h-4 rounded-md flex items-center justify-center border transition shrink-0 ${
+                              !isStepEnabled
+                                ? "border-slate-400/30 opacity-40 cursor-not-allowed"
+                                : task.completed
+                                ? "bg-emerald-500 border-emerald-500 text-white cursor-pointer"
+                                : "border-slate-300 dark:border-white/20 hover:border-indigo-400 cursor-pointer"
                             }`}
                           >
                             {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
@@ -2437,8 +2497,23 @@ export default function ActiveExecutionHUD({
                                 className="cursor-pointer select-none"
                                 title="Double click to edit title"
                               >
-                                <div className="flex items-center gap-1.5">
-                                  <span className={`text-xs font-semibold truncate ${task.completed ? "line-through text-slate-400" : ""}`}>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {isTesterStep && (
+                                    <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider border shrink-0 ${
+                                      isStepEnabled
+                                        ? "bg-violet-500/25 text-violet-200 border-violet-400/40"
+                                        : "bg-slate-800 text-slate-400 border-white/10"
+                                    }`}>
+                                      Knowledge Tester
+                                    </span>
+                                  )}
+                                  <span className={`text-xs font-semibold truncate ${
+                                    !isStepEnabled
+                                      ? "text-slate-400"
+                                      : task.completed
+                                      ? "line-through text-slate-400"
+                                      : ""
+                                  }`}>
                                     {task.title}
                                   </span>
                                   {isCurrentPaced && (
@@ -2459,8 +2534,31 @@ export default function ActiveExecutionHUD({
                           </div>
                         </div>
 
-                        {/* Right: Note, Reorder, Edit, Time Badge & Delete */}
+                        {/* Right: Tester Toggle, Note, Reorder, Edit, Time Badge & Delete */}
                         <div className="flex items-center gap-1 shrink-0">
+                          {isTesterStep && (
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={isStepEnabled}
+                              onClick={() => handleToggleSubtaskEnabled(task.id)}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold border transition cursor-pointer shrink-0 ${
+                                isStepEnabled
+                                  ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                  : "bg-slate-800 text-slate-400 border-white/10 hover:text-white"
+                              }`}
+                              title={isStepEnabled ? "Active — click to inactivate" : "Inactive — click to activate"}
+                            >
+                              <span className={`relative inline-flex h-2.5 w-4 shrink-0 rounded-full transition-colors ${
+                                isStepEnabled ? "bg-emerald-500" : "bg-slate-600"
+                              }`}>
+                                <span className={`inline-block h-1.5 w-1.5 mt-0.5 rounded-full bg-white shadow transition-transform ${
+                                  isStepEnabled ? "translate-x-2" : "translate-x-0.5"
+                                }`} />
+                              </span>
+                              <span>{isStepEnabled ? "On" : "Off"}</span>
+                            </button>
+                          )}
                           {/* Per-Step Carryover Note Button */}
                           <button
                             type="button"
@@ -2690,7 +2788,7 @@ export default function ActiveExecutionHUD({
                 { title: "Review Prior Notes", mins: 10 },
                 { title: "Practice Problems", mins: 20 },
                 { title: "Active Recall / Flashcards", mins: 15 },
-                { title: "Self-Quiz & Testing", mins: 15 },
+                { title: "Knowledge Tester", mins: 10, stepType: "self_test" as GoalStepType },
                 { title: "Summary Notes & Recap", mins: 5 }
               ].map((chip, cIdx) => (
                 <button
@@ -2701,11 +2799,17 @@ export default function ActiveExecutionHUD({
                       id: `task_${Date.now()}_${cIdx}`,
                       title: chip.title,
                       durationMinutes: chip.mins,
-                      completed: false
+                      completed: false,
+                      enabled: true,
+                      ...(chip.stepType ? { stepType: chip.stepType } : {})
                     };
                     persistSubtasks([...activeSubtasks, newTask]);
                   }}
-                  className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-white/5 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/30 transition cursor-pointer flex items-center gap-1"
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border transition cursor-pointer flex items-center gap-1 ${
+                    chip.stepType === "self_test"
+                      ? "bg-violet-500/15 hover:bg-violet-500/30 text-violet-300 border-violet-500/35"
+                      : "bg-white/5 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border-white/10 hover:border-indigo-500/30"
+                  }`}
                   title={`Add "${chip.title}" (${chip.mins}m)`}
                 >
                   <Plus className="w-2.5 h-2.5" />
@@ -2717,13 +2821,28 @@ export default function ActiveExecutionHUD({
             {/* Quick add custom subtask form with minute allocation + optional step carryover note */}
             <form onSubmit={handleAddSubtask} className="space-y-1.5 pt-1">
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                <input
-                  type="text"
-                  value={newSubtaskTitle}
-                  onChange={e => setNewSubtaskTitle(e.target.value)}
-                  placeholder="Add custom step (e.g. 'Read Chapter 4', 'Solve LeetCode #206')..."
-                  className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
+                <div className="flex items-center gap-1.5 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => setNewSubtaskIsTester(prev => !prev)}
+                    className={`px-2.5 py-2 rounded-xl border text-[11px] font-bold transition cursor-pointer flex items-center gap-1 shrink-0 ${
+                      newSubtaskIsTester
+                        ? "bg-violet-600/35 text-violet-200 border-violet-400/50"
+                        : "bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:text-violet-300 border-slate-200 dark:border-white/10"
+                    }`}
+                    title="Toggle between regular Step and Knowledge Tester step"
+                  >
+                    <ClipboardCheck className="w-3.5 h-3.5" />
+                    <span>{newSubtaskIsTester ? "Tester" : "Step"}</span>
+                  </button>
+                  <input
+                    type="text"
+                    value={newSubtaskTitle}
+                    onChange={e => setNewSubtaskTitle(e.target.value)}
+                    placeholder={newSubtaskIsTester ? "Knowledge Tester step title (optional)..." : "Add custom step (e.g. 'Read Chapter 4', 'Solve LeetCode #206')..."}
+                    className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
 
                 {/* Minute budget input + Note toggle */}
                 <div className="flex items-center gap-1.5 self-end sm:self-auto">
@@ -2769,11 +2888,15 @@ export default function ActiveExecutionHUD({
 
                   <button
                     type="submit"
-                    disabled={!newSubtaskTitle.trim()}
-                    className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                    disabled={!newSubtaskTitle.trim() && !newSubtaskIsTester}
+                    className={`px-3.5 py-2 rounded-xl disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                      newSubtaskIsTester
+                        ? "bg-violet-600 hover:bg-violet-500"
+                        : "bg-indigo-600 hover:bg-indigo-500"
+                    }`}
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Add Step</span>
+                    <span>{newSubtaskIsTester ? "Add Tester" : "Add Step"}</span>
                   </button>
                 </div>
               </div>
