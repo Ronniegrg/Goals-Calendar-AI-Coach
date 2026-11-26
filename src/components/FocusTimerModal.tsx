@@ -78,6 +78,9 @@ import {
   TopicLessonStyle
 } from "../lib/readingSuggestions";
 import { TableNoteEditor } from "./TableNoteEditor";
+import { FormattedStudyText, StudyNoteTextEditor } from "./StudyNoteTextEditor";
+import { findPotentialDuplicateNotes } from "../lib/noteDuplicateCheck";
+import { DuplicateWarningBanner } from "./DuplicateWarningBanner";
 import {
   createEmptyTableHeaders,
   createEmptyTableRows,
@@ -702,6 +705,8 @@ export default function FocusTimerModal({
   const [screenshotFallbackNotice, setScreenshotFallbackNotice] = useState<string | null>(null);
   const [lightboxScreenshotUrl, setLightboxScreenshotUrl] = useState<string | null>(null);
   const [noteSavedFeedback, setNoteSavedFeedback] = useState<string | null>(null);
+  const [allowDuplicateLiveNoteSave, setAllowDuplicateLiveNoteSave] = useState(false);
+  const [blockedDuplicateLiveSave, setBlockedDuplicateLiveSave] = useState(false);
   const [showKnowledgeHubModal, setShowKnowledgeHubModal] = useState(false);
   const [knowledgeHubInitialTab, setKnowledgeHubInitialTab] = useState<"notes" | "tester" | "flashcards" | "overview">("notes");
   const [knowledgeHubInitialNoteId, setKnowledgeHubInitialNoteId] = useState<string | null>(null);
@@ -1427,7 +1432,7 @@ export default function FocusTimerModal({
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           setNoteSavedFeedback(data?.error || "Could not extract study notes or quiz from that upload.");
-          setTimeout(() => setNoteSavedFeedback(null), res.status === 429 ? 8500 : 5500);
+          setTimeout(() => setNoteSavedFeedback(null), res.status === 429 || res.status === 503 ? 8500 : 5500);
           return;
         }
 
@@ -1491,6 +1496,35 @@ export default function FocusTimerModal({
         return;
       }
     } else if (!liveNoteContent.trim() && !hasScreenshots) {
+      return;
+    }
+
+    const existingGoalNotes = activeGoal?.knowledgeHub?.notes || [];
+    const liveDupMatches = findPotentialDuplicateNotes(
+      {
+        category: liveNoteCategory,
+        title: liveNoteTitle,
+        content: liveNoteContent,
+        question: liveNoteQuestion,
+        answer: liveNoteAnswer,
+        explanation: liveNoteExplanation,
+        term: liveNoteTerm,
+        definition: liveNoteDefinition,
+        url: liveNoteUrl,
+        urlNotes: liveNoteUrlContext,
+        tableHeaders: liveNoteTableHeaders,
+        tableRows: liveNoteTableRows
+      },
+      existingGoalNotes,
+      3
+    );
+
+    if (liveDupMatches.length > 0 && !allowDuplicateLiveNoteSave) {
+      setBlockedDuplicateLiveSave(true);
+      setNoteSavedFeedback(
+        `Already saved (${liveDupMatches[0].similarityPercent}% similar: "${liveDupMatches[0].note.title}"). Review the highlighted warning below before adding.`
+      );
+      setTimeout(() => setNoteSavedFeedback(null), 5000);
       return;
     }
 
@@ -1627,7 +1661,7 @@ export default function FocusTimerModal({
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          if (res.status === 429) feedbackTimeoutMs = 8500;
+          if (res.status === 429 || res.status === 503) feedbackTimeoutMs = 8500;
           setNoteSavedFeedback(
             data?.error
               ? `Link saved. ${data.error}`
@@ -1717,6 +1751,8 @@ export default function FocusTimerModal({
     setLiveNoteRequiresLogin(false);
     setLiveNoteTitle("");
     setLiveNoteScreenshots([]);
+    setAllowDuplicateLiveNoteSave(false);
+    setBlockedDuplicateLiveSave(false);
     setScreenshotFallbackNotice(null);
     setTimeout(() => setNoteSavedFeedback(null), 4000);
     requestAnimationFrame(() => {
@@ -1731,6 +1767,52 @@ export default function FocusTimerModal({
       }
     });
   };
+
+  const liveDraftDuplicateMatches = useMemo(() => {
+    const notes = activeGoal?.knowledgeHub?.notes || [];
+    if (notes.length === 0 || liveNoteCategory === "video_upload") return [];
+    return findPotentialDuplicateNotes(
+      {
+        category: liveNoteCategory,
+        title: liveNoteTitle,
+        content: liveNoteContent,
+        question: liveNoteQuestion,
+        answer: liveNoteAnswer,
+        explanation: liveNoteExplanation,
+        term: liveNoteTerm,
+        definition: liveNoteDefinition,
+        url: liveNoteUrl,
+        urlNotes: liveNoteUrlContext,
+        tableHeaders: liveNoteTableHeaders,
+        tableRows: liveNoteTableRows
+      },
+      notes,
+      3
+    );
+  }, [
+    activeGoal?.knowledgeHub?.notes,
+    liveNoteCategory,
+    liveNoteTitle,
+    liveNoteContent,
+    liveNoteQuestion,
+    liveNoteAnswer,
+    liveNoteExplanation,
+    liveNoteTerm,
+    liveNoteDefinition,
+    liveNoteUrl,
+    liveNoteUrlContext,
+    liveNoteTableHeaders,
+    liveNoteTableRows
+  ]);
+
+  const liveDupSignature = liveDraftDuplicateMatches
+    .map(m => `${m.note.id}:${m.similarityPercent}`)
+    .join("|");
+
+  useEffect(() => {
+    setAllowDuplicateLiveNoteSave(false);
+    setBlockedDuplicateLiveSave(false);
+  }, [liveDupSignature]);
 
   const isLiveNoteSaveDisabled =
     isExtractingLiveUrl ||
@@ -4599,12 +4681,13 @@ export default function FocusTimerModal({
                 compact
               />
             ) : (
-              <textarea
+              <StudyNoteTextEditor
                 rows={4}
-                placeholder="Type your notes here while studying... bullet points, definitions, equations, or code."
+                placeholder="Type your notes here while studying... bulleted lists (- item), numbered lists (1. item), definitions, equations, or code."
                 value={liveNoteContent}
-                onChange={(e) => setLiveNoteContent(e.target.value)}
-                className="w-full text-xs p-3 bg-white dark:bg-[#0b0e18] border border-slate-200 dark:border-white/12 rounded-lg text-slate-900 dark:text-white font-mono placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 custom-scrollbar"
+                onChange={setLiveNoteContent}
+                compact
+                darkSurface
               />
             )}
 
@@ -4714,6 +4797,22 @@ export default function FocusTimerModal({
               )}
             </div>
 
+            <DuplicateWarningBanner
+              matches={liveDraftDuplicateMatches}
+              allowDuplicateSave={allowDuplicateLiveNoteSave}
+              onToggleAllowDuplicate={(allowed) => {
+                setAllowDuplicateLiveNoteSave(allowed);
+                if (allowed) setBlockedDuplicateLiveSave(false);
+              }}
+              onViewExistingNote={(noteId) => {
+                setKnowledgeHubInitialTab("notes");
+                setKnowledgeHubInitialNoteId(noteId);
+                setShowKnowledgeHubModal(true);
+              }}
+              compact
+              wasBlockedOnSave={blockedDuplicateLiveSave}
+            />
+
             {/* Footer */}
             <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-200 dark:border-white/10">
               <div className="flex items-center gap-1.5 min-w-0 text-xs text-slate-500 dark:text-slate-400">
@@ -4738,7 +4837,11 @@ export default function FocusTimerModal({
                   onClick={handleSaveLiveStudyNote}
                   disabled={isLiveNoteSaveDisabled}
                   title="Save (Ctrl + Enter)"
-                  className="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                  className={`px-4 py-2 disabled:opacity-40 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
+                    liveDraftDuplicateMatches.length > 0 && !allowDuplicateLiveNoteSave
+                      ? "bg-amber-600 hover:bg-amber-500"
+                      : "bg-violet-600 hover:bg-violet-500"
+                  }`}
                 >
                   {isExtractingLiveUrl || isExtractingLiveUpload ? (
                     <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
@@ -4748,7 +4851,9 @@ export default function FocusTimerModal({
                     <Save className="w-3.5 h-3.5 shrink-0" />
                   )}
                   <span>
-                    {isExtractingLiveUpload
+                    {liveDraftDuplicateMatches.length > 0 && !allowDuplicateLiveNoteSave
+                      ? "Already Added — Review"
+                      : isExtractingLiveUpload
                       ? "Analyzing..."
                       : isExtractingLiveUrl
                       ? "Extracting..."
@@ -5274,9 +5379,9 @@ export default function FocusTimerModal({
                                               <span>{standaloneLesson.title}</span>
                                             </span>
                                           </div>
-                                          <p className="text-[10.5px] text-slate-200 whitespace-pre-line max-h-40 overflow-y-auto pr-1 leading-relaxed">
-                                            {standaloneLesson.content}
-                                          </p>
+                                          <div className="max-h-40 overflow-y-auto pr-1 text-slate-200 [&_p]:text-slate-200 [&_li]:text-slate-200">
+                                            <FormattedStudyText text={standaloneLesson.content} className="text-[10.5px]" />
+                                          </div>
                                         </div>
                                       );
                                     }

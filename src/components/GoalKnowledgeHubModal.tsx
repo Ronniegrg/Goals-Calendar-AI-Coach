@@ -38,7 +38,8 @@ import {
   Video,
   Camera,
   ImagePlus,
-  Edit3
+  Edit3,
+  AlertTriangle
 } from "lucide-react";
 import { captureScreenScreenshot, extractImagesFromClipboardEvent, readImageFileAsDataUrl } from "../lib/screenshotCapture";
 import { checkFillInBlankGuess, resolveFillInBlankDraft, splitFillInBlankSegments } from "../lib/fillInBlank";
@@ -57,7 +58,13 @@ import {
   mergeMatchedNotesWithGenerated,
   TopicLessonStyle
 } from "../lib/readingSuggestions";
+import {
+  findExistingDuplicateGroups,
+  findPotentialDuplicateNotes
+} from "../lib/noteDuplicateCheck";
+import { DuplicateWarningBanner, HighlightedDuplicateText } from "./DuplicateWarningBanner";
 import { TableNoteEditor, StudyNoteTableView } from "./TableNoteEditor";
+import { FormattedStudyText, StudyNoteTextEditor } from "./StudyNoteTextEditor";
 import {
   createEmptyTableHeaders,
   createEmptyTableRows,
@@ -201,6 +208,60 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [generatingLessonQKey, setGeneratingLessonQKey] = useState<string | null>(null);
   const [generatedLessonNoteByQKey, setGeneratedLessonNoteByQKey] = useState<Record<string, string>>({});
   const [topicLessonErrorByQKey, setTopicLessonErrorByQKey] = useState<Record<string, string>>({});
+  const [allowDuplicateHubNoteSave, setAllowDuplicateHubNoteSave] = useState(false);
+  const [blockedDuplicateHubSave, setBlockedDuplicateHubSave] = useState(false);
+  const [showOnlyDuplicates, setShowOnlyDuplicates] = useState(false);
+
+  const existingDuplicatesReport = React.useMemo(
+    () => findExistingDuplicateGroups(currentHub.notes),
+    [currentHub.notes]
+  );
+
+  const hubDraftDuplicateMatches = React.useMemo(() => {
+    if (!isAddingNote) return [];
+    return findPotentialDuplicateNotes(
+      {
+        category: newNoteCategory,
+        title: newNoteTitle,
+        content: newNoteContent,
+        question: newNoteQuestion,
+        answer: newNoteAnswer,
+        explanation: newNoteExplanation,
+        term: newNoteTerm,
+        definition: newNoteDefinition,
+        url: newNoteUrl,
+        urlNotes: newNoteUrlContext,
+        tableHeaders: newNoteTableHeaders,
+        tableRows: newNoteTableRows
+      },
+      currentHub.notes,
+      3
+    );
+  }, [
+    isAddingNote,
+    newNoteCategory,
+    newNoteTitle,
+    newNoteContent,
+    newNoteQuestion,
+    newNoteAnswer,
+    newNoteExplanation,
+    newNoteTerm,
+    newNoteDefinition,
+    newNoteUrl,
+    newNoteUrlContext,
+    newNoteTableHeaders,
+    newNoteTableRows,
+    currentHub.notes
+  ]);
+
+  const hubDraftDuplicateSignature = hubDraftDuplicateMatches
+    .map(m => `${m.note.id}:${m.similarityPercent}`)
+    .join("|");
+
+  React.useEffect(() => {
+    setAllowDuplicateHubNoteSave(false);
+    setBlockedDuplicateHubSave(false);
+  }, [hubDraftDuplicateSignature, isAddingNote]);
 
   // 1. Helpers to update hub
   const saveHub = (updatedHub: GoalKnowledgeHub) => {
@@ -425,7 +486,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setAiNotice(data?.error || "Could not extract study material from that URL.");
-        setTimeout(() => setAiNotice(null), res.status === 429 ? 8500 : 5500);
+        setTimeout(() => setAiNotice(null), res.status === 429 || res.status === 503 ? 8500 : 5500);
         return;
       }
 
@@ -531,7 +592,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         const errMsg = data?.error || "Could not extract study materials from that video or transcript.";
         setUploadError(errMsg);
         setAiNotice(errMsg);
-        setTimeout(() => setAiNotice(null), res.status === 429 ? 8500 : 5500);
+        setTimeout(() => setAiNotice(null), res.status === 429 || res.status === 503 ? 8500 : 5500);
         return;
       }
 
@@ -729,6 +790,15 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       return;
     }
 
+    if (hubDraftDuplicateMatches.length > 0 && !allowDuplicateHubNoteSave) {
+      setBlockedDuplicateHubSave(true);
+      setAiNotice(
+        `Possible duplicate already saved (${hubDraftDuplicateMatches[0].similarityPercent}% match: "${hubDraftDuplicateMatches[0].note.title}"). Review the highlighted warning below before adding.`
+      );
+      setTimeout(() => setAiNotice(null), 5000);
+      return;
+    }
+
     const terms = newNoteKeyTerms
       .split(",")
       .map(t => t.trim())
@@ -863,6 +933,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     setNewNoteChapter("");
     setNewNoteScreenshots([]);
     setHubScreenshotNotice(null);
+    setAllowDuplicateHubNoteSave(false);
+    setBlockedDuplicateHubSave(false);
     setIsAddingNote(false);
 
     if (isUrl && extractOnHubUrlSave && (!markLoginRequired || trimmedUrlContext.length > 0)) {
@@ -1346,9 +1418,13 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     }
   };
 
-  const filteredNotes = selectedNoteCategory === "all" 
+  const categoryFilteredNotes = selectedNoteCategory === "all" 
     ? currentHub.notes 
     : currentHub.notes.filter(n => n.category === selectedNoteCategory);
+
+  const filteredNotes = showOnlyDuplicates
+    ? categoryFilteredNotes.filter(n => Boolean(existingDuplicatesReport.byNoteId[n.id]?.length))
+    : categoryFilteredNotes;
 
   const totalFlashcards = currentHub.flashcards.length;
   const masteredFlashcards = currentHub.flashcards.filter(f => f.mastered).length;
@@ -2206,17 +2282,14 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       }}
                     />
                   ) : (
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Content (Markdown Supported)</label>
-                      <textarea
-                        rows={5}
-                        placeholder="Write structured notes, bullet points, key equations, or code syntax..."
-                        value={newNoteContent}
-                        onChange={e => setNewNoteContent(e.target.value)}
-                        required={newNoteScreenshots.length === 0}
-                        className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500 font-mono text-xs"
-                      />
-                    </div>
+                    <StudyNoteTextEditor
+                      label="Content (Lists & Markdown Supported)"
+                      rows={6}
+                      placeholder="Write structured notes, bulleted lists (- item), numbered steps (1. item), key equations, or code syntax..."
+                      value={newNoteContent}
+                      onChange={setNewNoteContent}
+                      required={newNoteScreenshots.length === 0}
+                    />
                   )}
 
                   {/* Screenshot Capture & Paste Strip (All Note Types) */}
@@ -2337,6 +2410,20 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     </div>
                   </div>
 
+                  <DuplicateWarningBanner
+                    matches={hubDraftDuplicateMatches}
+                    allowDuplicateSave={allowDuplicateHubNoteSave}
+                    onToggleAllowDuplicate={(allowed) => {
+                      setAllowDuplicateHubNoteSave(allowed);
+                      if (allowed) setBlockedDuplicateHubSave(false);
+                    }}
+                    onViewExistingNote={(noteId) => {
+                      setIsAddingNote(false);
+                      handleOpenSavedNote(noteId, false);
+                    }}
+                    wasBlockedOnSave={blockedDuplicateHubSave}
+                  />
+
                   <div className="flex items-center justify-end gap-2 pt-2">
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 mr-auto hidden sm:inline">
                       Tip: Press Ctrl+Enter to save
@@ -2352,9 +2439,15 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       type="submit"
                       disabled={isExtractingUrl}
                       title="Save (Ctrl + Enter)"
-                      className="keep-white px-5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-xs font-semibold !text-white shadow-md shadow-violet-900/20 dark:shadow-violet-900/40"
+                      className={`keep-white px-5 py-2 rounded-lg disabled:opacity-50 text-xs font-semibold !text-white shadow-md transition-colors ${
+                        hubDraftDuplicateMatches.length > 0 && !allowDuplicateHubNoteSave
+                          ? "bg-amber-600 hover:bg-amber-500 shadow-amber-900/20"
+                          : "bg-violet-600 hover:bg-violet-500 shadow-violet-900/20 dark:shadow-violet-900/40"
+                      }`}
                     >
-                      {newNoteCategory === "url" && extractOnHubUrlSave && (!newNoteRequiresLogin || newNoteUrlContext.trim().length > 0)
+                      {hubDraftDuplicateMatches.length > 0 && !allowDuplicateHubNoteSave
+                        ? "Already Added — Review Duplicate"
+                        : newNoteCategory === "url" && extractOnHubUrlSave && (!newNoteRequiresLogin || newNoteUrlContext.trim().length > 0)
                         ? "Save & Extract from URL"
                         : "Save Study Artifact"}
                     </button>
@@ -2362,7 +2455,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                 </form>
               )}
 
-              {/* Notes Filter Category Bar */}
+              {/* Notes Filter Category Bar + Duplicate Scanner */}
               <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
                 {["all", "concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition", "url"].map((cat) => (
                   <button
@@ -2377,6 +2470,54 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     {formatCategoryLabel(cat)}
                   </button>
                 ))}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (existingDuplicatesReport.duplicateNoteIds.length === 0) {
+                      setShowOnlyDuplicates(false);
+                      setAiNotice(
+                        currentHub.notes.length < 2
+                          ? "Add at least 2 notes to scan for duplicates."
+                          : `Checked all ${currentHub.notes.length} notes from first to end — no duplicate or similar wording found!`
+                      );
+                      setTimeout(() => setAiNotice(null), 4000);
+                      return;
+                    }
+                    const nextShow = !showOnlyDuplicates;
+                    setShowOnlyDuplicates(nextShow);
+                    if (nextShow) {
+                      setSelectedNoteCategory("all");
+                      setAiNotice(
+                        `Highlighted ${existingDuplicatesReport.duplicateNoteIds.length} notes with duplicate or similar wording.`
+                      );
+                      setTimeout(() => setAiNotice(null), 4000);
+                    }
+                  }}
+                  title="Scan all notes from first to end for exact and non-exact duplicate wording"
+                  className={`ml-auto px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap inline-flex items-center gap-1.5 border transition-all cursor-pointer shrink-0 ${
+                    existingDuplicatesReport.duplicateNoteIds.length > 0
+                      ? showOnlyDuplicates
+                        ? "keep-white bg-amber-600 border-amber-500 !text-white shadow-md shadow-amber-900/25"
+                        : "bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-400 dark:bg-amber-950/45 dark:hover:bg-amber-900/60 dark:text-amber-200 dark:border-amber-500/50"
+                      : "bg-white hover:bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-900/60 dark:hover:bg-slate-800 dark:text-slate-300 dark:border-slate-800"
+                  }`}
+                >
+                  <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${
+                    existingDuplicatesReport.duplicateNoteIds.length > 0
+                      ? showOnlyDuplicates
+                        ? "text-white"
+                        : "text-amber-600 dark:text-amber-300"
+                      : "text-slate-500 dark:text-slate-400"
+                  }`} />
+                  <span>
+                    {existingDuplicatesReport.duplicateNoteIds.length > 0
+                      ? showOnlyDuplicates
+                        ? `Showing Duplicates (${existingDuplicatesReport.duplicateNoteIds.length})`
+                        : `Duplicates Found (${existingDuplicatesReport.duplicateNoteIds.length})`
+                      : "Check Duplicates"}
+                  </span>
+                </button>
               </div>
 
               {highlightedNoteId && (
@@ -2432,17 +2573,64 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {filteredNotes.map((note) => (
+                  {filteredNotes.map((note) => {
+                    const dupRelations = existingDuplicatesReport.byNoteId[note.id] || [];
+                    const topDup = dupRelations[0];
+                    const isDupHighlighted = Boolean(topDup);
+                    return (
                     <div
                       key={note.id}
                       data-note-id={note.id}
                       className={`p-5 rounded-xl bg-white dark:bg-[#141727] border transition-all flex flex-col justify-between group shadow-sm dark:shadow-lg ${
                         highlightedNoteId === note.id
                           ? "border-amber-500 ring-2 ring-amber-400/60 dark:border-amber-400 dark:ring-amber-400/40 shadow-amber-500/15"
+                          : isDupHighlighted
+                          ? "border-amber-400 bg-amber-50/40 dark:bg-amber-950/15 dark:border-amber-500/55 ring-1 ring-amber-400/35"
                           : "border-slate-200 dark:border-violet-900/30 hover:border-violet-400 dark:hover:border-violet-700/50"
                       }`}
                     >
                       <div className="space-y-3">
+                        {topDup && (
+                          <div className="px-2.5 py-2 rounded-lg bg-amber-100/80 dark:bg-amber-950/55 border border-amber-300 dark:border-amber-500/40 space-y-1 text-[11px]">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1 text-amber-950 dark:text-amber-200">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-300 shrink-0" />
+                                <span className="font-semibold truncate">
+                                  {topDup.similarityPercent}% similar to &quot;{topDup.relatedNote.title}&quot;
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenSavedNote(topDup.relatedNote.id, false)}
+                                  className="font-semibold text-amber-800 hover:text-amber-950 dark:text-amber-300 dark:hover:text-white underline cursor-pointer"
+                                >
+                                  View Match
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteNote(note.id)}
+                                  className="font-semibold text-rose-700 hover:text-rose-900 dark:text-rose-300 dark:hover:text-rose-200 underline cursor-pointer"
+                                >
+                                  Remove Copy
+                                </button>
+                              </div>
+                            </div>
+                            {topDup.matchedWords.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1 text-[10px] text-amber-900 dark:text-amber-200/90">
+                                <span className="opacity-80">Shared wording:</span>
+                                {topDup.matchedWords.slice(0, 6).map((mw, mIdx) => (
+                                  <mark
+                                    key={mIdx}
+                                    className="px-1 py-0.2 rounded bg-amber-300/80 text-amber-950 dark:bg-amber-400/30 dark:text-amber-100 font-medium"
+                                  >
+                                    {mw}
+                                  </mark>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold border ${
@@ -2483,7 +2671,11 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 note.title === (note.term || note.title)
                               ) && (
                                 <h4 className="text-base font-bold text-slate-900 dark:text-white mt-2 leading-snug">
-                                  {note.title}
+                                  {topDup ? (
+                                    <HighlightedDuplicateText text={note.title} matchedWords={topDup.matchedWords} />
+                                  ) : (
+                                    note.title
+                                  )}
                                 </h4>
                               )}
                           </div>
@@ -3036,9 +3228,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                   Definition hidden for active recall. Click "Show Definition" to reveal.
                                 </p>
                               ) : (
-                                <p className="text-xs text-slate-800 dark:text-slate-200 whitespace-pre-line leading-relaxed max-h-44 overflow-y-auto pr-1 custom-scrollbar">
-                                  {note.definition || note.content}
-                                </p>
+                                <div className="max-h-44 overflow-y-auto pr-1 custom-scrollbar">
+                                  <FormattedStudyText text={note.definition || note.content} />
+                                </div>
                               )}
                             </div>
                           </div>
@@ -3080,8 +3272,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                             </a>
                             {note.urlNotes && (
-                              <div className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-line leading-relaxed max-h-36 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
-                                {note.urlNotes}
+                              <div className="max-h-36 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
+                                <FormattedStudyText text={note.urlNotes} />
                               </div>
                             )}
                             <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -3169,14 +3361,18 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                             return tableData ? (
                               <StudyNoteTableView headers={tableData.headers} rows={tableData.rows} />
                             ) : (
-                              <div className="text-xs text-slate-800 dark:text-slate-300 whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
-                                {note.content}
+                              <div className="max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
+                                <FormattedStudyText text={note.content} />
                               </div>
                             );
                           })()
-                        ) : (
-                          <div className="text-xs text-slate-800 dark:text-slate-300 whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
+                        ) : note.category === "code_snippet" ? (
+                          <pre className="text-xs font-mono text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
                             {note.content}
+                          </pre>
+                        ) : (
+                          <div className="max-h-56 overflow-y-auto pr-1 custom-scrollbar bg-slate-50 dark:bg-slate-950/40 p-3 rounded-lg border border-slate-200 dark:border-slate-900">
+                            <FormattedStudyText text={note.content} />
                           </div>
                         )}
 
@@ -3221,7 +3417,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <span className="text-slate-500 dark:text-slate-400 font-mono">ID: {note.id.slice(-6)}</span>
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
             </div>
@@ -3437,9 +3634,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                       />
                                                     </div>
                                                   ) : (
-                                                    <p className="text-[11px] text-slate-700 dark:text-slate-300 whitespace-pre-line pt-1 border-t border-teal-200/70 dark:border-teal-800/40 max-h-32 overflow-y-auto custom-scrollbar">
-                                                      {mn.definition || mn.answer || mn.urlNotes || mn.content}
-                                                    </p>
+                                                    <div className="pt-1 border-t border-teal-200/70 dark:border-teal-800/40 max-h-32 overflow-y-auto custom-scrollbar">
+                                                      <FormattedStudyText
+                                                        text={mn.definition || mn.answer || mn.urlNotes || mn.content}
+                                                        className="text-[11px]"
+                                                      />
+                                                    </div>
                                                   )
                                                 )}
                                               </div>
@@ -3753,9 +3953,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                     />
                                                   </div>
                                                 ) : (
-                                                  <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-line pt-1.5 border-t border-slate-200 dark:border-slate-800 max-h-36 overflow-y-auto custom-scrollbar">
-                                                    {mn.definition || mn.answer || mn.urlNotes || mn.content}
-                                                  </p>
+                                                  <div className="pt-1.5 border-t border-slate-200 dark:border-slate-800 max-h-36 overflow-y-auto custom-scrollbar">
+                                                    <FormattedStudyText text={mn.definition || mn.answer || mn.urlNotes || mn.content} />
+                                                  </div>
                                                 )
                                               )}
                                             </div>

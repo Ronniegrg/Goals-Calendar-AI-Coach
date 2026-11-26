@@ -61,6 +61,21 @@ function isGeminiQuotaOrRateLimitError(err: any): boolean {
 }
 
 /**
+ * Detects transient Gemini 503 high-demand / temporary unavailability / timeout errors.
+ */
+function isGeminiDemandOrTransientError(err: any): boolean {
+  const status = Number(err?.status || err?.code || 0);
+  const msg = String(err?.message || err || "");
+  return (
+    status === 503 ||
+    status === 502 ||
+    status === 504 ||
+    status === 408 ||
+    /UNAVAILABLE|"code"\s*:\s*503|\b503\b|high demand|spikes in demand|overloaded|temporarily unavailable|request timeout/i.test(msg)
+  );
+}
+
+/**
  * Detects invalid or unauthorized Gemini API key errors.
  */
 function isGeminiKeyError(err: any): boolean {
@@ -95,8 +110,8 @@ async function generateWithFallback(params: {
 
   for (let i = 0; i < uniqueModels.length; i++) {
     const model = uniqueModels[i];
+    let timer: any;
     try {
-      let timer: any;
       const timeoutPromise = new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after ${requestTimeout}ms`)), requestTimeout);
       });
@@ -114,16 +129,16 @@ async function generateWithFallback(params: {
         return result;
       }
     } catch (err: any) {
+      clearTimeout(timer);
       const isLast = i === uniqueModels.length - 1;
-      const status = err?.status || err?.code || (err?.message?.includes("503") ? 503 : undefined);
-      const isDemandSpike = status === 503 || status === 429 || err?.message?.includes("high demand") || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("timeout");
+      const isDemandSpike = isGeminiDemandOrTransientError(err) || isGeminiQuotaOrRateLimitError(err);
 
       if (!isLast) {
         const nextModel = uniqueModels[i + 1];
-        console.warn(`[AI Service] Model ${model} ${isDemandSpike ? "busy (429/503/timeout)" : "unavailable"}. Transitioning to ${nextModel}...`);
-        await new Promise((r) => setTimeout(r, 250));
+        console.info(`[AI Service] Model ${model} ${isDemandSpike ? "busy (429/503/timeout)" : "unavailable"}. Transitioning to ${nextModel}...`);
+        await new Promise((r) => setTimeout(r, isGeminiDemandOrTransientError(err) ? 600 : 250));
       } else {
-        console.warn(`[AI Service] All cloud models unavailable (${isQuotaOrRateLimitLabel(err)}). Using fallback where available.`);
+        console.info(`[AI Service] All cloud models unavailable (${isQuotaOrRateLimitLabel(err)}). Using fallback where available.`);
       }
     }
   }
@@ -133,13 +148,17 @@ async function generateWithFallback(params: {
 
 function isQuotaOrRateLimitLabel(err: any): string {
   if (isGeminiQuotaOrRateLimitError(err)) return "quota/rate-limit 429";
+  if (isGeminiDemandOrTransientError(err)) return "temporary high demand (503)";
   if (isGeminiKeyError(err)) return "API key error";
-  return err?.message ? String(err.message).slice(0, 120) : "unavailable";
+  const raw = err?.message ? String(err.message) : "";
+  if (!raw || raw.trim().startsWith("{")) return "temporary service error";
+  return raw.slice(0, 120);
 }
 
 /**
- * Generates Gemini content across model tiers and rethrows the final error
- * so endpoints can surface accurate HTTP status codes (e.g. 429 RESOURCE_EXHAUSTED).
+ * Generates Gemini content across model tiers with exponential-backoff retries
+ * for transient 503/high-demand errors, and rethrows final errors so endpoints can
+ * surface accurate HTTP status codes (e.g. 429 RESOURCE_EXHAUSTED, 503 UNAVAILABLE).
  */
 async function generateContentWithModelFallback(params: {
   contents: any;
@@ -148,36 +167,56 @@ async function generateContentWithModelFallback(params: {
   timeoutMs?: number;
 }): Promise<any> {
   const ai = getAi();
-  const models = Array.from(new Set(params.models && params.models.length > 0 ? params.models : ["gemini-4-hydrogen", "gemini-3.1-flash-lite"]));
+  const baseModels = Array.from(new Set(params.models && params.models.length > 0 ? params.models : ["gemini-4-hydrogen", "gemini-3.1-flash-lite"]));
   const requestTimeout = params.timeoutMs || 28000;
   let lastErr: any = null;
 
-  for (let i = 0; i < models.length; i++) {
-    const model = models[i];
-    try {
+  const attemptModels = async (modelList: string[], delayMsOnSwitch: number): Promise<any | null> => {
+    for (let i = 0; i < modelList.length; i++) {
+      const model = modelList[i];
       let timer: any;
-      const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after ${requestTimeout}ms`)), requestTimeout);
-      });
+      try {
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Model ${model} request timeout after ${requestTimeout}ms`)), requestTimeout);
+        });
 
-      const apiPromise = ai.models.generateContent({
-        model,
-        contents: params.contents,
-        config: params.config
-      });
+        const apiPromise = ai.models.generateContent({
+          model,
+          contents: params.contents,
+          config: params.config
+        });
 
-      const result = await Promise.race([apiPromise, timeoutPromise]) as any;
-      clearTimeout(timer);
-      return result;
-    } catch (err: any) {
-      lastErr = err;
-      const isLast = i === models.length - 1;
-      if (isGeminiKeyError(err) || isLast) {
-        throw err;
+        const result = await Promise.race([apiPromise, timeoutPromise]) as any;
+        clearTimeout(timer);
+        return result;
+      } catch (err: any) {
+        clearTimeout(timer);
+        lastErr = err;
+        if (isGeminiKeyError(err)) {
+          throw err;
+        }
+        const isLastInPass = i === modelList.length - 1;
+        if (!isLastInPass) {
+          console.info(`[AI Extraction] ${model} failed (${isQuotaOrRateLimitLabel(err)}); trying ${modelList[i + 1]}...`);
+          await new Promise((r) => setTimeout(r, delayMsOnSwitch));
+        }
       }
-      console.warn(`[AI Extraction] ${model} failed (${isQuotaOrRateLimitLabel(err)}); retrying with ${models[i + 1]}...`);
-      await new Promise((r) => setTimeout(r, 350));
     }
+    return null;
+  };
+
+  // Pass 1: primary order with moderate delay
+  const firstPass = await attemptModels(baseModels, 600);
+  if (firstPass) return firstPass;
+
+  // Exponential backoff retry pass ONLY on transient 503/high-demand/timeout spikes
+  if (isGeminiDemandOrTransientError(lastErr)) {
+    const backoffMs = 1500;
+    console.info(`[AI Extraction] Temporary high demand across initial models (${isQuotaOrRateLimitLabel(lastErr)}); backing off ${backoffMs}ms before retry...`);
+    await new Promise((r) => setTimeout(r, backoffMs));
+    const retryOrder = baseModels.length > 1 ? [...baseModels].reverse() : baseModels;
+    const secondPass = await attemptModels(retryOrder, 900);
+    if (secondPass) return secondPass;
   }
 
   throw lastErr || new Error("Gemini content generation failed.");
@@ -2039,19 +2078,27 @@ ${explanation ? `\nQuiz Explanation: ${String(explanation).trim()}` : ""}`;
       }
     });
   } catch (err: any) {
-    console.error("[AI Topic Lesson] Generation error:", err?.message || err);
+    console.info("[AI Topic Lesson] Generation notice:", isQuotaOrRateLimitLabel(err));
     if (isGeminiQuotaOrRateLimitError(err)) {
       return res.status(429).json({
-        error: err?.message || "Gemini API quota or rate limit exceeded (429 RESOURCE_EXHAUSTED). Please try again shortly."
+        error: "Gemini API quota or rate limit exceeded (429 RESOURCE_EXHAUSTED). Please wait a moment and try again.",
+        code: "RESOURCE_EXHAUSTED"
+      });
+    }
+    if (isGeminiDemandOrTransientError(err)) {
+      return res.status(503).json({
+        error: "Gemini AI models are temporarily experiencing high demand (503). Please wait a few seconds and try again.",
+        code: "UNAVAILABLE"
       });
     }
     if (isGeminiKeyError(err)) {
       return res.status(401).json({
-        error: err?.message || "Gemini API key is invalid or unauthorized."
+        error: "Gemini API key is invalid or unauthorized. Check Settings > Secrets."
       });
     }
+    const rawMsg = String(err?.message || "");
     return res.status(500).json({
-      error: err?.message || "Could not generate topic lesson right now."
+      error: rawMsg && !rawMsg.trim().startsWith("{") ? rawMsg : "Could not generate topic lesson right now."
     });
   }
 });
@@ -2272,10 +2319,10 @@ Task (mode="${mode}"):
         });
         rawParsed = parseJsonFromModelText(ytResult.text || "");
       } catch (ytErr: any) {
-        if (isGeminiQuotaOrRateLimitError(ytErr) || isGeminiKeyError(ytErr)) {
+        if (isGeminiQuotaOrRateLimitError(ytErr) || isGeminiDemandOrTransientError(ytErr) || isGeminiKeyError(ytErr)) {
           throw ytErr;
         }
-        console.warn("YouTube direct fileData extraction fallback to URL context:", ytErr?.message || ytErr);
+        console.info("YouTube direct fileData extraction fallback to URL context:", isQuotaOrRateLimitLabel(ytErr));
       }
     }
 
@@ -2326,7 +2373,7 @@ Return ONLY valid JSON matching this schema:
           }
         });
       } catch (toolErr: any) {
-        if (isGeminiQuotaOrRateLimitError(toolErr) || isGeminiKeyError(toolErr)) {
+        if (isGeminiQuotaOrRateLimitError(toolErr) || isGeminiDemandOrTransientError(toolErr) || isGeminiKeyError(toolErr)) {
           throw toolErr;
         }
         // If combined urlContext+googleSearch fails for non-quota reasons (e.g. unsupported tool on a model), retry with googleSearch or provided user notes
@@ -2484,11 +2531,17 @@ Return ONLY valid JSON matching this schema:
       sources: groundingSources.slice(0, 5)
     });
   } catch (err: any) {
-    console.warn("URL extraction notice:", isQuotaOrRateLimitLabel(err));
+    console.info("URL extraction notice:", isQuotaOrRateLimitLabel(err));
     if (isGeminiQuotaOrRateLimitError(err)) {
       return res.status(429).json({
         error: "Gemini API quota or rate limit exceeded (429). Please wait a moment and try again, or check your Gemini API plan and billing details in AI Studio.",
         code: "RESOURCE_EXHAUSTED"
+      });
+    }
+    if (isGeminiDemandOrTransientError(err)) {
+      return res.status(503).json({
+        error: "Gemini AI models are temporarily experiencing high demand (503). Please wait a few seconds and try again.",
+        code: "UNAVAILABLE"
       });
     }
     if (isGeminiKeyError(err)) {
@@ -2779,30 +2832,53 @@ Return ONLY valid JSON matching the requested schema.`;
       contentParts.push({ text: promptText });
 
       let rawParsed: any = null;
-      const models = ["gemini-4-hydrogen", "gemini-3.1-flash-lite"];
+      const uploadModels = ["gemini-4-hydrogen", "gemini-3.1-flash-lite"];
+      const uploadTimeoutMs = verifiedVideoPath ? 75000 : 35000;
       let lastModelErr: any = null;
 
-      for (let i = 0; i < models.length; i++) {
-        const modelName = models[i];
-        try {
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: [{ role: "user", parts: contentParts }],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: uploadSchema
+      const tryUploadModelsPass = async (modelList: string[], switchDelayMs: number) => {
+        for (let i = 0; i < modelList.length; i++) {
+          const modelName = modelList[i];
+          let timer: any;
+          try {
+            const timeoutPromise = new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`Model ${modelName} request timeout after ${uploadTimeoutMs}ms`)), uploadTimeoutMs);
+            });
+            const apiPromise = ai.models.generateContent({
+              model: modelName,
+              contents: [{ role: "user", parts: contentParts }],
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: uploadSchema
+              }
+            });
+            const response = await Promise.race([apiPromise, timeoutPromise]) as any;
+            clearTimeout(timer);
+            const parsed = parseJsonFromModelText(response?.text || "");
+            if (parsed) {
+              rawParsed = parsed;
+              return;
             }
-          });
-          rawParsed = parseJsonFromModelText(response.text || "");
-          if (rawParsed) break;
-        } catch (mErr: any) {
-          lastModelErr = mErr;
-          if (isGeminiKeyError(mErr)) break;
-          console.warn(`Upload extraction with ${modelName} fallback:`, isQuotaOrRateLimitLabel(mErr));
-          if (i < models.length - 1) {
-            await new Promise((r) => setTimeout(r, 350));
+          } catch (mErr: any) {
+            clearTimeout(timer);
+            lastModelErr = mErr;
+            if (isGeminiKeyError(mErr)) return;
+            if (i < modelList.length - 1) {
+              console.info(`[Upload Extraction] ${modelName} unavailable (${isQuotaOrRateLimitLabel(mErr)}); trying ${modelList[i + 1]}...`);
+              await new Promise((r) => setTimeout(r, switchDelayMs));
+            }
           }
         }
+      };
+
+      await tryUploadModelsPass(uploadModels, 650);
+
+      // Exponential backoff retry pass on transient 503 high-demand spikes
+      if (!rawParsed && lastModelErr && !isGeminiKeyError(lastModelErr) && isGeminiDemandOrTransientError(lastModelErr)) {
+        const backoffMs = 1600;
+        console.info(`[Upload Extraction] Temporary high demand (${isQuotaOrRateLimitLabel(lastModelErr)}); backing off ${backoffMs}ms before retry...`);
+        await new Promise((r) => setTimeout(r, backoffMs));
+        await tryUploadModelsPass([...uploadModels].reverse(), 900);
       }
 
       if (!rawParsed) {
@@ -2913,11 +2989,17 @@ Return ONLY valid JSON matching the requested schema.`;
       });
     } catch (err: any) {
       await cleanupFiles();
-      console.warn("Lecture upload extraction notice:", isQuotaOrRateLimitLabel(err));
+      console.info("Lecture upload extraction notice:", isQuotaOrRateLimitLabel(err));
       if (isGeminiQuotaOrRateLimitError(err)) {
         return res.status(429).json({
           error: "Gemini API quota or rate limit exceeded (429). Please wait a moment and try again, or check your Gemini API plan and billing details in AI Studio.",
           code: "RESOURCE_EXHAUSTED"
+        });
+      }
+      if (isGeminiDemandOrTransientError(err)) {
+        return res.status(503).json({
+          error: "Gemini AI models are temporarily experiencing high demand (503). Please wait a few seconds and try uploading again.",
+          code: "UNAVAILABLE"
         });
       }
       if (isGeminiKeyError(err)) {
@@ -2925,9 +3007,11 @@ Return ONLY valid JSON matching the requested schema.`;
           error: "Gemini API key error. Please check your key in Settings > Secrets."
         });
       }
-      const msg = String(err?.message || "");
+      const rawMsg = String(err?.message || "");
       return res.status(500).json({
-        error: msg || "Failed to analyze the uploaded video or text. Try again or include transcript text."
+        error: rawMsg && !rawMsg.trim().startsWith("{")
+          ? rawMsg
+          : "Failed to analyze the uploaded video or text. Try again or include transcript text."
       });
     }
   });
