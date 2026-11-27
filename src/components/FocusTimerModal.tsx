@@ -68,6 +68,8 @@ import {
   readImageFileAsDataUrl,
   stripInlineBase64ImagesFromText
 } from "../lib/screenshotCapture";
+import { persistImageAsset, persistImageAssets } from "../lib/mediaStorage";
+import { StudyMediaImage } from "./StudyMediaImage";
 import { resolveFillInBlankDraft } from "../lib/fillInBlank";
 import {
   extractDirectQuestionsFromNotes,
@@ -1295,8 +1297,9 @@ export default function FocusTimerModal({
     const result = await captureScreenScreenshot();
     setIsCapturingScreenshot(false);
     if (result.dataUrl) {
+      const persistedUrl = await persistImageAsset(result.dataUrl);
       setLiveNoteScreenshots(prev =>
-        Array.from(new Set([...prev, result.dataUrl!])).slice(0, MAX_NOTE_IMAGES)
+        Array.from(new Set([...prev, persistedUrl])).slice(0, MAX_NOTE_IMAGES)
       );
       setNoteSavedFeedback("Screenshot attached! Save note whenever you're ready.");
       setTimeout(() => setNoteSavedFeedback(null), 3000);
@@ -1326,8 +1329,9 @@ export default function FocusTimerModal({
       }
     }
     if (added.length > 0) {
+      const persistedAdded = await persistImageAssets(added);
       setLiveNoteScreenshots(prev =>
-        Array.from(new Set([...prev, ...added])).slice(0, MAX_NOTE_IMAGES)
+        Array.from(new Set([...prev, ...persistedAdded])).slice(0, MAX_NOTE_IMAGES)
       );
     }
   };
@@ -1446,12 +1450,13 @@ export default function FocusTimerModal({
       const cleanedLiveTranscript = stripInlineBase64ImagesFromText(liveUploadTranscriptText).cleanedText.trim();
       if (!liveUploadVideoFile && !liveUploadTranscriptFile && !cleanedLiveTranscript) {
         if (hasScreenshots) {
+          const persistedScreenshots = await persistImageAssets(liveNoteScreenshots);
           const screenshotNote: StudyArtifactNote = {
             id: `note_${Date.now()}`,
             title: liveNoteTitle.trim() || `${activeGoal.name} Lecture Images`,
             category: "summary",
             content: "Attached lecture images",
-            screenshots: [...liveNoteScreenshots],
+            screenshots: persistedScreenshots,
             chapterTitle: activeChapter,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -1460,7 +1465,7 @@ export default function FocusTimerModal({
             ...currentHub,
             notes: [screenshotNote, ...currentHub.notes]
           });
-          setNoteSavedFeedback(`Saved note with ${liveNoteScreenshots.length} stored image${liveNoteScreenshots.length === 1 ? "" : "s"}!`);
+          setNoteSavedFeedback(`Saved note with ${persistedScreenshots.length} stored image${persistedScreenshots.length === 1 ? "" : "s"}!`);
           setLiveNoteTitle("");
           setLiveNoteScreenshots([]);
           setShowLiveAttachments(false);
@@ -1506,13 +1511,14 @@ export default function FocusTimerModal({
         const rawExtractedNotes: StudyArtifactNote[] = Array.isArray(data.notes) ? data.notes : [];
         let extractedNotes = rawExtractedNotes;
         if (hasScreenshots) {
+          const persistedScreenshots = await persistImageAssets(liveNoteScreenshots);
           if (rawExtractedNotes.length > 0) {
             extractedNotes = rawExtractedNotes.map((n, idx) =>
               idx === 0
                 ? {
                     ...n,
                     screenshots: Array.from(
-                      new Set([...(n.screenshots || []), ...liveNoteScreenshots])
+                      new Set([...(n.screenshots || []), ...persistedScreenshots])
                     ).slice(0, MAX_NOTE_IMAGES)
                   }
                 : n
@@ -1524,7 +1530,7 @@ export default function FocusTimerModal({
                 title: liveNoteTitle.trim() || data.extractedTitle || `${activeGoal.name} Study Material`,
                 category: "summary",
                 content: cleanedLiveTranscript ? cleanedLiveTranscript.slice(0, 12000) : "Attached study images",
-                screenshots: [...liveNoteScreenshots],
+                screenshots: persistedScreenshots,
                 chapterTitle: activeChapter,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
@@ -1746,7 +1752,7 @@ export default function FocusTimerModal({
       urlNotes: isUrl && trimmedUrlContext ? trimmedUrlContext : undefined,
       linkSubtype: isReadingUrl ? "website_reading" : isUrl ? "video_resource" : undefined,
       isReadingAssignment: markReadingAssignment || undefined,
-      screenshots: hasScreenshots ? [...liveNoteScreenshots] : undefined,
+      screenshots: hasScreenshots ? await persistImageAssets(liveNoteScreenshots) : undefined,
       requiresLogin: isUrl ? markLoginRequired : undefined,
       urlAccessNote: markLoginRequired && !trimmedUrlContext
         ? "This link requires signing in. Open it directly to study and review."
@@ -5071,7 +5077,7 @@ export default function FocusTimerModal({
                             className="w-full h-full block cursor-zoom-in"
                             title="Click to preview full size"
                           >
-                            <img
+                            <StudyMediaImage
                               src={src}
                               alt={`Note screenshot ${idx + 1}`}
                               className="w-full h-full object-cover"
@@ -7256,9 +7262,10 @@ export default function FocusTimerModal({
               <X className="w-3.5 h-3.5" />
               <span>Close Preview</span>
             </button>
-            <img
+            <StudyMediaImage
               src={lightboxScreenshotUrl}
               alt="Screenshot preview"
+              loading="eager"
               className="max-w-full max-h-[82vh] rounded-xl border border-white/15 shadow-2xl object-contain bg-black"
             />
           </div>

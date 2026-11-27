@@ -53,6 +53,8 @@ import {
   readImageFileAsDataUrl,
   stripInlineBase64ImagesFromText
 } from "../lib/screenshotCapture";
+import { persistImageAsset, persistImageAssets } from "../lib/mediaStorage";
+import { StudyMediaImage } from "./StudyMediaImage";
 import { checkFillInBlankGuess, resolveFillInBlankDraft, splitFillInBlankSegments } from "../lib/fillInBlank";
 import {
   extractDirectQuestionsFromNotes,
@@ -665,13 +667,14 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       let extractedNotes = rawExtractedNotes;
 
       if (hasUploadImages) {
+        const persistedUploadImages = await persistImageAssets(uploadedScreenshots);
         if (rawExtractedNotes.length > 0) {
           extractedNotes = rawExtractedNotes.map((n, idx) =>
             idx === 0
               ? {
                   ...n,
                   screenshots: Array.from(
-                    new Set([...(n.screenshots || []), ...uploadedScreenshots])
+                    new Set([...(n.screenshots || []), ...persistedUploadImages])
                   ).slice(0, MAX_NOTE_IMAGES)
                 }
               : n
@@ -687,7 +690,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
             title: uploadedLessonTitle.trim() || data.extractedTitle || `${goal.name} Study Material`,
             category: "summary",
             content: cleanedTranscript ? cleanedTranscript.slice(0, 12000) : "Attached study images",
-            screenshots: [...uploadedScreenshots],
+            screenshots: persistedUploadImages,
             chapterTitle: fallbackChapter,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -758,6 +761,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       (goal.chapters && goal.chapters.find(c => !c.completed)?.title) ||
       (goal.chapters && goal.chapters[0]?.title) ||
       undefined;
+    const persistedUploadImages =
+      uploadedScreenshots.length > 0 ? await persistImageAssets(uploadedScreenshots) : [];
     const directNote: StudyArtifactNote = {
       id: `note_${Date.now()}`,
       title:
@@ -766,7 +771,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         `${goal.name} Study Material`,
       category: "summary",
       content: cleaned || "Attached study images",
-      screenshots: uploadedScreenshots.length > 0 ? [...uploadedScreenshots] : undefined,
+      screenshots: persistedUploadImages.length > 0 ? persistedUploadImages : undefined,
       chapterTitle: activeChapter,
       createdAt: nowIso,
       updatedAt: nowIso
@@ -883,8 +888,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const result = await captureScreenScreenshot();
     setIsCapturingHubScreenshot(false);
     if (result.dataUrl) {
+      const persistedUrl = await persistImageAsset(result.dataUrl);
       setNewNoteScreenshots(prev =>
-        Array.from(new Set([...prev, result.dataUrl!])).slice(0, MAX_NOTE_IMAGES)
+        Array.from(new Set([...prev, persistedUrl])).slice(0, MAX_NOTE_IMAGES)
       );
     } else if (result.error) {
       setHubScreenshotNotice(result.error);
@@ -912,8 +918,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       }
     }
     if (added.length > 0) {
+      const persistedAdded = await persistImageAssets(added);
       setNewNoteScreenshots(prev =>
-        Array.from(new Set([...prev, ...added])).slice(0, MAX_NOTE_IMAGES)
+        Array.from(new Set([...prev, ...persistedAdded])).slice(0, MAX_NOTE_IMAGES)
       );
     }
   };
@@ -972,8 +979,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       }
     }
     if (added.length > 0) {
+      const persistedAdded = await persistImageAssets(added);
       setUploadedScreenshots(prev =>
-        Array.from(new Set([...prev, ...added])).slice(0, MAX_NOTE_IMAGES)
+        Array.from(new Set([...prev, ...persistedAdded])).slice(0, MAX_NOTE_IMAGES)
       );
     }
   };
@@ -1143,6 +1151,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
           ? `${String.fromCharCode(65 + resolvedMcq.correctIndex)}) ${resolvedMcq.cleanedOptions[resolvedMcq.correctIndex]}`
           : trimmedAnswer);
 
+    const persistedScreenshots = hasScreenshots ? await persistImageAssets(newNoteScreenshots) : [];
     const noteId = "note_" + Date.now();
     const note: StudyArtifactNote = {
       id: noteId,
@@ -1201,7 +1210,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       urlNotes: isUrl && trimmedUrlContext ? trimmedUrlContext : undefined,
       linkSubtype: isReadingUrl ? "website_reading" : isUrl ? "video_resource" : undefined,
       isReadingAssignment: markReadingAssignment || undefined,
-      screenshots: hasScreenshots ? [...newNoteScreenshots] : undefined,
+      screenshots: persistedScreenshots.length > 0 ? persistedScreenshots : undefined,
       requiresLogin: isUrl ? markLoginRequired : undefined,
       urlAccessNote: markLoginRequired && !trimmedUrlContext
         ? "This link requires signing in. Go study it directly in your browser."
@@ -2366,7 +2375,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               onClick={() => setLightboxScreenshotUrl(src)}
                               className="w-full h-full block cursor-zoom-in"
                             >
-                              <img src={src} alt={`Upload image ${idx + 1}`} className="w-full h-full object-cover" />
+                              <StudyMediaImage src={src} alt={`Upload image ${idx + 1}`} className="w-full h-full object-cover" />
                             </button>
                             <button
                               type="button"
@@ -3193,7 +3202,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               onClick={() => setLightboxScreenshotUrl(src)}
                               className="w-full h-full block cursor-zoom-in"
                             >
-                              <img src={src} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover" />
+                              <StudyMediaImage src={src} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover" />
                             </button>
                             <button
                               type="button"
@@ -3572,7 +3581,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                     className="w-16 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 hover:border-violet-500 shrink-0 cursor-zoom-in"
                                     title="Click to zoom"
                                   >
-                                    <img src={src} alt={`${note.title} preview ${sIdx + 1}`} className="w-full h-full object-cover" />
+                                    <StudyMediaImage src={src} alt={`${note.title} preview ${sIdx + 1}`} className="w-full h-full object-cover" />
                                   </button>
                                 ))}
                                 {note.screenshots.length > 3 && (
@@ -4507,7 +4516,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                   className="relative group rounded-lg overflow-hidden border border-slate-300 dark:border-slate-800 hover:border-violet-500/60 bg-slate-100 dark:bg-black/50 transition-colors cursor-zoom-in"
                                   title="Click to view image full size"
                                 >
-                                  <img
+                                  <StudyMediaImage
                                     src={src}
                                     alt={`${note.title} image ${sIdx + 1}`}
                                     className={`w-full object-cover ${note.screenshots!.length > 4 ? "h-28" : "max-h-44"}`}
@@ -6184,9 +6193,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
               <X className="w-3.5 h-3.5" />
               <span>Close Preview</span>
             </button>
-            <img
+            <StudyMediaImage
               src={lightboxScreenshotUrl}
               alt="Screenshot preview"
+              loading="eager"
               className="max-w-full max-h-[82vh] rounded-xl border border-white/15 shadow-2xl object-contain bg-black"
             />
           </div>

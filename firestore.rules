@@ -1,0 +1,608 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptionalBool(data, key) {
+      return !(key in data) || data[key] is bool;
+    }
+
+    function isOptionalNumber(data, key) {
+      return !(key in data) || (data[key] is int || data[key] is float);
+    }
+
+    function isOptionalList(data, key, maxItems) {
+      return !(key in data) || (data[key] is list && data[key].size() <= maxItems);
+    }
+
+    function isOptionalMap(data, key) {
+      return !(key in data) || data[key] is map;
+    }
+
+    function hasValidParentWorkspace(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    // 1. UserWorkspace Validation Blueprint
+    function isValidUserWorkspace(data, userId) {
+      return data.keys().hasAll([
+          'ownerUid', 'email', 'coachPersona', 'autopilotMode', 'autopilotPacing', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'email', 'displayName', 'coachPersona', 'autopilotMode',
+          'autopilotPacing', 'activeCoachChatId', 'availability', 'energyProfile',
+          'burnoutLimits', 'customTemplates', 'createdAt', 'updatedAt'
+        ]) &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        isOptionalString(data, 'displayName', 120) &&
+        data.coachPersona is string && data.coachPersona in ['mentor', 'drill', 'data'] &&
+        data.autopilotMode is string && data.autopilotMode in ['manual', 'copilot_sentinel', 'suggest_only', 'full_autonomous'] &&
+        data.autopilotPacing is string && data.autopilotPacing in ['gentle', 'balanced', 'aggressive'] &&
+        isOptionalString(data, 'activeCoachChatId', 128) &&
+        isOptionalList(data, 'availability', 14) &&
+        isOptionalMap(data, 'energyProfile') &&
+        isOptionalMap(data, 'burnoutLimits') &&
+        isOptionalList(data, 'customTemplates', 50) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 2. GoalRecord Validation Blueprint
+    function isValidGoalRecord(data, userId, goalId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'name', 'type', 'category', 'weeklyTarget',
+          'durationMinutes', 'timePreference', 'completedCount', 'color',
+          'clientCreatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerUid', 'name', 'type', 'category', 'weeklyTarget',
+          'durationMinutes', 'timePreference', 'completedCount', 'color',
+          'customTimeStart', 'customTimeEnd', 'subtasks', 'subSteps', 'icon',
+          'lastSessionNote', 'lastSessionNoteDate', 'description', 'priority',
+          'energyLevel', 'isPaused', 'pauseReason', 'pauseUntil', 'pausedAt',
+          'resourceLink', 'resourceLabel', 'targetTotalHours', 'targetCompletionDate',
+          'targetExamDate', 'targetExamTitle', 'chapters', 'enableKnowledgeHub',
+          'overallMasteryScore', 'lastTestedAt', 'clientCreatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == goalId && data.id.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.type is string && data.type.size() >= 1 && data.type.size() <= 64 &&
+        data.category is string && data.category.size() <= 120 &&
+        (data.weeklyTarget is int || data.weeklyTarget is float) && data.weeklyTarget >= 0 && data.weeklyTarget <= 50 &&
+        (data.durationMinutes is int || data.durationMinutes is float) && data.durationMinutes >= 1 && data.durationMinutes <= 720 &&
+        data.timePreference is string && data.timePreference.size() >= 1 && data.timePreference.size() <= 64 &&
+        (data.completedCount is int || data.completedCount is float) && data.completedCount >= 0 && data.completedCount <= 100000 &&
+        data.color is string && data.color.size() >= 1 && data.color.size() <= 64 &&
+        data.clientCreatedAt is string && data.clientCreatedAt.size() <= 64 &&
+        isOptionalString(data, 'customTimeStart', 16) &&
+        isOptionalString(data, 'customTimeEnd', 16) &&
+        isOptionalList(data, 'subtasks', 100) &&
+        isOptionalList(data, 'subSteps', 100) &&
+        isOptionalString(data, 'icon', 64) &&
+        isOptionalString(data, 'lastSessionNote', 4000) &&
+        isOptionalString(data, 'lastSessionNoteDate', 64) &&
+        isOptionalString(data, 'description', 4000) &&
+        isOptionalString(data, 'priority', 32) &&
+        isOptionalString(data, 'energyLevel', 32) &&
+        isOptionalBool(data, 'isPaused') &&
+        isOptionalString(data, 'pauseReason', 500) &&
+        isOptionalString(data, 'pauseUntil', 64) &&
+        isOptionalString(data, 'pausedAt', 64) &&
+        isOptionalString(data, 'resourceLink', 2000) &&
+        isOptionalString(data, 'resourceLabel', 120) &&
+        isOptionalNumber(data, 'targetTotalHours') &&
+        isOptionalString(data, 'targetCompletionDate', 64) &&
+        isOptionalString(data, 'targetExamDate', 64) &&
+        isOptionalString(data, 'targetExamTitle', 200) &&
+        isOptionalList(data, 'chapters', 100) &&
+        isOptionalBool(data, 'enableKnowledgeHub') &&
+        isOptionalNumber(data, 'overallMasteryScore') &&
+        isOptionalString(data, 'lastTestedAt', 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 3. StudyNoteRecord Validation Blueprint (disallows huge inline base64 blobs in screenshots[])
+    function isValidStudyNoteRecord(data, userId, noteId) {
+      return data.keys().hasAll([
+          'id', 'goalId', 'ownerUid', 'title', 'category', 'content',
+          'clientCreatedAt', 'clientUpdatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'goalId', 'ownerUid', 'title', 'category', 'content',
+          'tableHeaders', 'tableRows', 'question', 'answer', 'explanation',
+          'options', 'correctOptionIndex', 'correctOptionIndices', 'term',
+          'definition', 'url', 'urlNotes', 'linkSubtype', 'isReadingAssignment',
+          'sourceFileName', 'screenshots', 'requiresLogin', 'urlAccessNote',
+          'reviewCompleted', 'lastStudiedAt', 'studyCount', 'chapterId',
+          'chapterTitle', 'keyTerms', 'clientCreatedAt', 'clientUpdatedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == noteId && data.id.size() <= 128 &&
+        isValidId(data.goalId) &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 500 &&
+        data.category is string && data.category in [
+          'concept', 'cheat_sheet', 'code_snippet', 'summary', 'formula', 'table',
+          'qa', 'fill_in_blank', 'multiple_choice', 'multiple_select', 'true_false',
+          'definition', 'url'
+        ] &&
+        data.content is string && data.content.size() <= 120000 &&
+        isOptionalList(data, 'tableHeaders', 20) &&
+        isOptionalList(data, 'tableRows', 200) &&
+        isOptionalString(data, 'question', 4000) &&
+        isOptionalString(data, 'answer', 12000) &&
+        isOptionalString(data, 'explanation', 8000) &&
+        isOptionalList(data, 'options', 12) &&
+        isOptionalNumber(data, 'correctOptionIndex') &&
+        isOptionalList(data, 'correctOptionIndices', 12) &&
+        isOptionalString(data, 'term', 500) &&
+        isOptionalString(data, 'definition', 8000) &&
+        isOptionalString(data, 'url', 2000) &&
+        isOptionalString(data, 'urlNotes', 12000) &&
+        isOptionalString(data, 'linkSubtype', 64) &&
+        isOptionalBool(data, 'isReadingAssignment') &&
+        isOptionalString(data, 'sourceFileName', 300) &&
+        (
+          !('screenshots' in data) ||
+          (
+            data.screenshots is list &&
+            data.screenshots.size() <= 24 &&
+            (data.screenshots.size() == 0 || (data.screenshots[0] is string && data.screenshots[0].size() <= 512))
+          )
+        ) &&
+        isOptionalBool(data, 'requiresLogin') &&
+        isOptionalString(data, 'urlAccessNote', 1000) &&
+        isOptionalBool(data, 'reviewCompleted') &&
+        isOptionalString(data, 'lastStudiedAt', 64) &&
+        isOptionalNumber(data, 'studyCount') &&
+        isOptionalString(data, 'chapterId', 128) &&
+        isOptionalString(data, 'chapterTitle', 300) &&
+        (
+          !('keyTerms' in data) ||
+          (
+            data.keyTerms is list &&
+            data.keyTerms.size() <= 50 &&
+            (data.keyTerms.size() == 0 || (data.keyTerms[0] is string && data.keyTerms[0].size() <= 120))
+          )
+        ) &&
+        data.clientCreatedAt is string && data.clientCreatedAt.size() <= 64 &&
+        data.clientUpdatedAt is string && data.clientUpdatedAt.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. StudyMediaRecord Validation Blueprint (1 compressed image per doc, strictly < 1 MB)
+    function isValidStudyMediaRecord(data, userId, mediaId) {
+      return data.keys().hasAll([
+          'mediaId', 'ownerUid', 'mimeType', 'dataUrl', 'byteSize', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'mediaId', 'ownerUid', 'mimeType', 'dataUrl', 'byteSize', 'createdAt', 'updatedAt'
+        ]) &&
+        data.mediaId is string && data.mediaId == mediaId && data.mediaId.size() >= 4 && data.mediaId.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.mimeType is string && data.mimeType.size() >= 5 && data.mimeType.size() <= 64 &&
+        data.dataUrl is string && data.dataUrl.size() >= 20 && data.dataUrl.size() <= 900000 &&
+        (data.byteSize is int || data.byteSize is float) && data.byteSize >= 1 && data.byteSize <= 700000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 5. KnowledgeTestRecord Validation Blueprint
+    function isValidKnowledgeTestRecord(data, userId, testId) {
+      return data.keys().hasAll([
+          'id', 'goalId', 'ownerUid', 'title', 'questions', 'clientCreatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'goalId', 'ownerUid', 'title', 'chapterTitle', 'sourceUrl',
+          'sourceFileName', 'generationMode', 'questions', 'completedAt',
+          'lastScore', 'lastScoreFraction', 'attemptsCount', 'clientCreatedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == testId && data.id.size() <= 128 &&
+        isValidId(data.goalId) &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 300 &&
+        isOptionalString(data, 'chapterTitle', 300) &&
+        isOptionalString(data, 'sourceUrl', 2000) &&
+        isOptionalString(data, 'sourceFileName', 300) &&
+        isOptionalString(data, 'generationMode', 32) &&
+        data.questions is list && data.questions.size() <= 100 &&
+        isOptionalString(data, 'completedAt', 64) &&
+        isOptionalNumber(data, 'lastScore') &&
+        isOptionalString(data, 'lastScoreFraction', 32) &&
+        isOptionalNumber(data, 'attemptsCount') &&
+        data.clientCreatedAt is string && data.clientCreatedAt.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 6. FlashcardRecord Validation Blueprint
+    function isValidFlashcardRecord(data, userId, flashcardId) {
+      return data.keys().hasAll([
+          'id', 'goalId', 'ownerUid', 'front', 'back', 'mastered', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'goalId', 'ownerUid', 'front', 'back', 'chapterTitle',
+          'mastered', 'lastReviewedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == flashcardId && data.id.size() <= 128 &&
+        isValidId(data.goalId) &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.front is string && data.front.size() >= 1 && data.front.size() <= 2000 &&
+        data.back is string && data.back.size() >= 1 && data.back.size() <= 8000 &&
+        isOptionalString(data, 'chapterTitle', 300) &&
+        data.mastered is bool &&
+        isOptionalString(data, 'lastReviewedAt', 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 7. CalendarEventRecord Validation Blueprint
+    function isValidCalendarEventRecord(data, userId, eventId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'title', 'start', 'end', 'completed', 'goalType', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerUid', 'goalId', 'title', 'start', 'end', 'completed',
+          'goalType', 'category', 'subtasks', 'subSteps', 'completedSubtasks',
+          'sessionNote', 'energyZone', 'priority', 'isExternal', 'externalSource',
+          'description', 'location', 'htmlLink', 'autoScheduled', 'color',
+          'notes', 'completionNote', 'keyTakeaway', 'confidenceRating', 'icon',
+          'energyLevel', 'activeChapterId', 'activeChapterTitle', 'isBufferCatchUp',
+          'isShielded', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == eventId && data.id.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        isOptionalString(data, 'goalId', 128) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 300 &&
+        data.start is string && data.start.size() >= 1 && data.start.size() <= 64 &&
+        data.end is string && data.end.size() >= 1 && data.end.size() <= 64 &&
+        data.completed is bool &&
+        data.goalType is string && data.goalType.size() >= 1 && data.goalType.size() <= 64 &&
+        isOptionalString(data, 'category', 120) &&
+        isOptionalList(data, 'subtasks', 100) &&
+        isOptionalList(data, 'subSteps', 100) &&
+        isOptionalList(data, 'completedSubtasks', 100) &&
+        isOptionalString(data, 'sessionNote', 4000) &&
+        isOptionalString(data, 'energyZone', 64) &&
+        isOptionalString(data, 'priority', 32) &&
+        isOptionalBool(data, 'isExternal') &&
+        isOptionalString(data, 'externalSource', 120) &&
+        isOptionalString(data, 'description', 4000) &&
+        isOptionalString(data, 'location', 300) &&
+        isOptionalString(data, 'htmlLink', 2000) &&
+        isOptionalBool(data, 'autoScheduled') &&
+        isOptionalString(data, 'color', 64) &&
+        isOptionalString(data, 'notes', 4000) &&
+        isOptionalString(data, 'completionNote', 4000) &&
+        isOptionalString(data, 'keyTakeaway', 4000) &&
+        isOptionalString(data, 'confidenceRating', 32) &&
+        isOptionalString(data, 'icon', 64) &&
+        isOptionalString(data, 'energyLevel', 32) &&
+        isOptionalString(data, 'activeChapterId', 128) &&
+        isOptionalString(data, 'activeChapterTitle', 300) &&
+        isOptionalBool(data, 'isBufferCatchUp') &&
+        isOptionalBool(data, 'isShielded') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 8. NotificationRecord Validation Blueprint
+    function isValidNotificationRecord(data, userId, notificationId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'title', 'message', 'timestamp', 'read', 'type', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerUid', 'title', 'message', 'timestamp', 'read', 'type',
+          'goalId', 'eventId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == notificationId && data.id.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 300 &&
+        data.message is string && data.message.size() <= 2000 &&
+        data.timestamp is string && data.timestamp.size() <= 64 &&
+        data.read is bool &&
+        data.type is string && data.type.size() <= 64 &&
+        isOptionalString(data, 'goalId', 128) &&
+        isOptionalString(data, 'eventId', 128) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 9. CoachChatRecord Validation Blueprint
+    function isValidCoachChatRecord(data, userId, chatId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'title', 'messages', 'clientCreatedAt', 'clientUpdatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerUid', 'title', 'persona', 'messages',
+          'clientCreatedAt', 'clientUpdatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == chatId && data.id.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId &&
+        data.ownerUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        isOptionalString(data, 'persona', 32) &&
+        data.messages is list && data.messages.size() <= 200 &&
+        data.clientCreatedAt is string && data.clientCreatedAt.size() <= 64 &&
+        data.clientUpdatedAt is string && data.clientUpdatedAt.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // User Root Workspace & Subcollections
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isVerifiedOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserWorkspace(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserWorkspace(incoming(), userId) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'displayName', 'coachPersona', 'autopilotMode', 'autopilotPacing',
+          'activeCoachChatId', 'availability', 'energyProfile', 'burnoutLimits',
+          'customTemplates', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedOwner(userId) && isValidId(userId);
+
+      match /goals/{goalId} {
+        allow get: if isOwner(userId) && isValidId(goalId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(goalId) &&
+          isValidGoalRecord(incoming(), userId, goalId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(goalId) &&
+          isValidGoalRecord(incoming(), userId, goalId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'type', 'category', 'weeklyTarget', 'durationMinutes', 'timePreference',
+            'completedCount', 'color', 'customTimeStart', 'customTimeEnd', 'subtasks',
+            'subSteps', 'icon', 'lastSessionNote', 'lastSessionNoteDate', 'description',
+            'priority', 'energyLevel', 'isPaused', 'pauseReason', 'pauseUntil', 'pausedAt',
+            'resourceLink', 'resourceLabel', 'targetTotalHours', 'targetCompletionDate',
+            'targetExamDate', 'targetExamTitle', 'chapters', 'enableKnowledgeHub',
+            'overallMasteryScore', 'lastTestedAt', 'clientCreatedAt', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(goalId) && hasValidParentWorkspace(userId);
+      }
+
+      match /notes/{noteId} {
+        allow get: if isOwner(userId) && isValidId(noteId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(noteId) &&
+          isValidStudyNoteRecord(incoming(), userId, noteId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(noteId) &&
+          isValidStudyNoteRecord(incoming(), userId, noteId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'goalId', 'title', 'category', 'content', 'tableHeaders', 'tableRows',
+            'question', 'answer', 'explanation', 'options', 'correctOptionIndex',
+            'correctOptionIndices', 'term', 'definition', 'url', 'urlNotes',
+            'linkSubtype', 'isReadingAssignment', 'sourceFileName', 'screenshots',
+            'requiresLogin', 'urlAccessNote', 'reviewCompleted', 'lastStudiedAt',
+            'studyCount', 'chapterId', 'chapterTitle', 'keyTerms', 'clientCreatedAt',
+            'clientUpdatedAt', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(noteId) && hasValidParentWorkspace(userId);
+      }
+
+      match /media/{mediaId} {
+        allow get: if isOwner(userId) && isValidId(mediaId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(mediaId) &&
+          isValidStudyMediaRecord(incoming(), userId, mediaId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(mediaId) &&
+          isValidStudyMediaRecord(incoming(), userId, mediaId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().mediaId == existing().mediaId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'mimeType', 'dataUrl', 'byteSize', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(mediaId) && hasValidParentWorkspace(userId);
+      }
+
+      match /tests/{testId} {
+        allow get: if isOwner(userId) && isValidId(testId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(testId) &&
+          isValidKnowledgeTestRecord(incoming(), userId, testId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(testId) &&
+          isValidKnowledgeTestRecord(incoming(), userId, testId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'goalId', 'title', 'chapterTitle', 'sourceUrl', 'sourceFileName',
+            'generationMode', 'questions', 'completedAt', 'lastScore',
+            'lastScoreFraction', 'attemptsCount', 'clientCreatedAt', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(testId) && hasValidParentWorkspace(userId);
+      }
+
+      match /flashcards/{flashcardId} {
+        allow get: if isOwner(userId) && isValidId(flashcardId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(flashcardId) &&
+          isValidFlashcardRecord(incoming(), userId, flashcardId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(flashcardId) &&
+          isValidFlashcardRecord(incoming(), userId, flashcardId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'goalId', 'front', 'back', 'chapterTitle', 'mastered', 'lastReviewedAt', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(flashcardId) && hasValidParentWorkspace(userId);
+      }
+
+      match /events/{eventId} {
+        allow get: if isOwner(userId) && isValidId(eventId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(eventId) &&
+          isValidCalendarEventRecord(incoming(), userId, eventId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(eventId) &&
+          isValidCalendarEventRecord(incoming(), userId, eventId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'goalId', 'title', 'start', 'end', 'completed', 'goalType', 'category',
+            'subtasks', 'subSteps', 'completedSubtasks', 'sessionNote', 'energyZone',
+            'priority', 'isExternal', 'externalSource', 'description', 'location',
+            'htmlLink', 'autoScheduled', 'color', 'notes', 'completionNote', 'keyTakeaway',
+            'confidenceRating', 'icon', 'energyLevel', 'activeChapterId', 'activeChapterTitle',
+            'isBufferCatchUp', 'isShielded', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(eventId) && hasValidParentWorkspace(userId);
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if isOwner(userId) && isValidId(notificationId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(notificationId) &&
+          isValidNotificationRecord(incoming(), userId, notificationId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(notificationId) &&
+          isValidNotificationRecord(incoming(), userId, notificationId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'message', 'timestamp', 'read', 'type', 'goalId', 'eventId', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(notificationId) && hasValidParentWorkspace(userId);
+      }
+
+      match /coachChats/{chatId} {
+        allow get: if isOwner(userId) && isValidId(chatId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(chatId) &&
+          isValidCoachChatRecord(incoming(), userId, chatId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(chatId) &&
+          isValidCoachChatRecord(incoming(), userId, chatId) &&
+          hasValidParentWorkspace(userId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'persona', 'messages', 'clientCreatedAt', 'clientUpdatedAt', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId) && isValidId(chatId) && hasValidParentWorkspace(userId);
+      }
+    }
+  }
+}

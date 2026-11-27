@@ -20,8 +20,11 @@ import {
   Brain,
   Zap,
   Keyboard,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  LogIn,
+  LogOut
 } from "lucide-react";
+import { onAuthStateChanged, signInWithPopup, signOut, User } from "firebase/auth";
 import CalendarView from "./components/CalendarView";
 import GoalTracker from "./components/GoalTracker";
 import ProgressDashboard from "./components/ProgressDashboard";
@@ -46,6 +49,14 @@ import {
   getPriorityScore as getSchedulePriorityScore 
 } from "./lib/scheduleOptimizer";
 import { UserEnergyProfile, DEFAULT_USER_ENERGY_PROFILE } from "./lib/energyProfile";
+import { goalsHaveUnmigratedMedia, offloadGoalMediaDataUrls } from "./lib/mediaStorage";
+import { auth, basicGoogleProvider, testFirestoreConnection } from "./lib/firebase";
+import {
+  clearFirestoreSyncCache,
+  ensureParentWorkspaceDoc,
+  loadUserWorkspaceFromFirestore,
+  syncWorkspaceToFirestore
+} from "./lib/firestoreSync";
 
 export default function App() {
   // Navigation State with persistent last-selected tab memory
@@ -71,7 +82,20 @@ export default function App() {
   };
 
   // Sync state & user credentials
-  const [userEmail, setUserEmail] = useState("rounigorgees@gmail.com");
+  const [userEmail, setUserEmail] = useState(() => {
+    try {
+      return localStorage.getItem("user_email") || "rounigorgees@gmail.com";
+    } catch {
+      return "rounigorgees@gmail.com";
+    }
+  });
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
+  const [isSigningInFirebase, setIsSigningInFirebase] = useState(false);
+  const firebaseUserRef = useRef<User | null>(null);
+  firebaseUserRef.current = firebaseUser;
+  const hasHydratedFirestoreUidRef = useRef<string | null>(null);
+  const isHydratingFirestoreRef = useRef<boolean>(false);
   const [syncStatus, setSyncStatus] = useState<"synced" | "syncing" | "offline">("synced");
   const [lastSynced, setLastSynced] = useState<string>("");
 
@@ -200,9 +224,17 @@ export default function App() {
 
   const handleSetAutopilotMode = (mode: AutopilotMode) => {
     setAutopilotMode(mode);
+    autopilotModeRef.current = mode;
     localStorage.setItem("ai_autopilot_mode", mode);
     localStorage.setItem("auto_schedule_enabled", mode !== "manual" ? "true" : "false");
     setAutoScheduleEnabled(mode !== "manual");
+    syncToCloud(
+      goalsRef.current,
+      eventsRef.current,
+      availabilityRef.current,
+      notificationsRef.current,
+      coachMessagesRef.current
+    );
   };
 
   const [autopilotUndoSnapshot, setAutopilotUndoSnapshot] = useState<CalendarEvent[] | null>(null);
@@ -219,12 +251,28 @@ export default function App() {
 
   const handleSetAutopilotPacing = (pacing: AutopilotPacing) => {
     setAutopilotPacing(pacing);
+    autopilotPacingRef.current = pacing;
     localStorage.setItem("ai_autopilot_pacing", pacing);
+    syncToCloud(
+      goalsRef.current,
+      eventsRef.current,
+      availabilityRef.current,
+      notificationsRef.current,
+      coachMessagesRef.current
+    );
   };
 
   const handleSetBurnoutLimits = (limits: DailyBurnoutLimits) => {
     setBurnoutLimits(limits);
+    burnoutLimitsRef.current = limits;
     localStorage.setItem("daily_burnout_limits", JSON.stringify(limits));
+    syncToCloud(
+      goalsRef.current,
+      eventsRef.current,
+      availabilityRef.current,
+      notificationsRef.current,
+      coachMessagesRef.current
+    );
   };
 
   const handleUndoAutopilot = () => {
@@ -291,6 +339,20 @@ export default function App() {
     }
     return DEFAULT_USER_ENERGY_PROFILE;
   });
+  const availabilityRef = useRef<AvailabilityWindow[]>(availability);
+  availabilityRef.current = availability;
+  const coachMessagesRef = useRef<CoachMessage[]>(coachMessages);
+  coachMessagesRef.current = coachMessages;
+  const coachPersonaRef = useRef<"mentor" | "drill" | "data">(coachPersona);
+  coachPersonaRef.current = coachPersona;
+  const autopilotModeRef = useRef<AutopilotMode>(autopilotMode);
+  autopilotModeRef.current = autopilotMode;
+  const autopilotPacingRef = useRef<AutopilotPacing>(autopilotPacing);
+  autopilotPacingRef.current = autopilotPacing;
+  const burnoutLimitsRef = useRef<DailyBurnoutLimits>(burnoutLimits);
+  burnoutLimitsRef.current = burnoutLimits;
+  const energyProfileRef = useRef<UserEnergyProfile>(energyProfile);
+  energyProfileRef.current = energyProfile;
   const [showEnergyModal, setShowEnergyModal] = useState<boolean>(false);
   const [showStreakShieldModal, setShowStreakShieldModal] = useState<boolean>(false);
   const [showWeeklyReportModal, setShowWeeklyReportModal] = useState<boolean>(false);
@@ -543,6 +605,38 @@ export default function App() {
   const pendingSyncDataRef = useRef<SyncData | null>(null);
 
   const executeCloudPost = async (payload: SyncData, retryCount = 0): Promise<boolean> => {
+    const fbUser = firebaseUserRef.current;
+    let firestoreOk = false;
+
+    if (fbUser && fbUser.emailVerified && !isHydratingFirestoreRef.current && retryCount === 0) {
+      try {
+        await syncWorkspaceToFirestore(fbUser, {
+          email: fbUser.email || payload.userEmail || userEmail,
+          displayName: fbUser.displayName,
+          goals: payload.goals,
+          events: payload.events,
+          availability: payload.availability,
+          notifications: payload.notifications,
+          coachChatSessions: payload.coachChatSessions || coachChatSessionsRef.current,
+          activeCoachChatId: payload.activeCoachChatId || activeCoachChatIdRef.current,
+          coachPersona: payload.coachPersona || coachPersonaRef.current,
+          autopilotMode: autopilotModeRef.current,
+          autopilotPacing: autopilotPacingRef.current,
+          burnoutLimits: burnoutLimitsRef.current,
+          energyProfile: energyProfileRef.current,
+          customTemplates: payload.customTemplates
+        });
+        firestoreOk = true;
+      } catch (fsErr: any) {
+        const msg = fsErr?.message || String(fsErr);
+        if (msg.toLowerCase().includes("quota exceeded")) {
+          console.warn("Firestore daily free-tier quota exceeded; changes remain safe locally and will sync again tomorrow.");
+        } else {
+          console.warn("Firestore cloud sync note:", msg);
+        }
+      }
+    }
+
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 9000);
@@ -555,13 +649,18 @@ export default function App() {
       });
       clearTimeout(timeoutId);
 
-      if (res.ok) {
+      if (res.ok || firestoreOk) {
         setLastSynced(new Date().toLocaleTimeString());
         setSyncStatus("synced");
         return true;
       }
       throw new Error(`HTTP ${res.status}`);
     } catch (err: any) {
+      if (firestoreOk) {
+        setLastSynced(new Date().toLocaleTimeString());
+        setSyncStatus("synced");
+        return true;
+      }
       if (retryCount < 2) {
         await new Promise((r) => setTimeout(r, (retryCount + 1) * 1000));
         return executeCloudPost(payload, retryCount + 1);
@@ -680,6 +779,12 @@ export default function App() {
       setSyncStatus("syncing");
       const data = await fetchWithRetry(2);
       if (isCancelled) return;
+      // If Firestore already hydrated authoritative cross-device state for this verified user, don't overwrite it with /api/sync
+      if (hasHydratedFirestoreUidRef.current) {
+        setLastSynced(new Date().toLocaleTimeString());
+        setSyncStatus("synced");
+        return;
+      }
 
       if (data) {
         const localLastUpdated = Number(localStorage.getItem("local_last_updated") || "0");
@@ -851,10 +956,299 @@ export default function App() {
     };
   }, [userEmail]);
 
+  // 1b. Firebase Connection Check & Cross-Device Firestore Auth/Sync Hydration
+  useEffect(() => {
+    void testFirestoreConnection();
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
+      firebaseUserRef.current = user;
+      setFirebaseAuthReady(true);
+
+      if (!user) {
+        hasHydratedFirestoreUidRef.current = null;
+        clearFirestoreSyncCache();
+        return;
+      }
+
+      if (user.email) {
+        localStorage.setItem("user_email", user.email);
+        setUserEmail((prev) => (prev === user.email ? prev : user.email!));
+      }
+
+      if (!user.emailVerified) {
+        return;
+      }
+
+      if (hasHydratedFirestoreUidRef.current === user.uid) {
+        return;
+      }
+
+      hasHydratedFirestoreUidRef.current = user.uid;
+      isHydratingFirestoreRef.current = true;
+      setSyncStatus("syncing");
+
+      try {
+        const remote = await loadUserWorkspaceFromFirestore(user.uid);
+        if (remote && remote.hasRemoteData) {
+          const cleanRemoteGoals = remote.goals.filter(
+            (g: any) => !["g1", "g2", "g3", "g4", "g_python"].includes(g.id)
+          );
+          const cleanRemoteEvents = remote.events.filter(
+            (e: any) =>
+              !["g1", "g2", "g3", "g4", "g_python"].includes(e.goalId) &&
+              !["e1", "e2", "e3", "e4"].includes(e.id)
+          );
+          const effectiveProfile = remote.energyProfile || energyProfileRef.current;
+          const effectiveAvailability =
+            remote.availability.length > 0 ? remote.availability : availabilityRef.current;
+
+          let finalGoals = cleanRemoteGoals;
+          let mediaMigrated = 0;
+          if (goalsHaveUnmigratedMedia(cleanRemoteGoals)) {
+            const offloaded = await offloadGoalMediaDataUrls(cleanRemoteGoals);
+            finalGoals = offloaded.goals;
+            mediaMigrated = offloaded.migratedCount;
+          }
+
+          const {
+            optimizedEvents: optimizedRemoteEvents,
+            duplicatesRemoved,
+            priorityAdjusted
+          } = sanitizeAndOptimizeSchedule(
+            cleanRemoteEvents,
+            finalGoals,
+            effectiveProfile,
+            effectiveAvailability
+          );
+
+          const nextSessions =
+            remote.coachChatSessions.length > 0
+              ? remote.coachChatSessions
+              : coachChatSessionsRef.current;
+          const nextActiveChatId =
+            nextSessions.some((s) => s.id === remote.activeCoachChatId)
+              ? remote.activeCoachChatId
+              : nextSessions[0]?.id || "chat_default";
+          const activeSession =
+            nextSessions.find((s) => s.id === nextActiveChatId) || nextSessions[0];
+          const nextCoachMessages = activeSession?.messages || coachMessagesRef.current;
+
+          setGoals(finalGoals);
+          setEvents(optimizedRemoteEvents);
+          if (remote.availability.length > 0) {
+            setAvailability(remote.availability);
+            availabilityRef.current = remote.availability;
+          }
+          setNotifications(remote.notifications);
+          coachChatSessionsRef.current = nextSessions;
+          activeCoachChatIdRef.current = nextActiveChatId;
+          setCoachChatSessions(nextSessions);
+          setActiveCoachChatId(nextActiveChatId);
+          setCoachMessages(nextCoachMessages);
+          coachMessagesRef.current = nextCoachMessages;
+
+          if (remote.coachPersona) {
+            setCoachPersona(remote.coachPersona);
+            coachPersonaRef.current = remote.coachPersona;
+            localStorage.setItem("coach_persona", remote.coachPersona);
+          }
+          if (remote.autopilotMode) {
+            setAutopilotMode(remote.autopilotMode);
+            autopilotModeRef.current = remote.autopilotMode;
+            setAutoScheduleEnabled(remote.autopilotMode !== "manual");
+            localStorage.setItem("ai_autopilot_mode", remote.autopilotMode);
+            localStorage.setItem("auto_schedule_enabled", remote.autopilotMode !== "manual" ? "true" : "false");
+          }
+          if (remote.autopilotPacing) {
+            setAutopilotPacing(remote.autopilotPacing);
+            autopilotPacingRef.current = remote.autopilotPacing;
+            localStorage.setItem("ai_autopilot_pacing", remote.autopilotPacing);
+          }
+          if (remote.burnoutLimits) {
+            setBurnoutLimits(remote.burnoutLimits);
+            burnoutLimitsRef.current = remote.burnoutLimits;
+            localStorage.setItem("daily_burnout_limits", JSON.stringify(remote.burnoutLimits));
+          }
+          if (remote.energyProfile) {
+            setEnergyProfile(remote.energyProfile);
+            energyProfileRef.current = remote.energyProfile;
+            localStorage.setItem("user_energy_profile", JSON.stringify(remote.energyProfile));
+          }
+          if (remote.customTemplates && remote.customTemplates.length > 0) {
+            localStorage.setItem("focus_timer_custom_templates_v2", JSON.stringify(remote.customTemplates));
+          }
+
+          try {
+            localStorage.setItem("cached_goals", JSON.stringify(finalGoals));
+            localStorage.setItem("cached_events", JSON.stringify(optimizedRemoteEvents));
+            localStorage.setItem("cached_availability", JSON.stringify(effectiveAvailability));
+            localStorage.setItem("cached_notifications", JSON.stringify(remote.notifications));
+            localStorage.setItem("cached_coachMessages", JSON.stringify(nextCoachMessages));
+            localStorage.setItem("cached_coachChatSessions", JSON.stringify(nextSessions));
+            localStorage.setItem("cached_activeCoachChatId", nextActiveChatId);
+            localStorage.setItem("local_last_updated", Date.now().toString());
+          } catch {
+            // ignore storage limits
+          }
+
+          if (mediaMigrated > 0 || duplicatesRemoved > 0 || priorityAdjusted > 0) {
+            await syncWorkspaceToFirestore(user, {
+              email: user.email || userEmail,
+              displayName: user.displayName,
+              goals: finalGoals,
+              events: optimizedRemoteEvents,
+              availability: effectiveAvailability,
+              notifications: remote.notifications,
+              coachChatSessions: nextSessions,
+              activeCoachChatId: nextActiveChatId,
+              coachPersona: remote.coachPersona || coachPersonaRef.current,
+              autopilotMode: remote.autopilotMode || autopilotModeRef.current,
+              autopilotPacing: remote.autopilotPacing || autopilotPacingRef.current,
+              burnoutLimits: remote.burnoutLimits || burnoutLimitsRef.current,
+              energyProfile: effectiveProfile,
+              customTemplates: remote.customTemplates
+            });
+          }
+        } else {
+          // Firestore is empty for this account: first create parent /users/{uid} doc so media & subcollection rules pass
+          let localTemplates: any[] = [];
+          try {
+            const raw = localStorage.getItem("focus_timer_custom_templates_v2");
+            if (raw) localTemplates = JSON.parse(raw);
+          } catch {
+            // ignore
+          }
+
+          await ensureParentWorkspaceDoc(user.uid, {
+            email: user.email || userEmail,
+            displayName: user.displayName,
+            coachPersona: coachPersonaRef.current,
+            autopilotMode: autopilotModeRef.current,
+            autopilotPacing: autopilotPacingRef.current,
+            activeCoachChatId: activeCoachChatIdRef.current,
+            availability: availabilityRef.current,
+            energyProfile: energyProfileRef.current,
+            burnoutLimits: burnoutLimitsRef.current,
+            customTemplates: localTemplates
+          });
+
+          // Migrate current workspace (including study images) into Firestore
+          let currentGoals = goalsRef.current;
+          if (goalsHaveUnmigratedMedia(currentGoals)) {
+            const offloaded = await offloadGoalMediaDataUrls(currentGoals);
+            if (offloaded.migratedCount > 0) {
+              currentGoals = offloaded.goals;
+              setGoals(currentGoals);
+            }
+          }
+
+          await syncWorkspaceToFirestore(user, {
+            email: user.email || userEmail,
+            displayName: user.displayName,
+            goals: currentGoals,
+            events: eventsRef.current,
+            availability: availabilityRef.current,
+            notifications: notificationsRef.current,
+            coachChatSessions: coachChatSessionsRef.current,
+            activeCoachChatId: activeCoachChatIdRef.current,
+            coachPersona: coachPersonaRef.current,
+            autopilotMode: autopilotModeRef.current,
+            autopilotPacing: autopilotPacingRef.current,
+            burnoutLimits: burnoutLimitsRef.current,
+            energyProfile: energyProfileRef.current,
+            customTemplates: localTemplates
+          });
+        }
+        setLastSynced(new Date().toLocaleTimeString());
+        setSyncStatus("synced");
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        console.warn("Firestore workspace load note:", msg);
+        if (msg.toLowerCase().includes("quota exceeded")) {
+          triggerSystemNotification(
+            "Cloud Quota Reached",
+            "Free-tier daily Firestore limit reached; your work remains safe locally and resumes syncing tomorrow.",
+            "warning"
+          );
+        }
+        setSyncStatus("synced");
+      } finally {
+        isHydratingFirestoreRef.current = false;
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const handleSignInWithGoogle = async () => {
+    if (isSigningInFirebase) return;
+    setIsSigningInFirebase(true);
+    try {
+      const cred = await signInWithPopup(auth, basicGoogleProvider);
+      if (cred.user?.email) {
+        triggerSystemNotification(
+          "Cloud Sync Active",
+          `Signed in as ${cred.user.email}. Goals, notes, and schedules sync across devices.`,
+          "success"
+        );
+      }
+    } catch (err: any) {
+      const code = err?.code || "";
+      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+        // User cancelled sign-in cleanly
+      } else if (code === "auth/popup-blocked") {
+        triggerSystemNotification(
+          "Pop-up Blocked",
+          "Please allow pop-ups in your browser to sign in with Google.",
+          "warning"
+        );
+      } else {
+        triggerSystemNotification(
+          "Sign-In Failed",
+          err?.message || "Could not complete Google Sign-In.",
+          "warning"
+        );
+      }
+    } finally {
+      setIsSigningInFirebase(false);
+    }
+  };
+
+  const handleSignOutFirebase = async () => {
+    try {
+      const uid = firebaseUserRef.current?.uid;
+      await signOut(auth);
+      clearFirestoreSyncCache(uid);
+      hasHydratedFirestoreUidRef.current = null;
+      triggerSystemNotification(
+        "Signed Out",
+        "Cloud sync paused. Your workspace remains cached locally on this device.",
+        "sync"
+      );
+    } catch (err: any) {
+      triggerSystemNotification(
+        "Sign-Out Note",
+        err?.message || "Could not sign out cleanly.",
+        "warning"
+      );
+    }
+  };
+
   // Online / Offline recovery listener
   useEffect(() => {
-    const handleOnline = () => {
+    const handleOnline = async () => {
       console.log("[Network] Reconnected online. Synchronizing latest schedule state with cloud...");
+      if (goalsHaveUnmigratedMedia(goals)) {
+        const { goals: migratedGoals, migratedCount } = await offloadGoalMediaDataUrls(goals);
+        if (migratedCount > 0) {
+          setGoals(migratedGoals);
+          syncToCloud(migratedGoals, events, availability, notifications, coachMessages, coachPersona, true);
+          return;
+        }
+      }
       syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona, true);
     };
     const handleOffline = () => {
@@ -878,6 +1272,33 @@ export default function App() {
       window.removeEventListener("sync_focus_templates", handleTemplateSync);
     };
   }, [goals, events, availability, notifications, coachMessages, userEmail, coachPersona]);
+
+  // Automatically offload any legacy inline data:image/... or offline idb:// screenshots
+  // to dedicated server media storage + IndexedDB so localStorage never fills up.
+  const isMigratingMediaRef = useRef(false);
+  useEffect(() => {
+    if (isMigratingMediaRef.current || isHydratingFirestoreRef.current || !goalsHaveUnmigratedMedia(goals)) return;
+    let cancelled = false;
+    isMigratingMediaRef.current = true;
+    void offloadGoalMediaDataUrls(goals)
+      .then(({ goals: migratedGoals, migratedCount }) => {
+        if (cancelled || migratedCount === 0) return;
+        setGoals(migratedGoals);
+        syncToCloud(
+          migratedGoals,
+          eventsRef.current,
+          availability,
+          notificationsRef.current,
+          coachMessages
+        );
+      })
+      .finally(() => {
+        isMigratingMediaRef.current = false;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [goals, firebaseUser]);
 
   // 3. Automated Routine checkers (Checks for overdue items or immediate notifications on mount / tick)
   useEffect(() => {
@@ -3198,19 +3619,56 @@ export default function App() {
             </div>
           </div>
 
-          {/* Controls: Profile & Cloud Sync (Energy, Theme, and Shortcuts are centralized in Settings) */}
-          <div className="flex items-center gap-2 sm:gap-3 text-xs font-medium" id="sync_status_anchor_indicators">
+          {/* Controls: Profile, Google Account Sign-In & Cloud Sync */}
+          <div className="flex items-center gap-2 sm:gap-2.5 text-xs font-medium" id="sync_status_anchor_indicators">
             <div className="flex items-center gap-1.5 bg-white/5 px-3 py-1 rounded-full border border-white/10 text-xs">
-              <span className="text-slate-400">Profile:</span>
-              <span className="font-mono text-indigo-300 font-bold">{userEmail}</span>
+              {firebaseUser?.emailVerified && (
+                <span
+                  className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"
+                  title="Signed in with Google for cross-device Firestore sync"
+                />
+              )}
+              <span className="text-slate-400 hidden sm:inline">Profile:</span>
+              <span className="font-mono text-indigo-300 font-bold max-w-[160px] truncate">
+                {firebaseUser?.email || userEmail}
+              </span>
             </div>
+
+            {firebaseAuthReady && !firebaseUser && (
+              <button
+                id="firebase-google-signin-btn"
+                onClick={handleSignInWithGoogle}
+                disabled={isSigningInFirebase}
+                title="Sign in with Google to sync your goals, study notes, screenshots, and calendar across all devices"
+                className="flex items-center gap-1.5 bg-indigo-500/20 hover:bg-indigo-500/35 disabled:opacity-60 text-indigo-200 px-3 py-1 rounded-full border border-indigo-400/30 cursor-pointer transition-colors text-[11px] font-bold whitespace-nowrap"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>{isSigningInFirebase ? "Signing in..." : "Sign in with Google"}</span>
+              </button>
+            )}
+
+            {firebaseUser && (
+              <button
+                id="firebase-google-signout-btn"
+                onClick={handleSignOutFirebase}
+                title={`Signed in as ${firebaseUser.email || userEmail}. Click to sign out.`}
+                className="flex items-center gap-1 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white px-2.5 py-1 rounded-full border border-white/10 cursor-pointer transition-colors text-[10px] font-bold whitespace-nowrap"
+              >
+                <LogOut className="w-3 h-3" />
+                <span className="hidden sm:inline">Sign out</span>
+              </button>
+            )}
 
             <div className="flex items-center gap-2">
               {syncStatus === "synced" && (
                 <button
                   id="sync-status-synced-btn"
                   onClick={() => syncToCloud(goals, events, availability, notifications, coachMessages, coachPersona, true)}
-                  title={lastSynced ? `Last synchronized at ${lastSynced}. Click to force sync now.` : "Schedule synchronized with cloud. Click to force sync."}
+                  title={
+                    lastSynced
+                      ? `Last synchronized at ${lastSynced}${firebaseUser?.emailVerified ? " (Firestore + local)" : ""}. Click to force sync now.`
+                      : "Schedule synchronized with cloud. Click to force sync."
+                  }
                   className="flex items-center gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 shadow-xs cursor-pointer transition-colors"
                 >
                   <Wifi className="w-3.5 h-3.5" />
@@ -3596,7 +4054,15 @@ export default function App() {
             energyProfile={energyProfile}
             onUpdateEnergyProfile={(p) => {
               setEnergyProfile(p);
+              energyProfileRef.current = p;
               localStorage.setItem("user_energy_profile", JSON.stringify(p));
+              syncToCloud(
+                goalsRef.current,
+                eventsRef.current,
+                availabilityRef.current,
+                notificationsRef.current,
+                coachMessagesRef.current
+              );
             }}
             autopilotMode={autopilotMode}
             onChangeAutopilotMode={handleSetAutopilotMode}
@@ -3825,6 +4291,7 @@ export default function App() {
           profile={energyProfile}
           onSaveProfile={(newProfile) => {
             setEnergyProfile(newProfile);
+            energyProfileRef.current = newProfile;
             try {
               localStorage.setItem("user_energy_profile", JSON.stringify(newProfile));
             } catch (e) {

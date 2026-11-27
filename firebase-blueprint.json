@@ -1,0 +1,285 @@
+{
+  "entities": {
+    "UserWorkspace": {
+      "title": "UserWorkspace",
+      "description": "Private user workspace settings, availability schedule, and energy preferences isolated per authenticated user.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "minLength": 3, "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "coachPersona": { "type": "string", "enum": ["mentor", "drill", "data"] },
+        "autopilotMode": { "type": "string", "enum": ["manual", "copilot_sentinel", "suggest_only", "full_autonomous"] },
+        "autopilotPacing": { "type": "string", "enum": ["gentle", "balanced", "aggressive"] },
+        "activeCoachChatId": { "type": "string", "maxLength": 128 },
+        "availability": { "type": "array" },
+        "energyProfile": { "type": "object" },
+        "burnoutLimits": { "type": "object" },
+        "customTemplates": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "email", "coachPersona", "autopilotMode", "autopilotPacing", "createdAt", "updatedAt"]
+    },
+    "GoalRecord": {
+      "title": "GoalRecord",
+      "description": "User routine or study goal with curriculum chapters, subtasks, and mastery summary.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "type": { "type": "string", "maxLength": 64 },
+        "category": { "type": "string", "maxLength": 120 },
+        "weeklyTarget": { "type": "number" },
+        "durationMinutes": { "type": "number" },
+        "timePreference": { "type": "string", "maxLength": 64 },
+        "completedCount": { "type": "number" },
+        "color": { "type": "string", "maxLength": 64 },
+        "customTimeStart": { "type": "string", "maxLength": 16 },
+        "customTimeEnd": { "type": "string", "maxLength": 16 },
+        "subtasks": { "type": "array" },
+        "subSteps": { "type": "array" },
+        "icon": { "type": "string", "maxLength": 64 },
+        "lastSessionNote": { "type": "string", "maxLength": 4000 },
+        "lastSessionNoteDate": { "type": "string", "maxLength": 64 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "priority": { "type": "string", "maxLength": 32 },
+        "energyLevel": { "type": "string", "maxLength": 32 },
+        "isPaused": { "type": "boolean" },
+        "pauseReason": { "type": "string", "maxLength": 500 },
+        "pauseUntil": { "type": "string", "maxLength": 64 },
+        "pausedAt": { "type": "string", "maxLength": 64 },
+        "resourceLink": { "type": "string", "maxLength": 2000 },
+        "resourceLabel": { "type": "string", "maxLength": 120 },
+        "targetTotalHours": { "type": "number" },
+        "targetCompletionDate": { "type": "string", "maxLength": 64 },
+        "targetExamDate": { "type": "string", "maxLength": 64 },
+        "targetExamTitle": { "type": "string", "maxLength": 200 },
+        "chapters": { "type": "array" },
+        "enableKnowledgeHub": { "type": "boolean" },
+        "overallMasteryScore": { "type": "number" },
+        "lastTestedAt": { "type": "string", "maxLength": 64 },
+        "clientCreatedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "name", "type", "category", "weeklyTarget", "durationMinutes", "timePreference", "completedCount", "color", "clientCreatedAt", "createdAt", "updatedAt"]
+    },
+    "StudyNoteRecord": {
+      "title": "StudyNoteRecord",
+      "description": "Study note, Q&A, quiz question, definition, table, or URL resource linked to a goal.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "goalId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "category": { "type": "string", "enum": ["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "multiple_select", "true_false", "definition", "url"] },
+        "content": { "type": "string", "maxLength": 120000 },
+        "tableHeaders": { "type": "array" },
+        "tableRows": { "type": "array" },
+        "question": { "type": "string", "maxLength": 4000 },
+        "answer": { "type": "string", "maxLength": 12000 },
+        "explanation": { "type": "string", "maxLength": 8000 },
+        "options": { "type": "array" },
+        "correctOptionIndex": { "type": "number" },
+        "correctOptionIndices": { "type": "array" },
+        "term": { "type": "string", "maxLength": 500 },
+        "definition": { "type": "string", "maxLength": 8000 },
+        "url": { "type": "string", "maxLength": 2000 },
+        "urlNotes": { "type": "string", "maxLength": 12000 },
+        "linkSubtype": { "type": "string", "maxLength": 64 },
+        "isReadingAssignment": { "type": "boolean" },
+        "sourceFileName": { "type": "string", "maxLength": 300 },
+        "screenshots": { "type": "array" },
+        "requiresLogin": { "type": "boolean" },
+        "urlAccessNote": { "type": "string", "maxLength": 1000 },
+        "reviewCompleted": { "type": "boolean" },
+        "lastStudiedAt": { "type": "string", "maxLength": 64 },
+        "studyCount": { "type": "number" },
+        "chapterId": { "type": "string", "maxLength": 128 },
+        "chapterTitle": { "type": "string", "maxLength": 300 },
+        "keyTerms": { "type": "array" },
+        "clientCreatedAt": { "type": "string", "maxLength": 64 },
+        "clientUpdatedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "goalId", "ownerUid", "title", "category", "content", "clientCreatedAt", "clientUpdatedAt", "createdAt", "updatedAt"]
+    },
+    "StudyMediaRecord": {
+      "title": "StudyMediaRecord",
+      "description": "Dedicated compressed image record stored separately from note text so each document stays safely under 1 MB.",
+      "type": "object",
+      "properties": {
+        "mediaId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "mimeType": { "type": "string", "minLength": 5, "maxLength": 64 },
+        "dataUrl": { "type": "string", "minLength": 20, "maxLength": 900000 },
+        "byteSize": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mediaId", "ownerUid", "mimeType", "dataUrl", "byteSize", "createdAt", "updatedAt"]
+    },
+    "KnowledgeTestRecord": {
+      "title": "KnowledgeTestRecord",
+      "description": "Practice quiz or test artifact associated with a study goal.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "goalId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "chapterTitle": { "type": "string", "maxLength": 300 },
+        "sourceUrl": { "type": "string", "maxLength": 2000 },
+        "sourceFileName": { "type": "string", "maxLength": 300 },
+        "generationMode": { "type": "string", "maxLength": 32 },
+        "questions": { "type": "array" },
+        "completedAt": { "type": "string", "maxLength": 64 },
+        "lastScore": { "type": "number" },
+        "lastScoreFraction": { "type": "string", "maxLength": 32 },
+        "attemptsCount": { "type": "number" },
+        "clientCreatedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "goalId", "ownerUid", "title", "questions", "clientCreatedAt", "createdAt", "updatedAt"]
+    },
+    "FlashcardRecord": {
+      "title": "FlashcardRecord",
+      "description": "Spaced-repetition study flashcard associated with a study goal.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "goalId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "front": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "back": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "chapterTitle": { "type": "string", "maxLength": 300 },
+        "mastered": { "type": "boolean" },
+        "lastReviewedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "goalId", "ownerUid", "front", "back", "mastered", "createdAt", "updatedAt"]
+    },
+    "CalendarEventRecord": {
+      "title": "CalendarEventRecord",
+      "description": "Scheduled goal or imported calendar session belonging to the user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "goalId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "start": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "end": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "completed": { "type": "boolean" },
+        "goalType": { "type": "string", "maxLength": 64 },
+        "category": { "type": "string", "maxLength": 120 },
+        "subtasks": { "type": "array" },
+        "subSteps": { "type": "array" },
+        "completedSubtasks": { "type": "array" },
+        "sessionNote": { "type": "string", "maxLength": 4000 },
+        "energyZone": { "type": "string", "maxLength": 64 },
+        "priority": { "type": "string", "maxLength": 32 },
+        "isExternal": { "type": "boolean" },
+        "externalSource": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "location": { "type": "string", "maxLength": 300 },
+        "htmlLink": { "type": "string", "maxLength": 2000 },
+        "autoScheduled": { "type": "boolean" },
+        "color": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "string", "maxLength": 4000 },
+        "completionNote": { "type": "string", "maxLength": 4000 },
+        "keyTakeaway": { "type": "string", "maxLength": 4000 },
+        "confidenceRating": { "type": "string", "maxLength": 32 },
+        "icon": { "type": "string", "maxLength": 64 },
+        "energyLevel": { "type": "string", "maxLength": 32 },
+        "activeChapterId": { "type": "string", "maxLength": 128 },
+        "activeChapterTitle": { "type": "string", "maxLength": 300 },
+        "isBufferCatchUp": { "type": "boolean" },
+        "isShielded": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "title", "start", "end", "completed", "goalType", "createdAt", "updatedAt"]
+    },
+    "NotificationRecord": {
+      "title": "NotificationRecord",
+      "description": "In-app notification entry for the user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "message": { "type": "string", "maxLength": 2000 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "read": { "type": "boolean" },
+        "type": { "type": "string", "maxLength": 64 },
+        "goalId": { "type": "string", "maxLength": 128 },
+        "eventId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "title", "message", "timestamp", "read", "type", "createdAt", "updatedAt"]
+    },
+    "CoachChatRecord": {
+      "title": "CoachChatRecord",
+      "description": "AI Coach conversation thread belonging to the user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "persona": { "type": "string", "maxLength": 32 },
+        "messages": { "type": "array" },
+        "clientCreatedAt": { "type": "string", "maxLength": 64 },
+        "clientUpdatedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "title", "messages", "clientCreatedAt", "clientUpdatedAt", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserWorkspace" },
+      "description": "User workspace profile and preferences."
+    },
+    "/users/{userId}/goals/{goalId}": {
+      "schema": { "$ref": "#/entities/GoalRecord" },
+      "description": "User routine and study goals."
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/StudyNoteRecord" },
+      "description": "Study notes and quiz items for goals."
+    },
+    "/users/{userId}/media/{mediaId}": {
+      "schema": { "$ref": "#/entities/StudyMediaRecord" },
+      "description": "Individual compressed study images stored separately from notes."
+    },
+    "/users/{userId}/tests/{testId}": {
+      "schema": { "$ref": "#/entities/KnowledgeTestRecord" },
+      "description": "Practice tests and attempt scores."
+    },
+    "/users/{userId}/flashcards/{flashcardId}": {
+      "schema": { "$ref": "#/entities/FlashcardRecord" },
+      "description": "Flashcard study deck items."
+    },
+    "/users/{userId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEventRecord" },
+      "description": "Scheduled calendar sessions."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationRecord" },
+      "description": "User notifications."
+    },
+    "/users/{userId}/coachChats/{chatId}": {
+      "schema": { "$ref": "#/entities/CoachChatRecord" },
+      "description": "AI Routine Coach conversation threads."
+    }
+  }
+}

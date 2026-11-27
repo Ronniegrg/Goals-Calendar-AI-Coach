@@ -284,8 +284,107 @@ async function generateContentWithModelFallback(params: {
   throw lastErr || new Error("Gemini content generation failed.");
 }
 
-// Simple JSON File Database file path
+// Simple JSON File Database file path & Dedicated Study Media Storage directory
 const DB_FILE = path.join(process.cwd(), "db_sync.json");
+const STUDY_MEDIA_DIR = path.join(process.cwd(), "study_media");
+
+const MEDIA_MIME_TO_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/bmp": "bmp",
+  "image/avif": "avif"
+};
+
+const MEDIA_EXT_TO_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  avif: "image/avif"
+};
+
+function ensureStudyMediaDir() {
+  if (!fs.existsSync(STUDY_MEDIA_DIR)) {
+    fs.mkdirSync(STUDY_MEDIA_DIR, { recursive: true });
+  }
+}
+
+function saveDataUrlToStudyMedia(dataUrl: string): string | null {
+  try {
+    if (typeof dataUrl !== "string") return null;
+    const match = /^data:(image\/(?:png|jpeg|jpg|webp|gif|bmp|avif));base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl.trim());
+    if (!match) return null;
+    const mime = match[1].toLowerCase();
+    const ext = MEDIA_MIME_TO_EXT[mime];
+    if (!ext) return null;
+
+    const cleanBase64 = match[2].replace(/\s+/g, "");
+    const buffer = Buffer.from(cleanBase64, "base64");
+    if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
+      return null;
+    }
+
+    ensureStudyMediaDir();
+    const hash = crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+    const fileName = `med_${hash}.${ext}`;
+    const targetPath = path.join(STUDY_MEDIA_DIR, fileName);
+
+    if (!fs.existsSync(targetPath)) {
+      const tmpPath = `${targetPath}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}.tmp`;
+      fs.writeFileSync(tmpPath, buffer);
+      fs.renameSync(tmpPath, targetPath);
+    }
+
+    return `/api/media/${fileName}`;
+  } catch (err) {
+    console.warn("[StudyMedia] Failed to store image asset:", err);
+    return null;
+  }
+}
+
+function offloadInlineImagesFromUserRecord(record: any): boolean {
+  if (!record || !Array.isArray(record.goals)) return false;
+  let changed = false;
+
+  for (const goal of record.goals) {
+    const notes = goal?.knowledgeHub?.notes;
+    if (!Array.isArray(notes)) continue;
+    for (const note of notes) {
+      if (!Array.isArray(note?.screenshots) || note.screenshots.length === 0) continue;
+      const nextList: string[] = [];
+      const seen = new Set<string>();
+      for (const item of note.screenshots) {
+        if (typeof item !== "string" || !item.trim()) continue;
+        let resolved = item.trim();
+        if (/^data:image\//i.test(resolved)) {
+          const savedUrl = saveDataUrlToStudyMedia(resolved);
+          if (savedUrl) {
+            resolved = savedUrl;
+            changed = true;
+          }
+        }
+        if (!seen.has(resolved)) {
+          seen.add(resolved);
+          nextList.push(resolved);
+        }
+      }
+      if (
+        nextList.length !== note.screenshots.length ||
+        nextList.some((v, idx) => v !== note.screenshots[idx])
+      ) {
+        note.screenshots = nextList;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
 
 // Helper to ensure initial database with clean state for new users
 function getInitialData(userEmail: string) {
@@ -359,6 +458,15 @@ function readDb(email: string) {
     // Return user data if matches, merging with defaults to guarantee no undefined fields
     if (db[email]) {
       const userRecord = db[email];
+      if (offloadInlineImagesFromUserRecord(userRecord)) {
+        try {
+          const tempFile = `${DB_FILE}.${Date.now()}.${Math.random().toString(36).substring(2, 8)}.tmp`;
+          fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), "utf-8");
+          fs.renameSync(tempFile, DB_FILE);
+        } catch (migrateErr) {
+          console.warn("[Database] Failed persisting offloaded study media refs:", migrateErr);
+        }
+      }
       const resolvedMessages = Array.isArray(userRecord.coachMessages)
         ? userRecord.coachMessages
         : initial.coachMessages;
@@ -433,12 +541,14 @@ function writeDb(email: string, data: any) {
       }
     }
     const current = db[email] || getInitialData(email);
-    db[email] = {
+    const nextRecord = {
       ...current,
       ...data,
       userEmail: email,
       lastSyncedAt: new Date().toISOString()
     };
+    offloadInlineImagesFromUserRecord(nextRecord);
+    db[email] = nextRecord;
     
     const tempFile = `${DB_FILE}.${Date.now()}.${Math.random().toString(36).substring(2, 8)}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), "utf-8");
@@ -473,6 +583,65 @@ app.post("/api/sync", (req, res) => {
   } catch (err) {
     console.warn("[API] /api/sync POST error:", err);
     res.status(500).json({ error: "Failed to write database state" });
+  }
+});
+
+// 2a. STUDY MEDIA ENDPOINTS: Store & serve images outside JSON sync payload
+app.post("/api/media/upload", (req, res) => {
+  try {
+    const single = typeof req.body?.dataUrl === "string" ? req.body.dataUrl : null;
+    const batch = Array.isArray(req.body?.dataUrls)
+      ? req.body.dataUrls.filter((x: any): x is string => typeof x === "string").slice(0, 32)
+      : null;
+
+    if (single) {
+      if (single.startsWith("/api/media/")) {
+        return res.json({ url: single });
+      }
+      const savedUrl = saveDataUrlToStudyMedia(single);
+      if (!savedUrl) {
+        return res.status(400).json({ error: "Invalid or oversized image payload (max 10 MB, PNG/JPG/WebP/GIF/AVIF)." });
+      }
+      return res.json({ url: savedUrl });
+    }
+
+    if (batch) {
+      const urls = batch.map((item) => {
+        if (item.startsWith("/api/media/")) return item;
+        return saveDataUrlToStudyMedia(item) || item;
+      });
+      return res.json({ urls });
+    }
+
+    return res.status(400).json({ error: "Provide dataUrl or dataUrls." });
+  } catch (err) {
+    console.warn("[StudyMedia] Upload failed:", err);
+    return res.status(500).json({ error: "Failed to store media asset." });
+  }
+});
+
+app.get("/api/media/:fileName", (req, res) => {
+  try {
+    const rawName = String(req.params.fileName || "");
+    const match = /^med_[a-f0-9]{16,64}\.(png|jpg|jpeg|webp|gif|bmp|avif)$/i.exec(rawName);
+    if (!match) {
+      return res.status(400).json({ error: "Invalid media identifier." });
+    }
+
+    ensureStudyMediaDir();
+    const filePath = path.join(STUDY_MEDIA_DIR, rawName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Media asset not found." });
+    }
+
+    const ext = match[1].toLowerCase();
+    const contentType = MEDIA_EXT_TO_MIME[ext] || "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    return res.sendFile(filePath);
+  } catch (err) {
+    console.warn("[StudyMedia] Read failed:", err);
+    return res.status(500).json({ error: "Failed to load media asset." });
   }
 });
 

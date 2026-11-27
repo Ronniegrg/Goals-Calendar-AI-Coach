@@ -1,58 +1,19 @@
-import { initializeApp, getApps } from 'firebase/app';
 import {
-  getAuth,
   signInWithPopup,
   GoogleAuthProvider,
   onAuthStateChanged,
   signOut,
-  User,
-  Auth
-} from 'firebase/auth';
+  User
+} from "firebase/auth";
+import { auth } from "./firebase";
 
-// Safe dynamic or fallback config if firebase-applet-config.json was removed
-let firebaseConfig: Record<string, any> = {};
-try {
-  // Use glob or safe check if present in build
-  const configModules = (import.meta as any).glob('../../firebase-applet-config.json', { eager: true });
-  const found = Object.values(configModules)[0] as any;
-  if (found && found.default) {
-    firebaseConfig = found.default;
-  } else if (found) {
-    firebaseConfig = found;
-  }
-} catch (e) {
-  // Config file not present
-}
+export { auth };
 
-let app: any = null;
-export let auth: Auth | null = null;
-
-try {
-  const envKey = (import.meta as any).env?.VITE_FIREBASE_API_KEY;
-  const resolvedApiKey = (typeof envKey === 'string' && envKey.trim() !== '') 
-    ? envKey 
-    : (firebaseConfig && firebaseConfig.apiKey);
-    
-  if (resolvedApiKey && resolvedApiKey.trim() !== '') {
-    const finalConfig = {
-      ...firebaseConfig,
-      apiKey: resolvedApiKey
-    };
-    app = getApps().length === 0 ? initializeApp(finalConfig) : getApps()[0];
-    auth = getAuth(app);
-  } else {
-    console.warn('Firebase apiKey is missing or empty. Google Auth will run in offline mode.');
-  }
-} catch (err) {
-  console.warn('Could not initialize Firebase Auth:', err);
-}
-
-const provider = new GoogleAuthProvider();
-// Workspace scopes for Calendar management
-provider.addScope('https://www.googleapis.com/auth/calendar.events');
-provider.addScope('https://www.googleapis.com/auth/calendar.readonly');
-provider.setCustomParameters({
-  prompt: 'consent'
+const calendarProvider = new GoogleAuthProvider();
+calendarProvider.addScope("https://www.googleapis.com/auth/calendar.events");
+calendarProvider.addScope("https://www.googleapis.com/auth/calendar.readonly");
+calendarProvider.setCustomParameters({
+  prompt: "consent"
 });
 
 let isSigningIn = false;
@@ -83,21 +44,21 @@ export const initGoogleAuth = (
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string }> => {
   if (!auth) {
-    throw new Error('Google Sign-In is unavailable because Firebase API Key is not configured.');
+    throw new Error("Google Sign-In is unavailable because Firebase Auth is not configured.");
   }
 
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, calendarProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Failed to get Google Calendar access token from sign-in');
+      throw new Error("Failed to get Google Calendar access token from sign-in");
     }
 
     cachedAccessToken = credential.accessToken;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error('Google Sign in error:', error);
+    console.error("Google Sign in error:", error);
     throw error;
   } finally {
     isSigningIn = false;

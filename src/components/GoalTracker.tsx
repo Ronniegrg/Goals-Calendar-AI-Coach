@@ -3172,12 +3172,21 @@ export default function GoalTracker({
               })
               .filter(g => priorityFilter === "all" || (g.priority || "normal") === priorityFilter)
               .sort((a, b) => {
+                const isCompleted = (g: Goal) => {
+                  const targetReached = (g.weeklyTarget || 0) > 0 && g.completedCount >= g.weeklyTarget;
+                  const allChaptersDone = Array.isArray(g.chapters) && g.chapters.length > 0 && g.chapters.every((c) => c.completed);
+                  return targetReached || allChaptersDone;
+                };
+                const compDiff = Number(isCompleted(a)) - Number(isCompleted(b));
+                if (compDiff !== 0) return compDiff;
+                const pausedDiff = Number(Boolean(a.isPaused)) - Number(Boolean(b.isPaused));
+                if (pausedDiff !== 0) return pausedDiff;
                 if (sortByPriority) {
                   const pScore = (p?: string) => p === "critical" ? 3 : p === "important" ? 2 : 1;
                   const diff = pScore(b.priority) - pScore(a.priority);
                   if (diff !== 0) return diff;
                 }
-                return 0;
+                return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
               })
               .map((g) => {
               const countPercent = Math.min(Math.round((g.completedCount / g.weeklyTarget) * 100), 100);

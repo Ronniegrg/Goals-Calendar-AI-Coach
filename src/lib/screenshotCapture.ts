@@ -1,4 +1,5 @@
 import type React from "react";
+import { persistImageAssets } from "./mediaStorage";
 
 export const MAX_NOTE_IMAGES = 24;
 
@@ -527,7 +528,8 @@ export async function extractImagesFromClipboardSnapshot(
     }
   }
 
-  return resolved.slice(0, maxImages);
+  if (resolved.length === 0) return [];
+  return persistImageAssets(resolved.slice(0, maxImages));
 }
 
 export async function extractImagesFromClipboardEvent(

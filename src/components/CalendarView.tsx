@@ -5445,15 +5445,17 @@ export default function CalendarView({
               });
               const nowTime = now.getTime();
 
-              // Identify if any event in this list is currently active or happening now
+              // Identify if any uncompleted event in this list is currently active or happening now
               const currentActiveEvent = sorted.find(evt => {
+                if (evt.completed) return false;
                 const s = new Date(evt.start);
                 const e = new Date(evt.end);
                 return isEventHappeningNow(evt, s, e, nowTime);
               });
 
-              // Identify the first true future event that is not currently active
+              // Identify the first true future uncompleted event that is not currently active
               const firstFutureIdx = sorted.findIndex(evt => {
+                if (evt.completed) return false;
                 const s = new Date(evt.start);
                 const e = new Date(evt.end);
                 if (isEventHappeningNow(evt, s, e, nowTime)) return false;
