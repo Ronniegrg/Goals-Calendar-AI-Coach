@@ -39,13 +39,30 @@ import {
   Camera,
   ImagePlus,
   Edit3,
-  AlertTriangle
+  AlertTriangle,
+  Search,
+  ChevronDown,
+  ChevronUp,
+  Download
 } from "lucide-react";
-import { captureScreenScreenshot, extractImagesFromClipboardEvent, readImageFileAsDataUrl } from "../lib/screenshotCapture";
+import {
+  MAX_NOTE_IMAGES,
+  captureClipboardPasteSnapshot,
+  captureScreenScreenshot,
+  extractImagesFromClipboardSnapshot,
+  readImageFileAsDataUrl,
+  stripInlineBase64ImagesFromText
+} from "../lib/screenshotCapture";
 import { checkFillInBlankGuess, resolveFillInBlankDraft, splitFillInBlankSegments } from "../lib/fillInBlank";
 import {
   extractDirectQuestionsFromNotes,
+  formatQuestionCorrectAnswerText,
+  formatQuestionUserAnswerText,
   formatStudyMaterialForPrompt,
+  getQuestionCorrectIndices,
+  isMultiSelectQuestion,
+  isQuestionAnswerCorrect,
+  resolveNoteCorrectIndices,
   TestSourceMode
 } from "../lib/studyNotesContext";
 import {
@@ -102,6 +119,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
   const [activeTab, setActiveTab] = useState<"notes" | "tester" | "flashcards" | "overview">(initialTab);
   const [selectedNoteCategory, setSelectedNoteCategory] = useState<string>("all");
+  const [selectedNoteGroup, setSelectedNoteGroup] = useState<"all" | "guides" | "questions" | "definitions" | "tables_code" | "links">("all");
+  const [noteSearchQuery, setNoteSearchQuery] = useState<string>("");
+  const [expandedNoteIds, setExpandedNoteIds] = useState<Record<string, boolean>>({});
+  const [allNotesExpanded, setAllNotesExpanded] = useState<boolean>(false);
   const [highlightedNoteId, setHighlightedNoteId] = useState<string | null>(initialNoteId || null);
   const [jumpedFromTestReview, setJumpedFromTestReview] = useState(false);
 
@@ -109,7 +130,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     if (isOpen && initialNoteId) {
       setActiveTab("notes");
       setSelectedNoteCategory("all");
+      setSelectedNoteGroup("all");
+      setNoteSearchQuery("");
       setHighlightedNoteId(initialNoteId);
+      setExpandedNoteIds(prev => ({ ...prev, [initialNoteId]: true }));
       setJumpedFromTestReview(false);
     } else if (isOpen && initialTab) {
       setActiveTab(initialTab);
@@ -126,10 +150,22 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     }, 90);
     return () => window.clearTimeout(scrollTimer);
   }, [isOpen, activeTab, highlightedNoteId]);
-  
+
   // Note creation modal/form state
   const [isAddingNote, setIsAddingNote] = useState(false);
   const [isUploadingInNotes, setIsUploadingInNotes] = useState(false);
+
+  React.useEffect(() => {
+    if (!isOpen || (!isAddingNote && !isUploadingInNotes)) return;
+    const handleEsc = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        setIsAddingNote(false);
+        setIsUploadingInNotes(false);
+      }
+    };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [isOpen, isAddingNote, isUploadingInNotes]);
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteCategory, setNewNoteCategory] = useState<StudyArtifactNote["category"] | "reading_url">("concept");
   const [newNoteContent, setNewNoteContent] = useState("");
@@ -138,6 +174,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [newNoteExplanation, setNewNoteExplanation] = useState("");
   const [newNoteMcqOptions, setNewNoteMcqOptions] = useState<string[]>(["", "", "", ""]);
   const [newNoteMcqCorrectIndex, setNewNoteMcqCorrectIndex] = useState<number>(0);
+  const [newNoteMultiSelectIndices, setNewNoteMultiSelectIndices] = useState<number[]>([0]);
   const [newNoteTrueFalseAnswer, setNewNoteTrueFalseAnswer] = useState<"true" | "false">("true");
   const [newNoteTerm, setNewNoteTerm] = useState("");
   const [newNoteDefinition, setNewNoteDefinition] = useState("");
@@ -152,9 +189,11 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [newNoteChapter, setNewNoteChapter] = useState("");
   const [newNoteScreenshots, setNewNoteScreenshots] = useState<string[]>([]);
   const [isCapturingHubScreenshot, setIsCapturingHubScreenshot] = useState(false);
+  const [isProcessingPastedImages, setIsProcessingPastedImages] = useState(false);
   const [hubScreenshotNotice, setHubScreenshotNotice] = useState<string | null>(null);
   const [lightboxScreenshotUrl, setLightboxScreenshotUrl] = useState<string | null>(null);
   const hubScreenshotFileInputRef = React.useRef<HTMLInputElement>(null);
+  const hubUploadImageFileInputRef = React.useRef<HTMLInputElement>(null);
   const newNoteBlankPromptRef = React.useRef<HTMLTextAreaElement>(null);
   const [copiedNoteId, setCopiedNoteId] = useState<string | null>(null);
   const [hiddenQaNoteAnswers, setHiddenQaNoteAnswers] = useState<Record<string, boolean>>({});
@@ -162,6 +201,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [blankTryInputs, setBlankTryInputs] = useState<Record<string, string>>({});
   const [blankCheckResults, setBlankCheckResults] = useState<Record<string, "correct" | "incorrect" | null>>({});
   const [noteMcqSelectedChoices, setNoteMcqSelectedChoices] = useState<Record<string, number | undefined>>({});
+  const [noteMultiSelectChoices, setNoteMultiSelectChoices] = useState<Record<string, number[]>>({});
+  const [checkedMultiSelectNotes, setCheckedMultiSelectNotes] = useState<Record<string, boolean>>({});
   const [revealedMcqAnswers, setRevealedMcqAnswers] = useState<Record<string, boolean>>({});
 
   // URL & Video Upload Quiz Tester state
@@ -176,6 +217,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [uploadedTranscriptFile, setUploadedTranscriptFile] = useState<File | null>(null);
   const [uploadedLessonTitle, setUploadedLessonTitle] = useState("");
   const [uploadedTranscriptText, setUploadedTranscriptText] = useState("");
+  const [uploadedScreenshots, setUploadedScreenshots] = useState<string[]>([]);
+  const [isProcessingUploadImages, setIsProcessingUploadImages] = useState(false);
   const [isExtractingUpload, setIsExtractingUpload] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
@@ -183,8 +226,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const [activeTest, setActiveTest] = useState<KnowledgeTestArtifact | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedOptionIndex, setSelectedOptionIndex] = useState<number | null>(null);
+  const [selectedMultiIndices, setSelectedMultiIndices] = useState<number[]>([]);
   const [isAnswerSubmitted, setIsAnswerSubmitted] = useState(false);
   const [testUserAnswers, setTestUserAnswers] = useState<{ [qIndex: number]: number }>({});
+  const [testUserMultiAnswers, setTestUserMultiAnswers] = useState<{ [qIndex: number]: number[] }>({});
   const [isTestCompleted, setIsTestCompleted] = useState(false);
 
   // Flashcards state
@@ -219,13 +264,22 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
   const hubDraftDuplicateMatches = React.useMemo(() => {
     if (!isAddingNote) return [];
+    const draftAnswer =
+      newNoteCategory === "multiple_select"
+        ? newNoteMultiSelectIndices
+            .map(i => newNoteMcqOptions[i]?.trim())
+            .filter(Boolean)
+            .join(", ")
+        : newNoteCategory === "multiple_choice"
+        ? (newNoteMcqOptions[newNoteMcqCorrectIndex]?.trim() || newNoteAnswer)
+        : newNoteAnswer;
     return findPotentialDuplicateNotes(
       {
         category: newNoteCategory,
         title: newNoteTitle,
         content: newNoteContent,
         question: newNoteQuestion,
-        answer: newNoteAnswer,
+        answer: draftAnswer,
         explanation: newNoteExplanation,
         term: newNoteTerm,
         definition: newNoteDefinition,
@@ -244,6 +298,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     newNoteContent,
     newNoteQuestion,
     newNoteAnswer,
+    newNoteMcqOptions,
+    newNoteMcqCorrectIndex,
+    newNoteMultiSelectIndices,
     newNoteExplanation,
     newNoteTerm,
     newNoteDefinition,
@@ -546,8 +603,14 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     mode?: "both" | "notes" | "test";
     startGeneratedTest?: boolean;
   }) => {
-    if (!uploadedVideoFile && !uploadedTranscriptFile && !uploadedTranscriptText.trim()) {
-      setUploadError("Select a downloaded video/audio file, upload a transcript file, or paste your lesson text.");
+    const cleanedTranscript = stripInlineBase64ImagesFromText(uploadedTranscriptText).cleanedText.trim();
+    const hasUploadImages = uploadedScreenshots.length > 0;
+    if (!uploadedVideoFile && !uploadedTranscriptFile && !cleanedTranscript) {
+      setUploadError(
+        hasUploadImages
+          ? 'Use "Save Text & Images as Note" below to save your attached images directly, or include video/text for AI extraction.'
+          : "Select a downloaded video/audio file, upload a transcript file, or paste your lesson text."
+      );
       return;
     }
 
@@ -555,7 +618,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     setIsExtractingUpload(true);
     setAiNotice(
       uploadedVideoFile
-        ? `Analyzing "${uploadedVideoFile.name}"${uploadedTranscriptText.trim() || uploadedTranscriptFile ? " + transcript" : ""}... Larger videos may take 30–90 seconds.`
+        ? `Analyzing "${uploadedVideoFile.name}"${cleanedTranscript || uploadedTranscriptFile ? " + transcript" : ""}... Larger videos may take 30–90 seconds.`
         : "Extracting study notes, flashcards, and quiz questions from your lecture text..."
     );
 
@@ -567,8 +630,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       if (uploadedTranscriptFile) {
         formData.append("transcriptFile", uploadedTranscriptFile);
       }
-      if (uploadedTranscriptText.trim()) {
-        formData.append("transcriptText", uploadedTranscriptText.trim());
+      if (cleanedTranscript) {
+        formData.append("transcriptText", cleanedTranscript);
       }
       if (uploadedLessonTitle.trim()) {
         formData.append("lessonTitle", uploadedLessonTitle.trim());
@@ -597,8 +660,42 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       }
 
       const mode = options?.mode || "both";
-      const extractedNotes: StudyArtifactNote[] =
+      const rawExtractedNotes: StudyArtifactNote[] =
         mode === "test" ? [] : (Array.isArray(data.notes) ? data.notes : []);
+      let extractedNotes = rawExtractedNotes;
+
+      if (hasUploadImages) {
+        if (rawExtractedNotes.length > 0) {
+          extractedNotes = rawExtractedNotes.map((n, idx) =>
+            idx === 0
+              ? {
+                  ...n,
+                  screenshots: Array.from(
+                    new Set([...(n.screenshots || []), ...uploadedScreenshots])
+                  ).slice(0, MAX_NOTE_IMAGES)
+                }
+              : n
+          );
+        } else {
+          const fallbackChapter =
+            newNoteChapter.trim() ||
+            (goal.chapters && goal.chapters.find(c => !c.completed)?.title) ||
+            (goal.chapters && goal.chapters[0]?.title) ||
+            undefined;
+          const fallbackImageNote: StudyArtifactNote = {
+            id: `note_${Date.now()}`,
+            title: uploadedLessonTitle.trim() || data.extractedTitle || `${goal.name} Study Material`,
+            category: "summary",
+            content: cleanedTranscript ? cleanedTranscript.slice(0, 12000) : "Attached study images",
+            screenshots: [...uploadedScreenshots],
+            chapterTitle: fallbackChapter,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          extractedNotes = [fallbackImageNote];
+        }
+      }
+
       const extractedCards: FlashcardItem[] =
         mode === "test" ? [] : (Array.isArray(data.flashcards) ? data.flashcards : []);
       const newTest: KnowledgeTestArtifact | null = data.test || null;
@@ -614,6 +711,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       setUploadedTranscriptFile(null);
       setUploadedLessonTitle("");
       setUploadedTranscriptText("");
+      setUploadedScreenshots([]);
       setIsUploadingInNotes(false);
 
       if (options?.startGeneratedTest && newTest) {
@@ -623,6 +721,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
       const parts: string[] = [];
       if (extractedNotes.length > 0) parts.push(`${extractedNotes.length} notes`);
+      if (hasUploadImages) parts.push(`${uploadedScreenshots.length} images`);
       if (extractedCards.length > 0) parts.push(`${extractedCards.length} flashcards`);
       if (newTest) parts.push(`${newTest.questions.length} quiz questions`);
       setAiNotice(`Ready! Created ${parts.join(", ")} from "${data.extractedTitle || "your lecture"}".`);
@@ -638,11 +737,69 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     }
   };
 
+  const handleSaveUploadDirectly = async () => {
+    let rawText = uploadedTranscriptText;
+    if (!rawText.trim() && uploadedTranscriptFile) {
+      try {
+        rawText = await uploadedTranscriptFile.text();
+      } catch {
+        rawText = "";
+      }
+    }
+    const cleaned = stripInlineBase64ImagesFromText(rawText).cleanedText.trim();
+    if (!cleaned && uploadedScreenshots.length === 0) {
+      setUploadError("Paste text or attach images first to save directly as a note.");
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const activeChapter =
+      newNoteChapter.trim() ||
+      (goal.chapters && goal.chapters.find(c => !c.completed)?.title) ||
+      (goal.chapters && goal.chapters[0]?.title) ||
+      undefined;
+    const directNote: StudyArtifactNote = {
+      id: `note_${Date.now()}`,
+      title:
+        uploadedLessonTitle.trim() ||
+        uploadedTranscriptFile?.name.replace(/\.[^/.]+$/, "") ||
+        `${goal.name} Study Material`,
+      category: "summary",
+      content: cleaned || "Attached study images",
+      screenshots: uploadedScreenshots.length > 0 ? [...uploadedScreenshots] : undefined,
+      chapterTitle: activeChapter,
+      createdAt: nowIso,
+      updatedAt: nowIso
+    };
+
+    saveHub({
+      ...currentHub,
+      notes: [directNote, ...currentHub.notes]
+    });
+
+    const savedImgCount = uploadedScreenshots.length;
+    setUploadError(null);
+    setUploadedVideoFile(null);
+    setUploadedTranscriptFile(null);
+    setUploadedLessonTitle("");
+    setUploadedTranscriptText("");
+    setUploadedScreenshots([]);
+    setIsUploadingInNotes(false);
+
+    setAiNotice(
+      savedImgCount > 0
+        ? `Saved note with ${savedImgCount} stored image${savedImgCount === 1 ? "" : "s"}!`
+        : "Saved pasted text directly as a study note!"
+    );
+    setTimeout(() => setAiNotice(null), 4500);
+  };
+
   // 3. Note Management
   const formatCategoryLabel = (cat: string) => {
     if (cat === "qa") return "Question & Answer";
     if (cat === "fill_in_blank") return "Fill in the Blank";
     if (cat === "multiple_choice") return "Multiple Choice";
+    if (cat === "multiple_select") return "Multiple Select";
     if (cat === "true_false") return "True / False";
     if (cat === "definition") return "Definition";
     if (cat === "table") return "Table";
@@ -662,6 +819,26 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     return {
       cleanedOptions: mapped.map(m => m.text),
       correctIndex: mapped.findIndex(m => m.isCorrect)
+    };
+  };
+
+  const compactMultiSelectDraft = (opts: string[], selectedIndices: number[]) => {
+    const selectedSet = new Set(selectedIndices);
+    const cleanedOptions: string[] = [];
+    const correctIndices: number[] = [];
+    opts.forEach((raw, idx) => {
+      const trimmed = raw.trim();
+      if (trimmed.length > 0) {
+        const nextIdx = cleanedOptions.length;
+        cleanedOptions.push(trimmed);
+        if (selectedSet.has(idx)) {
+          correctIndices.push(nextIdx);
+        }
+      }
+    });
+    return {
+      cleanedOptions,
+      correctIndices
     };
   };
 
@@ -696,8 +873,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
   const handleTakeHubScreenshot = async () => {
     if (isCapturingHubScreenshot) return;
-    if (newNoteScreenshots.length >= 4) {
-      setHubScreenshotNotice("Maximum 4 screenshots per note.");
+    if (newNoteScreenshots.length >= MAX_NOTE_IMAGES) {
+      setHubScreenshotNotice(`Maximum ${MAX_NOTE_IMAGES} images per note.`);
       setTimeout(() => setHubScreenshotNotice(null), 3500);
       return;
     }
@@ -706,7 +883,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const result = await captureScreenScreenshot();
     setIsCapturingHubScreenshot(false);
     if (result.dataUrl) {
-      setNewNoteScreenshots(prev => [...prev, result.dataUrl!].slice(0, 4));
+      setNewNoteScreenshots(prev =>
+        Array.from(new Set([...prev, result.dataUrl!])).slice(0, MAX_NOTE_IMAGES)
+      );
     } else if (result.error) {
       setHubScreenshotNotice(result.error);
       setTimeout(() => setHubScreenshotNotice(null), 6000);
@@ -716,27 +895,117 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const handleUploadHubScreenshotFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setHubScreenshotNotice(null);
-    const remaining = Math.max(0, 4 - newNoteScreenshots.length);
+    const remaining = Math.max(0, MAX_NOTE_IMAGES - newNoteScreenshots.length);
+    if (remaining === 0) {
+      setHubScreenshotNotice(`Maximum ${MAX_NOTE_IMAGES} images per note.`);
+      setTimeout(() => setHubScreenshotNotice(null), 3500);
+      return;
+    }
     const added: string[] = [];
+    const compact = files.length > 2;
     for (let i = 0; i < Math.min(files.length, remaining); i += 1) {
       try {
-        const dataUrl = await readImageFileAsDataUrl(files[i]);
+        const dataUrl = await readImageFileAsDataUrl(files[i], { compact });
         added.push(dataUrl);
       } catch {
         // Ignore non-image files
       }
     }
     if (added.length > 0) {
-      setNewNoteScreenshots(prev => [...prev, ...added].slice(0, 4));
+      setNewNoteScreenshots(prev =>
+        Array.from(new Set([...prev, ...added])).slice(0, MAX_NOTE_IMAGES)
+      );
     }
   };
 
   const handleHubFormPaste = async (e: React.ClipboardEvent) => {
-    const pasted = await extractImagesFromClipboardEvent(e);
-    if (pasted.length > 0) {
-      e.preventDefault();
-      setHubScreenshotNotice(null);
-      setNewNoteScreenshots(prev => [...prev, ...pasted].slice(0, 4));
+    // Capture synchronously before any await so DataTransfer items/HTML remain intact
+    const snapshot = captureClipboardPasteSnapshot(e);
+    if (!snapshot.hasPotentialImages) return;
+
+    setHubScreenshotNotice(null);
+    setIsProcessingPastedImages(true);
+    try {
+      const pasted = await extractImagesFromClipboardSnapshot(snapshot, MAX_NOTE_IMAGES);
+      if (pasted.length > 0) {
+        let addedCount = 0;
+        let hitLimit = false;
+        setNewNoteScreenshots(prev => {
+          const existingSet = new Set(prev);
+          const uniqueNew = pasted.filter(src => !existingSet.has(src));
+          const availableSlots = Math.max(0, MAX_NOTE_IMAGES - prev.length);
+          addedCount = Math.min(uniqueNew.length, availableSlots);
+          hitLimit = uniqueNew.length > availableSlots;
+          return [...prev, ...uniqueNew].slice(0, MAX_NOTE_IMAGES);
+        });
+        if (addedCount > 0) {
+          setAiNotice(
+            `Stored ${addedCount} image${addedCount === 1 ? "" : "s"} from pasted content${hitLimit ? ` (capped at ${MAX_NOTE_IMAGES})` : ""}.`
+          );
+          setTimeout(() => setAiNotice(null), 4000);
+        } else if (hitLimit) {
+          setHubScreenshotNotice(`Maximum ${MAX_NOTE_IMAGES} images per note reached.`);
+          setTimeout(() => setHubScreenshotNotice(null), 4000);
+        }
+      }
+    } finally {
+      setIsProcessingPastedImages(false);
+    }
+  };
+
+  const handleUploadPanelImageFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploadError(null);
+    const remaining = Math.max(0, MAX_NOTE_IMAGES - uploadedScreenshots.length);
+    if (remaining === 0) {
+      setUploadError(`Maximum ${MAX_NOTE_IMAGES} images per upload note.`);
+      return;
+    }
+    const added: string[] = [];
+    const compact = files.length > 2;
+    for (let i = 0; i < Math.min(files.length, remaining); i += 1) {
+      try {
+        const dataUrl = await readImageFileAsDataUrl(files[i], { compact });
+        added.push(dataUrl);
+      } catch {
+        // Ignore non-image files
+      }
+    }
+    if (added.length > 0) {
+      setUploadedScreenshots(prev =>
+        Array.from(new Set([...prev, ...added])).slice(0, MAX_NOTE_IMAGES)
+      );
+    }
+  };
+
+  const handleHubUploadPaste = async (e: React.ClipboardEvent) => {
+    const snapshot = captureClipboardPasteSnapshot(e);
+    if (!snapshot.hasPotentialImages) return;
+
+    setUploadError(null);
+    setIsProcessingUploadImages(true);
+    try {
+      const pasted = await extractImagesFromClipboardSnapshot(snapshot, MAX_NOTE_IMAGES);
+      if (pasted.length > 0) {
+        let addedCount = 0;
+        let hitLimit = false;
+        setUploadedScreenshots(prev => {
+          const existingSet = new Set(prev);
+          const uniqueNew = pasted.filter(src => !existingSet.has(src));
+          const availableSlots = Math.max(0, MAX_NOTE_IMAGES - prev.length);
+          addedCount = Math.min(uniqueNew.length, availableSlots);
+          hitLimit = uniqueNew.length > availableSlots;
+          return [...prev, ...uniqueNew].slice(0, MAX_NOTE_IMAGES);
+        });
+        if (addedCount > 0) {
+          setAiNotice(
+            `Captured ${addedCount} image${addedCount === 1 ? "" : "s"} from pasted content — will be stored with your note${hitLimit ? ` (max ${MAX_NOTE_IMAGES})` : ""}.`
+          );
+          setTimeout(() => setAiNotice(null), 4500);
+        }
+      }
+    } finally {
+      setIsProcessingUploadImages(false);
     }
   };
 
@@ -745,6 +1014,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const isQA = newNoteCategory === "qa";
     const isFillInBlank = newNoteCategory === "fill_in_blank";
     const isMultipleChoice = newNoteCategory === "multiple_choice";
+    const isMultipleSelect = newNoteCategory === "multiple_select";
     const isTrueFalse = newNoteCategory === "true_false";
     const isDefinition = newNoteCategory === "definition";
     const isTable = newNoteCategory === "table";
@@ -752,6 +1022,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const isUrl = newNoteCategory === "url" || isReadingUrl;
     const hasScreenshots = newNoteScreenshots.length > 0;
     const resolvedMcq = isMultipleChoice ? compactMcqDraft(newNoteMcqOptions, newNoteMcqCorrectIndex) : null;
+    const resolvedMulti = isMultipleSelect ? compactMultiSelectDraft(newNoteMcqOptions, newNoteMultiSelectIndices) : null;
     const resolvedTable = isTable ? normalizeTableDraft(newNoteTableHeaders, newNoteTableRows) : null;
 
     if (isQA) {
@@ -767,6 +1038,17 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       }
       if ((resolvedMcq?.cleanedOptions.length || 0) >= 2 && (resolvedMcq?.correctIndex ?? -1) < 0) {
         setAiNotice("Please enter text for the selected correct choice (or mark a filled choice).");
+        setTimeout(() => setAiNotice(null), 4000);
+        return;
+      }
+    } else if (isMultipleSelect) {
+      if ((!newNoteQuestion.trim() || (resolvedMulti?.cleanedOptions.length || 0) < 2) && !hasScreenshots) {
+        setAiNotice("Please enter a question and at least 2 answer choices.");
+        setTimeout(() => setAiNotice(null), 4000);
+        return;
+      }
+      if ((resolvedMulti?.cleanedOptions.length || 0) >= 2 && (resolvedMulti?.correctIndices.length || 0) < 1) {
+        setAiNotice("Please check at least 1 filled choice as a correct answer.");
         setTimeout(() => setAiNotice(null), 4000);
         return;
       }
@@ -808,7 +1090,9 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const trimmedQuestion = isFillInBlank
       ? (resolvedFillBlank?.prompt || (hasScreenshots ? "Screenshot Fill-in-the-Blank" : ""))
       : (newNoteQuestion.trim() || (
-          isMultipleChoice && hasScreenshots
+          isMultipleSelect && hasScreenshots
+            ? "Screenshot Multiple Select Question"
+            : isMultipleChoice && hasScreenshots
             ? "Screenshot Multiple Choice Question"
             : isTrueFalse && hasScreenshots
             ? "Screenshot True / False Question"
@@ -818,6 +1102,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         ));
     const trimmedAnswer = isFillInBlank
       ? (resolvedFillBlank?.answer || (hasScreenshots ? "See attached screenshot" : ""))
+      : isMultipleSelect
+      ? (resolvedMulti && resolvedMulti.correctIndices.length > 0
+          ? resolvedMulti.correctIndices.map(i => resolvedMulti.cleanedOptions[i]).join(", ")
+          : (hasScreenshots ? "See attached screenshot" : ""))
       : isMultipleChoice
       ? (resolvedMcq && resolvedMcq.correctIndex >= 0
           ? resolvedMcq.cleanedOptions[resolvedMcq.correctIndex]
@@ -841,17 +1129,24 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const markLoginRequired = isUrl && !isReadingUrl && (newNoteRequiresLogin || (isLikelyLoginProtectedUrl(trimmedUrl) && !trimmedUrlContext));
     const markReadingAssignment = isReadingUrl ? newNoteAssignReading : false;
 
-    const mcqChoicesFormatted = resolvedMcq && resolvedMcq.cleanedOptions.length > 0
-      ? resolvedMcq.cleanedOptions.map((opt, idx) => `${String.fromCharCode(65 + idx)}) ${opt}`).join("\n")
+    const choiceSource = isMultipleSelect ? resolvedMulti?.cleanedOptions : resolvedMcq?.cleanedOptions;
+    const mcqChoicesFormatted = choiceSource && choiceSource.length > 0
+      ? choiceSource.map((opt, idx) => `${String.fromCharCode(65 + idx)}) ${opt}`).join("\n")
       : "";
-    const mcqCorrectLabel = resolvedMcq && resolvedMcq.correctIndex >= 0
-      ? `${String.fromCharCode(65 + resolvedMcq.correctIndex)}) ${resolvedMcq.cleanedOptions[resolvedMcq.correctIndex]}`
-      : trimmedAnswer;
+    const mcqCorrectLabel = isMultipleSelect
+      ? (resolvedMulti && resolvedMulti.correctIndices.length > 0
+          ? resolvedMulti.correctIndices
+              .map(i => `${String.fromCharCode(65 + i)}) ${resolvedMulti.cleanedOptions[i]}`)
+              .join(", ")
+          : trimmedAnswer)
+      : (resolvedMcq && resolvedMcq.correctIndex >= 0
+          ? `${String.fromCharCode(65 + resolvedMcq.correctIndex)}) ${resolvedMcq.cleanedOptions[resolvedMcq.correctIndex]}`
+          : trimmedAnswer);
 
     const noteId = "note_" + Date.now();
     const note: StudyArtifactNote = {
       id: noteId,
-      title: isQA || isFillInBlank || isMultipleChoice || isTrueFalse
+      title: isQA || isFillInBlank || isMultipleChoice || isMultipleSelect || isTrueFalse
         ? trimmedQuestion
         : isDefinition
         ? trimmedTerm
@@ -863,6 +1158,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
       category: isUrl ? "url" : newNoteCategory,
       content: isTable
         ? (resolvedTable?.hasContent ? formatTableAsMarkdown(resolvedTable.headers, resolvedTable.rows) : "Attached table screenshot")
+        : isMultipleSelect
+        ? `Q: ${trimmedQuestion}${mcqChoicesFormatted ? `\n\n${mcqChoicesFormatted}` : ""}\n\nCorrect Answers: ${mcqCorrectLabel}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isMultipleChoice
         ? `Q: ${trimmedQuestion}${mcqChoicesFormatted ? `\n\n${mcqChoicesFormatted}` : ""}\n\nCorrect Answer: ${mcqCorrectLabel}${trimmedExplanation ? `\n\nExplanation: ${trimmedExplanation}` : ""}`
         : isTrueFalse
@@ -878,18 +1175,25 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         : (newNoteContent.trim() || "Attached screenshot"),
       tableHeaders: isTable && resolvedTable?.hasContent ? resolvedTable.headers : undefined,
       tableRows: isTable && resolvedTable?.hasContent ? resolvedTable.rows : undefined,
-      question: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedQuestion : undefined,
-      answer: isQA || isFillInBlank || isMultipleChoice || isTrueFalse ? trimmedAnswer : undefined,
-      explanation: (isQA || isFillInBlank || isMultipleChoice || isTrueFalse) && trimmedExplanation ? trimmedExplanation : undefined,
-      options: isMultipleChoice
+      question: isQA || isFillInBlank || isMultipleChoice || isMultipleSelect || isTrueFalse ? trimmedQuestion : undefined,
+      answer: isQA || isFillInBlank || isMultipleChoice || isMultipleSelect || isTrueFalse ? trimmedAnswer : undefined,
+      explanation: (isQA || isFillInBlank || isMultipleChoice || isMultipleSelect || isTrueFalse) && trimmedExplanation ? trimmedExplanation : undefined,
+      options: isMultipleSelect
+        ? (resolvedMulti?.cleanedOptions || [])
+        : isMultipleChoice
         ? (resolvedMcq?.cleanedOptions || [])
         : isTrueFalse
         ? ["True", "False"]
         : undefined,
-      correctOptionIndex: isMultipleChoice
+      correctOptionIndex: isMultipleSelect
+        ? (resolvedMulti && resolvedMulti.correctIndices.length > 0 ? resolvedMulti.correctIndices[0] : undefined)
+        : isMultipleChoice
         ? (resolvedMcq && resolvedMcq.correctIndex >= 0 ? resolvedMcq.correctIndex : undefined)
         : isTrueFalse
         ? (newNoteTrueFalseAnswer === "true" ? 0 : 1)
+        : undefined,
+      correctOptionIndices: isMultipleSelect
+        ? (resolvedMulti && resolvedMulti.correctIndices.length > 0 ? resolvedMulti.correctIndices : undefined)
         : undefined,
       term: isDefinition ? trimmedTerm : undefined,
       definition: isDefinition ? trimmedDefinition : undefined,
@@ -921,6 +1225,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     setNewNoteExplanation("");
     setNewNoteMcqOptions(["", "", "", ""]);
     setNewNoteMcqCorrectIndex(0);
+    setNewNoteMultiSelectIndices([0]);
     setNewNoteTrueFalseAnswer("true");
     setNewNoteTerm("");
     setNewNoteDefinition("");
@@ -998,6 +1303,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
   const handleCopyNoteContent = (note: StudyArtifactNote) => {
     const mcqOpts = Array.isArray(note.options) ? note.options : [];
     const mcqChoicesText = mcqOpts.map((opt, idx) => `${String.fromCharCode(65 + idx)}) ${opt}`).join("\n");
+    const multiCorrectIndices = note.category === "multiple_select" ? resolveNoteCorrectIndices(note, mcqOpts) : [];
+    const multiCorrectLabel = multiCorrectIndices.length > 0
+      ? multiCorrectIndices.map(i => `${String.fromCharCode(65 + i)}) ${mcqOpts[i]}`).join(", ")
+      : (note.answer || "");
     const mcqCorrectLabel = typeof note.correctOptionIndex === "number" && mcqOpts[note.correctOptionIndex]
       ? `${String.fromCharCode(65 + note.correctOptionIndex)}) ${mcqOpts[note.correctOptionIndex]}`
       : (note.answer || "");
@@ -1005,6 +1314,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     const tableCopyData = note.category === "table" ? resolveNoteTableData(note) : null;
     const copyText = note.category === "table" && tableCopyData
       ? `${note.title}\n\n${formatTableAsMarkdown(tableCopyData.headers, tableCopyData.rows)}`
+      : note.category === "multiple_select"
+      ? `${note.title && note.title !== note.question ? `${note.title}\n\n` : ""}Q: ${note.question || note.title}${mcqChoicesText ? `\n\n${mcqChoicesText}` : ""}\n\nCorrect Answers: ${multiCorrectLabel || note.content}${note.explanation ? `\n\nExplanation: ${note.explanation}` : ""}`
       : note.category === "multiple_choice"
       ? `${note.title && note.title !== note.question ? `${note.title}\n\n` : ""}Q: ${note.question || note.title}${mcqChoicesText ? `\n\n${mcqChoicesText}` : ""}\n\nCorrect Answer: ${mcqCorrectLabel || note.content}${note.explanation ? `\n\nExplanation: ${note.explanation}` : ""}`
       : note.category === "true_false"
@@ -1023,13 +1334,66 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     setTimeout(() => setCopiedNoteId(null), 2000);
   };
 
+  const handleExportNotesMarkdown = () => {
+    if (currentHub.notes.length === 0) return;
+    const lines: string[] = [
+      `# ${goal.name} — Study Notes`,
+      `Exported: ${new Date().toLocaleDateString()} (${currentHub.notes.length} notes)`,
+      ""
+    ];
+    for (const note of currentHub.notes) {
+      lines.push(`---`);
+      lines.push(`## ${note.title || formatCategoryLabel(note.category)}`);
+      const metaParts = [formatCategoryLabel(note.category)];
+      if (note.chapterTitle) metaParts.push(note.chapterTitle);
+      if (note.updatedAt) metaParts.push(`Updated ${new Date(note.updatedAt).toLocaleDateString()}`);
+      lines.push(`*${metaParts.join(" · ")}*`);
+      lines.push("");
+      if (note.question && note.answer) {
+        lines.push(`**Question:** ${note.question}`);
+        if (Array.isArray(note.options) && note.options.length > 0) {
+          note.options.forEach((opt, i) => lines.push(`- ${String.fromCharCode(65 + i)}) ${opt}`));
+        }
+        lines.push(`**Answer:** ${note.answer}`);
+        if (note.explanation) lines.push(`**Explanation:** ${note.explanation}`);
+      } else if (note.term && note.definition) {
+        lines.push(`**${note.term}:** ${note.definition}`);
+      } else if (note.url) {
+        lines.push(note.url);
+        if (note.urlNotes) lines.push("", note.urlNotes);
+      } else {
+        lines.push(note.content || "");
+      }
+      if (note.screenshots && note.screenshots.length > 0) {
+        lines.push("", `*(${note.screenshots.length} attached image${note.screenshots.length === 1 ? "" : "s"} saved in app)*`);
+      }
+      if (note.keyTerms && note.keyTerms.length > 0) {
+        lines.push("", `Key terms: ${note.keyTerms.map(t => `#${t}`).join(" ")}`);
+      }
+      lines.push("");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${goal.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "study"}-notes.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setAiNotice(`Exported ${currentHub.notes.length} notes as Markdown.`);
+    setTimeout(() => setAiNotice(null), 3500);
+  };
+
   // 4. Test Runner Flow
   const startTest = (test: KnowledgeTestArtifact) => {
     setActiveTest(test);
     setCurrentQuestionIndex(0);
     setSelectedOptionIndex(null);
+    setSelectedMultiIndices([]);
     setIsAnswerSubmitted(false);
     setTestUserAnswers({});
+    setTestUserMultiAnswers({});
     setIsTestCompleted(false);
     setPreviewReviewNoteId(null);
   };
@@ -1039,8 +1403,29 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     setSelectedOptionIndex(optIndex);
   };
 
+  const handleToggleMultiOption = (optIndex: number) => {
+    if (isAnswerSubmitted) return;
+    setSelectedMultiIndices(prev =>
+      prev.includes(optIndex)
+        ? prev.filter(i => i !== optIndex)
+        : [...prev, optIndex].sort((a, b) => a - b)
+    );
+  };
+
   const handleSubmitQuestionAnswer = () => {
-    if (selectedOptionIndex === null || !activeTest) return;
+    if (!activeTest) return;
+    const currentQ = activeTest.questions[currentQuestionIndex];
+    if (currentQ && isMultiSelectQuestion(currentQ)) {
+      if (selectedMultiIndices.length === 0) return;
+      const sorted = [...selectedMultiIndices].sort((a, b) => a - b);
+      setIsAnswerSubmitted(true);
+      setTestUserMultiAnswers(prev => ({
+        ...prev,
+        [currentQuestionIndex]: sorted
+      }));
+      return;
+    }
+    if (selectedOptionIndex === null) return;
     setIsAnswerSubmitted(true);
     setTestUserAnswers(prev => ({
       ...prev,
@@ -1053,6 +1438,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     if (currentQuestionIndex + 1 < activeTest.questions.length) {
       setCurrentQuestionIndex(prev => prev + 1);
       setSelectedOptionIndex(null);
+      setSelectedMultiIndices([]);
       setIsAnswerSubmitted(false);
       setPreviewReviewNoteId(null);
     } else {
@@ -1065,13 +1451,18 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     if (!activeTest) return;
     let correctCount = 0;
     const finalizedAnswers = { ...testUserAnswers };
-    if (selectedOptionIndex !== null && finalizedAnswers[currentQuestionIndex] === undefined) {
+    const finalizedMultiAnswers = { ...testUserMultiAnswers };
+    const activeQ = activeTest.questions[currentQuestionIndex];
+    if (activeQ && isMultiSelectQuestion(activeQ)) {
+      if (selectedMultiIndices.length > 0 && !finalizedMultiAnswers[currentQuestionIndex]) {
+        finalizedMultiAnswers[currentQuestionIndex] = [...selectedMultiIndices].sort((a, b) => a - b);
+      }
+    } else if (selectedOptionIndex !== null && finalizedAnswers[currentQuestionIndex] === undefined) {
       finalizedAnswers[currentQuestionIndex] = selectedOptionIndex;
     }
 
     activeTest.questions.forEach((q, idx) => {
-      const userChoice = finalizedAnswers[idx];
-      if (userChoice === q.correctIndex) {
+      if (isQuestionAnswerCorrect(q, finalizedAnswers[idx], finalizedMultiAnswers[idx])) {
         correctCount++;
       }
     });
@@ -1096,6 +1487,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     });
 
     setTestUserAnswers(finalizedAnswers);
+    setTestUserMultiAnswers(finalizedMultiAnswers);
     setActiveTest(updatedTest);
     setIsTestCompleted(true);
     setPreviewReviewNoteId(null);
@@ -1166,7 +1558,10 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
   const handleOpenSavedNote = (noteId: string, fromTest = false) => {
     setSelectedNoteCategory("all");
+    setSelectedNoteGroup("all");
+    setNoteSearchQuery("");
     setHighlightedNoteId(noteId);
+    setExpandedNoteIds(prev => ({ ...prev, [noteId]: true }));
     setJumpedFromTestReview(fromTest);
     setActiveTab("notes");
   };
@@ -1418,13 +1813,61 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
     }
   };
 
-  const categoryFilteredNotes = selectedNoteCategory === "all" 
-    ? currentHub.notes 
-    : currentHub.notes.filter(n => n.category === selectedNoteCategory);
+  const matchesNoteGroup = (category: string) => {
+    if (selectedNoteGroup === "all") return true;
+    if (selectedNoteGroup === "guides") {
+      return ["concept", "cheat_sheet", "summary", "formula"].includes(category);
+    }
+    if (selectedNoteGroup === "questions") {
+      return ["qa", "fill_in_blank", "multiple_choice", "multiple_select", "true_false"].includes(category);
+    }
+    if (selectedNoteGroup === "definitions") {
+      return category === "definition";
+    }
+    if (selectedNoteGroup === "tables_code") {
+      return ["table", "code_snippet"].includes(category);
+    }
+    if (selectedNoteGroup === "links") {
+      return category === "url";
+    }
+    return true;
+  };
 
-  const filteredNotes = showOnlyDuplicates
+  const categoryFilteredNotes = currentHub.notes.filter((n) => {
+    if (selectedNoteCategory !== "all") {
+      return n.category === selectedNoteCategory;
+    }
+    return matchesNoteGroup(n.category);
+  });
+
+  const duplicateFilteredNotes = showOnlyDuplicates
     ? categoryFilteredNotes.filter(n => Boolean(existingDuplicatesReport.byNoteId[n.id]?.length))
     : categoryFilteredNotes;
+
+  const trimmedSearchQuery = noteSearchQuery.trim().toLowerCase();
+  const filteredNotes = trimmedSearchQuery
+    ? duplicateFilteredNotes.filter((n) => {
+        const haystack = [
+          n.title,
+          n.content,
+          n.question,
+          n.answer,
+          n.explanation,
+          n.term,
+          n.definition,
+          n.url,
+          n.urlNotes,
+          n.chapterTitle,
+          n.sourceFileName,
+          ...(n.keyTerms || []),
+          ...(n.options || [])
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(trimmedSearchQuery);
+      })
+    : duplicateFilteredNotes;
 
   const totalFlashcards = currentHub.flashcards.length;
   const masteredFlashcards = currentHub.flashcards.filter(f => f.mastered).length;
@@ -1432,160 +1875,114 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/50 dark:bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="relative w-full max-w-5xl h-[92vh] max-h-[900px] flex flex-col bg-white dark:bg-[#11131f] border border-slate-200 dark:border-violet-900/40 rounded-2xl shadow-2xl overflow-hidden text-slate-900 dark:text-slate-100">
+      <div className="relative w-full max-w-6xl h-[92vh] max-h-[920px] flex flex-col bg-white dark:bg-[#11131f] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden text-slate-900 dark:text-slate-100">
         
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-violet-900/30 bg-slate-50/90 dark:bg-[#161828]/80 backdrop-blur">
-          <div className="flex items-center gap-3">
-            <div className="keep-white p-2.5 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-600 !text-white shadow-lg shadow-violet-900/20 dark:shadow-violet-900/30">
-              <BookOpen className="w-6 h-6" />
+        {/* Clean Header */}
+        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-200 dark:border-slate-800/80 bg-white dark:bg-[#141624]">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="keep-white p-2.5 rounded-xl bg-violet-600 !text-white shrink-0">
+              <BookOpen className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-                  Knowledge Tester & Study Material Notes Hub
-                </h2>
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-800 border border-violet-300 dark:bg-violet-500/20 dark:text-violet-300 dark:border-violet-500/30 font-medium">
-                  {goal.name}
-                </span>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white truncate">
+                {goal.name}
+              </h2>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+                <span>Study Hub</span>
+                <span aria-hidden="true">·</span>
+                <span>Mastery {masteryScore}%</span>
+                <span aria-hidden="true">·</span>
+                <span>{currentHub.notes.length} notes</span>
+                <span aria-hidden="true">·</span>
+                <span>{masteredFlashcards}/{totalFlashcards} cards mastered</span>
               </div>
-              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                Technical cheat sheets, diagnostic assessment tests & active recall flashcard system
-              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Quick Mastery Badge */}
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-violet-50 border border-violet-200 text-violet-900 dark:bg-violet-950/60 dark:border-violet-700/40 text-xs font-semibold dark:text-violet-200">
-              <Award className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-              <span>Mastery: <span className="text-amber-600 dark:text-amber-400 font-bold">{masteryScore}%</span></span>
-            </div>
-
-            <button
-              onClick={onClose}
-              className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-200/70 dark:text-slate-400 dark:hover:text-white dark:hover:bg-white/10 rounded-xl transition-colors"
-              title="Close Hub"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-white/10 rounded-xl transition-colors shrink-0 cursor-pointer"
+            title="Close Hub"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Global AI Action Notification Toast */}
         {aiNotice && (
-          <div className="px-6 py-2 bg-violet-100 dark:bg-gradient-to-r dark:from-violet-900/90 dark:to-indigo-900/90 border-b border-violet-300 dark:border-violet-500/40 text-xs text-violet-900 dark:text-violet-200 flex items-center gap-2 animate-fadeIn">
-            <Sparkles className="w-4 h-4 text-violet-600 dark:text-violet-300 animate-spin" />
+          <div className="px-6 py-2 bg-violet-50 dark:bg-violet-950/70 border-b border-violet-200 dark:border-violet-800/60 text-xs text-violet-900 dark:text-violet-200 flex items-center gap-2 animate-fadeIn">
+            <Sparkles className="w-3.5 h-3.5 text-violet-600 dark:text-violet-300 shrink-0" />
             <span className="font-medium">{aiNotice}</span>
           </div>
         )}
 
-        {/* Tabs Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 px-6 border-b border-slate-200 dark:border-violet-900/20 bg-slate-100/75 dark:bg-[#141624]">
-          <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto">
+        {/* Clean Single-Row Navigation Tabs Bar */}
+        <div className="flex items-center justify-between gap-4 px-6 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50/70 dark:bg-[#121422]">
+          <div className="flex items-center gap-1 overflow-x-auto">
             <button
               onClick={() => setActiveTab("notes")}
-              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === "notes"
-                  ? "border-violet-600 dark:border-violet-500 text-slate-900 dark:text-white bg-violet-500/10"
+                  ? "border-violet-600 dark:border-violet-400 text-slate-900 dark:text-white"
                   : "border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               }`}
             >
-              <FileText className="w-4 h-4 text-violet-600 dark:text-violet-400" />
-              <span>Study Notes & Artifacts</span>
-              <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 font-mono">
-                {currentHub.notes.length}
+              <FileText className="w-4 h-4 text-violet-600 dark:text-violet-400 shrink-0" />
+              <span>Study Notes</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                ({currentHub.notes.length})
               </span>
             </button>
 
             <button
               onClick={() => setActiveTab("tester")}
-              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === "tester"
-                  ? "border-indigo-600 dark:border-indigo-500 text-slate-900 dark:text-white bg-indigo-500/10"
+                  ? "border-indigo-600 dark:border-indigo-400 text-slate-900 dark:text-white"
                   : "border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               }`}
             >
-              <Brain className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <Brain className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
               <span>Knowledge Tester</span>
-              <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 font-mono">
-                {currentHub.tests.length}
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                ({currentHub.tests.length})
               </span>
             </button>
 
             <button
               onClick={() => setActiveTab("flashcards")}
-              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === "flashcards"
-                  ? "border-emerald-600 dark:border-emerald-500 text-slate-900 dark:text-white bg-emerald-500/10"
+                  ? "border-emerald-600 dark:border-emerald-400 text-slate-900 dark:text-white"
                   : "border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               }`}
             >
-              <Layers className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span>Active Recall Cards</span>
-              <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 font-mono">
-                {masteredFlashcards}/{totalFlashcards}
+              <Layers className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>Flashcards</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                ({masteredFlashcards}/{totalFlashcards})
               </span>
             </button>
 
             <button
               onClick={() => setActiveTab("overview")}
-              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+              className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === "overview"
-                  ? "border-amber-500 text-slate-900 dark:text-white bg-amber-500/10"
+                  ? "border-amber-500 text-slate-900 dark:text-white"
                   : "border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               }`}
             >
-              <Award className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+              <Award className="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0" />
               <span>Mastery Stats</span>
             </button>
           </div>
 
-          {/* Quick Header Actions */}
-          <div className="flex items-center gap-2 py-2">
-            {activeTab === "notes" && (
-              <>
-                <button
-                  onClick={() => handleAIGenerateStudyNotes()}
-                  disabled={isGeneratingNotes}
-                  className="keep-white px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-xs font-medium !text-white shadow-md shadow-violet-950/20 dark:shadow-violet-950/40 flex items-center gap-1.5 transition-all disabled:opacity-50"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-200 dark:text-amber-300" />
-                  <span>{isGeneratingNotes ? "Generating..." : "AI Generate Guide"}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsUploadingInNotes(!isUploadingInNotes);
-                    setIsAddingNote(false);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-all cursor-pointer ${
-                    isUploadingInNotes
-                      ? "bg-cyan-100 border-cyan-500 text-cyan-950 dark:bg-cyan-600/30 dark:border-cyan-400 dark:text-white"
-                      : "bg-cyan-50 hover:bg-cyan-100 border-cyan-300 text-cyan-900 dark:bg-cyan-600/15 dark:hover:bg-cyan-600/25 dark:border-cyan-500/35 dark:text-cyan-200"
-                  }`}
-                >
-                  <Upload className="w-3.5 h-3.5 text-cyan-700 dark:text-cyan-300" />
-                  <span>Upload Video / Text</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setIsAddingNote(!isAddingNote);
-                    setIsUploadingInNotes(false);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-xs font-medium text-slate-800 border border-slate-300 dark:bg-white/10 dark:hover:bg-white/15 dark:text-slate-200 dark:border-white/10 flex items-center gap-1.5 transition-all"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Note</span>
-                </button>
-              </>
-            )}
-
+          <div className="flex items-center gap-2 shrink-0 py-2">
             {activeTab === "tester" && (
               <button
                 onClick={() => handleAIGenerateTest()}
                 disabled={isGeneratingTest}
-                className="keep-white px-3 py-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-xs font-medium !text-white shadow-md shadow-indigo-950/20 dark:shadow-indigo-950/40 flex items-center gap-1.5 transition-all disabled:opacity-50"
+                className="keep-white px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-medium !text-white inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-200 dark:text-amber-300" />
                 <span>{isGeneratingTest ? "Authoring..." : "AI Author Test"}</span>
@@ -1595,7 +1992,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
             {activeTab === "flashcards" && (
               <button
                 onClick={() => setIsAddingFlashcard(!isAddingFlashcard)}
-                className="keep-white px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium !text-white shadow-md shadow-emerald-950/20 dark:shadow-emerald-950/40 flex items-center gap-1.5 transition-all"
+                className="keep-white px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium !text-white inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>New Card</span>
@@ -1605,14 +2002,234 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
         </div>
 
         {/* Modal Body / Tab Content */}
-        <div className="flex-1 overflow-y-auto p-6 bg-slate-50 dark:bg-[#0e101a]/95 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-6 sm:p-7 bg-slate-50/60 dark:bg-[#0e101a] custom-scrollbar">
           
           {/* TAB 1: STUDY NOTES & ARTIFACTS */}
           {activeTab === "notes" && (
             <div className="space-y-6">
-              {/* Upload Downloaded Video & Transcript Panel */}
+              {/* Calm Workspace Toolbar: Search + Primary Actions */}
+              <div className="space-y-3">
+                <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={noteSearchQuery}
+                      onChange={e => setNoteSearchQuery(e.target.value)}
+                      placeholder="Search notes, questions, terms, chapters, or #tags..."
+                      className="w-full pl-9 pr-8 py-2 rounded-xl bg-white dark:bg-[#141727] border border-slate-200 dark:border-slate-800 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                    />
+                    {noteSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setNoteSearchQuery("")}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                        title="Clear search"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingNote(true);
+                        setIsUploadingInNotes(false);
+                      }}
+                      className="keep-white px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-xs font-semibold !text-white inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Note</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUploadingInNotes(true);
+                        setIsAddingNote(false);
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 dark:bg-[#141727] dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                      <span>Upload Video / Text</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAIGenerateStudyNotes()}
+                      disabled={isGeneratingNotes}
+                      className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 dark:bg-[#141727] dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                      <span>{isGeneratingNotes ? "Generating..." : "AI Guide"}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (existingDuplicatesReport.duplicateNoteIds.length === 0) {
+                          setShowOnlyDuplicates(false);
+                          setAiNotice(
+                            currentHub.notes.length < 2
+                              ? "Add at least 2 notes to scan for duplicates."
+                              : `Checked all ${currentHub.notes.length} notes from first to end — no duplicate or similar wording found!`
+                          );
+                          setTimeout(() => setAiNotice(null), 4000);
+                          return;
+                        }
+                        const nextShow = !showOnlyDuplicates;
+                        setShowOnlyDuplicates(nextShow);
+                        if (nextShow) {
+                          setSelectedNoteCategory("all");
+                          setSelectedNoteGroup("all");
+                          setAiNotice(
+                            `Highlighted ${existingDuplicatesReport.duplicateNoteIds.length} notes with duplicate or similar wording.`
+                          );
+                          setTimeout(() => setAiNotice(null), 4000);
+                        }
+                      }}
+                      title="Scan all notes from first to end for exact and non-exact duplicate wording"
+                      className={`px-3 py-2 rounded-xl text-xs font-medium inline-flex items-center gap-1.5 border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        existingDuplicatesReport.duplicateNoteIds.length > 0
+                          ? showOnlyDuplicates
+                            ? "keep-white bg-amber-600 border-amber-500 !text-white"
+                            : "bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 dark:text-amber-200 dark:border-amber-600/40"
+                          : "bg-white hover:bg-slate-100 text-slate-600 border-slate-200 dark:bg-[#141727] dark:hover:bg-slate-800 dark:text-slate-300 dark:border-slate-800"
+                      }`}
+                    >
+                      <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${
+                        existingDuplicatesReport.duplicateNoteIds.length > 0
+                          ? showOnlyDuplicates
+                            ? "text-white"
+                            : "text-amber-600 dark:text-amber-300"
+                          : "text-slate-400"
+                      }`} />
+                      <span>
+                        {existingDuplicatesReport.duplicateNoteIds.length > 0
+                          ? showOnlyDuplicates
+                            ? `Duplicates (${existingDuplicatesReport.duplicateNoteIds.length})`
+                            : `${existingDuplicatesReport.duplicateNoteIds.length} Duplicates`
+                          : "Check Duplicates"}
+                      </span>
+                    </button>
+
+                    {currentHub.notes.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleExportNotesMarkdown}
+                        title="Download all notes for this goal as a Markdown (.md) backup"
+                        className="p-2 rounded-xl bg-white hover:bg-slate-100 dark:bg-[#141727] dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 transition-colors shrink-0 cursor-pointer"
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Grouped Segmented Filter + Subtype Select + Compact/Expand Toggle */}
+                <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1">
+                  <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#141727] border border-slate-200 dark:border-slate-800/80 overflow-x-auto max-w-full">
+                    {(
+                      [
+                        { id: "all", label: "All" },
+                        { id: "guides", label: "Notes & Guides" },
+                        { id: "questions", label: "Practice Questions" },
+                        { id: "definitions", label: "Definitions" },
+                        { id: "tables_code", label: "Tables & Code" },
+                        { id: "links", label: "Links & Videos" }
+                      ] as const
+                    ).map((grp) => {
+                      const isActive = selectedNoteCategory === "all" && selectedNoteGroup === grp.id;
+                      return (
+                        <button
+                          key={grp.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedNoteGroup(grp.id);
+                            setSelectedNoteCategory("all");
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                            isActive
+                              ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs"
+                              : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          {grp.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <select
+                      aria-label="Filter by exact note type"
+                      value={selectedNoteCategory}
+                      onChange={(e) => {
+                        setSelectedNoteCategory(e.target.value);
+                        if (e.target.value !== "all") {
+                          setSelectedNoteGroup("all");
+                        }
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#141727] border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 focus:outline-none focus:border-violet-500 cursor-pointer"
+                    >
+                      <option value="all">Exact Type: Any</option>
+                      <option value="concept">Concept</option>
+                      <option value="cheat_sheet">Cheat Sheet</option>
+                      <option value="summary">Summary</option>
+                      <option value="formula">Formula</option>
+                      <option value="code_snippet">Code Snippet</option>
+                      <option value="table">Table</option>
+                      <option value="qa">Question &amp; Answer</option>
+                      <option value="fill_in_blank">Fill in the Blank</option>
+                      <option value="multiple_choice">Multiple Choice</option>
+                      <option value="multiple_select">Multiple Select</option>
+                      <option value="true_false">True / False</option>
+                      <option value="definition">Definition</option>
+                      <option value="url">URL / Video</option>
+                    </select>
+
+                    {filteredNotes.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAllNotesExpanded(prev => !prev);
+                          setExpandedNoteIds({});
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 dark:bg-[#141727] dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        {allNotesExpanded ? (
+                          <>
+                            <ChevronUp className="w-3.5 h-3.5" />
+                            <span>Compact View</span>
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                            <span>Expand All</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums whitespace-nowrap">
+                      {filteredNotes.length} of {currentHub.notes.length}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Focused Overlay Drawer for Upload Downloaded Video & Transcript */}
               {isUploadingInNotes && (
                 <div
+                  onClick={(e) => {
+                    if (e.target === e.currentTarget) setIsUploadingInNotes(false);
+                  }}
+                  className="fixed inset-0 z-40 bg-slate-900/50 dark:bg-black/70 backdrop-blur-xs flex items-start justify-center p-4 sm:p-6 overflow-y-auto animate-fadeIn"
+                >
+                <div
+                  onPaste={handleHubUploadPaste}
                   onKeyDown={(e) => {
                     if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.code === "Enter")) {
                       e.preventDefault();
@@ -1621,7 +2238,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       }
                     }
                   }}
-                  className="p-5 rounded-xl bg-white dark:bg-[#16192a] border border-cyan-300 dark:border-cyan-700/45 shadow-md dark:shadow-xl space-y-4 animate-fadeIn"
+                  className="w-full max-w-3xl my-auto p-6 rounded-2xl bg-white dark:bg-[#16192a] border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4 animate-fadeIn"
                 >
                   <div className="flex items-center justify-between border-b border-slate-200 dark:border-cyan-900/30 pb-3">
                     <div>
@@ -1630,7 +2247,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         Upload Downloaded Lecture Video &amp; Transcript Text
                       </h3>
                       <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                        Upload a downloaded Coursera/course video (.mp4, .mov, .webm) and optionally attach a subtitle file (.vtt, .srt, .txt) or paste text to generate notes, flashcards &amp; a quiz.
+                        Upload a course video (.mp4, .mov, .webm), attach a transcript (.vtt, .srt, .txt), or paste long text with embedded images — text and images are saved together.
                       </p>
                     </div>
                     <button
@@ -1695,17 +2312,90 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                   />
 
                   <textarea
-                    rows={3}
-                    placeholder="Optional: paste transcript, captions, or extra lesson text here..."
+                    rows={4}
+                    placeholder="Optional: paste transcript, captions, or long rich text/markdown containing images here..."
                     value={uploadedTranscriptText}
                     onChange={e => setUploadedTranscriptText(e.target.value)}
                     className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700/60 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                   />
 
+                  {/* Pasted / Attached Images Strip inside Upload Panel */}
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          ref={hubUploadImageFileInputRef}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={e => {
+                            void handleUploadPanelImageFiles(e.target.files);
+                            e.target.value = "";
+                          }}
+                          className="sr-only"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => hubUploadImageFileInputRef.current?.click()}
+                          disabled={uploadedScreenshots.length >= MAX_NOTE_IMAGES}
+                          className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-900/90 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700/70 text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
+                        >
+                          <ImagePlus className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                          <span>Attach Image</span>
+                        </button>
+                        {isProcessingUploadImages && (
+                          <span className="text-[11px] font-medium text-cyan-600 dark:text-cyan-400 inline-flex items-center gap-1">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>Importing pasted images...</span>
+                          </span>
+                        )}
+                      </div>
+                      {uploadedScreenshots.length > 0 && (
+                        <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300 tabular-nums">
+                          {uploadedScreenshots.length}/{MAX_NOTE_IMAGES} images stored for this note
+                        </span>
+                      )}
+                    </div>
+
+                    {uploadedScreenshots.length > 0 && (
+                      <div className={`grid grid-cols-2 sm:grid-cols-4 gap-2 ${uploadedScreenshots.length > 4 ? "max-h-56 overflow-y-auto pr-1 custom-scrollbar" : ""}`}>
+                        {uploadedScreenshots.map((src, idx) => (
+                          <div key={`${idx}_${src.slice(0, 32)}`} className="relative group rounded-lg overflow-hidden border border-slate-300 dark:border-slate-700 bg-black aspect-video">
+                            <button
+                              type="button"
+                              onClick={() => setLightboxScreenshotUrl(src)}
+                              className="w-full h-full block cursor-zoom-in"
+                            >
+                              <img src={src} alt={`Upload image ${idx + 1}`} className="w-full h-full object-cover" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setUploadedScreenshots(prev => prev.filter((_, i) => i !== idx))}
+                              className="keep-white absolute top-1 right-1 p-1 rounded-full bg-black/75 hover:bg-rose-600 !text-white cursor-pointer"
+                              title="Remove image"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 mr-auto hidden sm:inline">
                       Tip: Press Ctrl+Enter to save &amp; extract
                     </span>
+                    <button
+                      type="button"
+                      disabled={isExtractingUpload || (!uploadedTranscriptFile && !uploadedTranscriptText.trim() && uploadedScreenshots.length === 0)}
+                      onClick={() => void handleSaveUploadDirectly()}
+                      title="Save pasted text and images verbatim as a Study Note without AI summarization"
+                      className="px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/90 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600/60 disabled:opacity-40 text-xs font-semibold text-slate-800 dark:text-slate-100 inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Save Text &amp; Images as Note</span>
+                    </button>
                     <button
                       type="button"
                       disabled={isExtractingUpload || (!uploadedVideoFile && !uploadedTranscriptFile && !uploadedTranscriptText.trim())}
@@ -1727,10 +2417,17 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     </button>
                   </div>
                 </div>
+                </div>
               )}
 
-              {/* Add Note Collapsible Form */}
+              {/* Focused Overlay Drawer for Adding a Study Note */}
               {isAddingNote && (
+                <div
+                  onClick={(e) => {
+                    if (e.target === e.currentTarget) setIsAddingNote(false);
+                  }}
+                  className="fixed inset-0 z-40 bg-slate-900/50 dark:bg-black/70 backdrop-blur-xs flex items-start justify-center p-4 sm:p-6 overflow-y-auto animate-fadeIn"
+                >
                 <form 
                   onSubmit={handleCreateManualNote}
                   onPaste={handleHubFormPaste}
@@ -1778,7 +2475,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       }
                     }
                   }}
-                  className="p-5 rounded-xl bg-white dark:bg-[#16192a] border border-violet-300 dark:border-violet-800/40 shadow-md dark:shadow-xl space-y-4 animate-fadeIn"
+                  className="w-full max-w-3xl my-auto p-6 rounded-2xl bg-white dark:bg-[#16192a] border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4 animate-fadeIn"
                 >
                   <div className="flex items-center justify-between border-b border-slate-200 dark:border-violet-900/30 pb-3">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
@@ -1795,7 +2492,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {newNoteCategory !== "qa" && newNoteCategory !== "fill_in_blank" && newNoteCategory !== "multiple_choice" && newNoteCategory !== "true_false" && newNoteCategory !== "definition" && (
+                    {newNoteCategory !== "qa" && newNoteCategory !== "fill_in_blank" && newNoteCategory !== "multiple_choice" && newNoteCategory !== "multiple_select" && newNoteCategory !== "true_false" && newNoteCategory !== "definition" && (
                       <div className="md:col-span-2 space-y-1">
                         <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
                           {newNoteCategory === "reading_url"
@@ -1825,7 +2522,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       </div>
                     )}
 
-                    <div className={`space-y-1 ${newNoteCategory === "qa" || newNoteCategory === "fill_in_blank" || newNoteCategory === "multiple_choice" || newNoteCategory === "true_false" || newNoteCategory === "definition" ? "md:col-span-3" : ""}`}>
+                    <div className={`space-y-1 ${newNoteCategory === "qa" || newNoteCategory === "fill_in_blank" || newNoteCategory === "multiple_choice" || newNoteCategory === "multiple_select" || newNoteCategory === "true_false" || newNoteCategory === "definition" ? "md:col-span-3" : ""}`}>
                       <label
                         htmlFor="hub_note_type_select"
                         className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
@@ -1856,6 +2553,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <option value="qa">Question &amp; Answer</option>
                         <option value="fill_in_blank">Fill in the Blank</option>
                         <option value="multiple_choice">Multiple Choice Question</option>
+                        <option value="multiple_select">Multiple Select (Check All)</option>
                         <option value="true_false">True / False Question</option>
                         <option value="definition">Definition</option>
                         <option value="url">Video / Resource URL</option>
@@ -2071,6 +2769,124 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <textarea
                           rows={2}
                           placeholder="Optional: explain why this choice is correct..."
+                          value={newNoteExplanation}
+                          onChange={e => setNewNoteExplanation(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700/60 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                        />
+                      </div>
+                    </div>
+                  ) : newNoteCategory === "multiple_select" ? (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+                          <HelpCircle className="w-3.5 h-3.5" />
+                          <span>Multiple Select Question (Select All That Apply)</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="e.g. Which of the following protocols operate at the Transport layer? (Select all that apply)"
+                          value={newNoteQuestion}
+                          onChange={e => setNewNoteQuestion(e.target.value)}
+                          required={newNoteScreenshots.length === 0}
+                          className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border border-blue-300 dark:border-blue-700/40 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs font-medium text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Answer Choices (Check all correct answers)</span>
+                          </label>
+                          {newNoteMcqOptions.length < 6 && (
+                            <button
+                              type="button"
+                              onClick={() => setNewNoteMcqOptions(prev => [...prev, ""])}
+                              className="text-xs font-semibold text-blue-600 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200 cursor-pointer"
+                            >
+                              + Add Choice
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          {newNoteMcqOptions.map((opt, idx) => {
+                            const isChecked = newNoteMultiSelectIndices.includes(idx);
+                            return (
+                              <div key={idx} className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setNewNoteMultiSelectIndices(prev =>
+                                      prev.includes(idx)
+                                        ? prev.filter(i => i !== idx)
+                                        : [...prev, idx].sort((a, b) => a - b)
+                                    )
+                                  }
+                                  title={isChecked ? "Uncheck correct answer" : `Check choice ${String.fromCharCode(65 + idx)} as correct`}
+                                  className={`h-8 px-2 rounded-lg border text-xs font-mono font-bold flex items-center justify-center gap-1.5 shrink-0 transition-colors cursor-pointer ${
+                                    isChecked
+                                      ? "keep-white bg-emerald-600 border-emerald-600 text-white !text-white shadow-sm"
+                                      : "bg-white dark:bg-slate-900/80 border-slate-300 dark:border-slate-700/70 text-slate-700 dark:text-slate-300 hover:border-emerald-400"
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-3.5 h-3.5 rounded border flex items-center justify-center ${
+                                      isChecked
+                                        ? "border-white/90 bg-emerald-700/50"
+                                        : "border-slate-400 dark:border-slate-500"
+                                    }`}
+                                  >
+                                    {isChecked && <Check className="w-2.5 h-2.5 text-white" />}
+                                  </span>
+                                  <span>{String.fromCharCode(65 + idx)}</span>
+                                </button>
+                                <input
+                                  type="text"
+                                  placeholder={`Choice ${String.fromCharCode(65 + idx)}${idx >= 2 ? " (optional if >=2 filled)" : ""}`}
+                                  value={opt}
+                                  required={idx < 2 && newNoteScreenshots.length === 0}
+                                  onChange={e => {
+                                    const next = [...newNoteMcqOptions];
+                                    next[idx] = e.target.value;
+                                    setNewNoteMcqOptions(next);
+                                  }}
+                                  className={`flex-1 min-w-0 px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none ${
+                                    isChecked
+                                      ? "border-emerald-400 dark:border-emerald-600/60 focus:border-emerald-500"
+                                      : "border-slate-300 dark:border-slate-700/60 focus:border-blue-500"
+                                  }`}
+                                />
+                                {newNoteMcqOptions.length > 2 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setNewNoteMcqOptions(prev => prev.filter((_, i) => i !== idx));
+                                      setNewNoteMultiSelectIndices(prev =>
+                                        prev
+                                          .filter(i => i !== idx)
+                                          .map(i => (i > idx ? i - 1 : i))
+                                      );
+                                    }}
+                                    title="Remove choice"
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                          <span>Answer Explanation (Optional)</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="Optional: explain why these choices are correct..."
                           value={newNoteExplanation}
                           onChange={e => setNewNoteExplanation(e.target.value)}
                           className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700/60 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-violet-500"
@@ -2299,7 +3115,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <button
                           type="button"
                           onClick={handleTakeHubScreenshot}
-                          disabled={isCapturingHubScreenshot || newNoteScreenshots.length >= 4}
+                          disabled={isCapturingHubScreenshot || newNoteScreenshots.length >= MAX_NOTE_IMAGES}
                           className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-violet-50 dark:bg-slate-900/90 dark:hover:bg-violet-950/60 border border-slate-300 dark:border-slate-700/70 hover:border-violet-400 dark:hover:border-violet-500/60 text-xs font-medium text-slate-800 dark:text-slate-200 inline-flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
                           title="Capture screen, or snip with Win+Shift+S / Cmd+Shift+4 and paste with Ctrl+V"
                         >
@@ -2325,22 +3141,29 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                         <button
                           type="button"
                           onClick={() => hubScreenshotFileInputRef.current?.click()}
-                          disabled={newNoteScreenshots.length >= 4}
+                          disabled={newNoteScreenshots.length >= MAX_NOTE_IMAGES}
                           className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-900/90 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700/70 text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
                         >
                           <ImagePlus className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
                           <span>Attach Image</span>
                         </button>
+
+                        {isProcessingPastedImages && (
+                          <span className="text-[11px] font-medium text-cyan-600 dark:text-cyan-400 inline-flex items-center gap-1">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>Importing pasted images...</span>
+                          </span>
+                        )}
                       </div>
                       {newNoteScreenshots.length > 0 && (
                         <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300 tabular-nums">
-                          {newNoteScreenshots.length}/4 screenshots attached
+                          {newNoteScreenshots.length}/{MAX_NOTE_IMAGES} images attached
                         </span>
                       )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
-                      <span>Snip &amp; paste:</span>
+                      <span>Snip or copy text with embedded images:</span>
                       <kbd className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono text-[10px] text-slate-800 dark:text-slate-200">
                         Win+Shift+S
                       </kbd>
@@ -2352,7 +3175,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                       <kbd className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono text-[10px] text-slate-800 dark:text-slate-200">
                         Ctrl+V
                       </kbd>
-                      <span>to paste</span>
+                      <span>to store text &amp; images</span>
                     </div>
 
                     {hubScreenshotNotice && (
@@ -2362,7 +3185,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     )}
 
                     {newNoteScreenshots.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className={`grid grid-cols-2 sm:grid-cols-4 gap-2 ${newNoteScreenshots.length > 4 ? "max-h-64 overflow-y-auto pr-1 custom-scrollbar" : ""}`}>
                         {newNoteScreenshots.map((src, idx) => (
                           <div key={`${idx}_${src.slice(0, 32)}`} className="relative group rounded-lg overflow-hidden border border-slate-300 dark:border-slate-700 bg-black aspect-video">
                             <button
@@ -2453,78 +3276,14 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     </button>
                   </div>
                 </form>
+                </div>
               )}
 
-              {/* Notes Filter Category Bar + Duplicate Scanner */}
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-                {["all", "concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition", "url"].map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedNoteCategory(cat)}
-                    className={`px-3 py-1.5 rounded-lg capitalize font-medium whitespace-nowrap transition-all ${
-                      selectedNoteCategory === cat
-                        ? "keep-white bg-violet-600 !text-white shadow-md shadow-violet-900/20 dark:shadow-violet-900/30"
-                        : "bg-white text-slate-700 hover:text-slate-900 border border-slate-300 dark:bg-slate-900/60 dark:text-slate-400 dark:hover:text-slate-200 dark:border-slate-800"
-                    }`}
-                  >
-                    {formatCategoryLabel(cat)}
-                  </button>
-                ))}
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (existingDuplicatesReport.duplicateNoteIds.length === 0) {
-                      setShowOnlyDuplicates(false);
-                      setAiNotice(
-                        currentHub.notes.length < 2
-                          ? "Add at least 2 notes to scan for duplicates."
-                          : `Checked all ${currentHub.notes.length} notes from first to end — no duplicate or similar wording found!`
-                      );
-                      setTimeout(() => setAiNotice(null), 4000);
-                      return;
-                    }
-                    const nextShow = !showOnlyDuplicates;
-                    setShowOnlyDuplicates(nextShow);
-                    if (nextShow) {
-                      setSelectedNoteCategory("all");
-                      setAiNotice(
-                        `Highlighted ${existingDuplicatesReport.duplicateNoteIds.length} notes with duplicate or similar wording.`
-                      );
-                      setTimeout(() => setAiNotice(null), 4000);
-                    }
-                  }}
-                  title="Scan all notes from first to end for exact and non-exact duplicate wording"
-                  className={`ml-auto px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap inline-flex items-center gap-1.5 border transition-all cursor-pointer shrink-0 ${
-                    existingDuplicatesReport.duplicateNoteIds.length > 0
-                      ? showOnlyDuplicates
-                        ? "keep-white bg-amber-600 border-amber-500 !text-white shadow-md shadow-amber-900/25"
-                        : "bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-400 dark:bg-amber-950/45 dark:hover:bg-amber-900/60 dark:text-amber-200 dark:border-amber-500/50"
-                      : "bg-white hover:bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-900/60 dark:hover:bg-slate-800 dark:text-slate-300 dark:border-slate-800"
-                  }`}
-                >
-                  <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${
-                    existingDuplicatesReport.duplicateNoteIds.length > 0
-                      ? showOnlyDuplicates
-                        ? "text-white"
-                        : "text-amber-600 dark:text-amber-300"
-                      : "text-slate-500 dark:text-slate-400"
-                  }`} />
-                  <span>
-                    {existingDuplicatesReport.duplicateNoteIds.length > 0
-                      ? showOnlyDuplicates
-                        ? `Showing Duplicates (${existingDuplicatesReport.duplicateNoteIds.length})`
-                        : `Duplicates Found (${existingDuplicatesReport.duplicateNoteIds.length})`
-                      : "Check Duplicates"}
-                  </span>
-                </button>
-              </div>
-
               {highlightedNoteId && (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-300 dark:bg-amber-950/35 dark:border-amber-600/40 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-300 dark:bg-amber-950/35 dark:border-amber-600/40 text-xs">
                   <div className="flex items-center gap-2 text-amber-950 dark:text-amber-200 font-medium">
                     <BookOpen className="w-4 h-4 text-amber-600 dark:text-amber-300 shrink-0" />
-                    <span>Highlighted your saved review material below.</span>
+                    <span>Showing your saved review note below.</span>
                   </div>
                   <div className="flex items-center gap-2">
                     {jumpedFromTestReview && (
@@ -2556,42 +3315,112 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
               {/* Notes List */}
               {filteredNotes.length === 0 ? (
-                <div className="text-center py-16 px-4 border border-dashed border-violet-300 dark:border-violet-900/30 rounded-2xl bg-white dark:bg-violet-950/10">
-                  <BookOpen className="w-12 h-12 text-violet-500/60 dark:text-violet-400/40 mx-auto mb-3" />
-                  <h4 className="text-base font-semibold text-slate-900 dark:text-slate-200">No study material notes recorded yet</h4>
-                  <p className="text-xs text-slate-600 dark:text-slate-400 max-w-md mx-auto mt-1 mb-5">
-                    Click "AI Generate Guide" to automatically draft high-yield concepts tailored to this goal, or click "Add Note" to write your own cheat sheets.
+                <div className="text-center py-16 px-4 border border-dashed border-slate-300 dark:border-slate-800 rounded-2xl bg-white dark:bg-[#141727]">
+                  <BookOpen className="w-10 h-10 text-violet-500/60 dark:text-violet-400/50 mx-auto mb-3" />
+                  <h4 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                    {currentHub.notes.length === 0
+                      ? "No study notes saved yet"
+                      : "No matching notes found"}
+                  </h4>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 max-w-md mx-auto mt-1.5 mb-5">
+                    {currentHub.notes.length === 0
+                      ? 'Add your own notes, paste documents with images, or generate an AI study guide for this goal.'
+                      : "Try clearing your search or switching back to All notes."}
                   </p>
-                  <button
-                    onClick={() => handleAIGenerateStudyNotes()}
-                    disabled={isGeneratingNotes}
-                    className="keep-white px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 text-xs font-medium !text-white shadow-lg shadow-violet-900/20 dark:shadow-violet-900/30 inline-flex items-center gap-2"
-                  >
-                    <Sparkles className="w-4 h-4 text-amber-200 dark:text-amber-300" />
-                    <span>Generate Instant Study Guide</span>
-                  </button>
+                  {currentHub.notes.length === 0 ? (
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsAddingNote(true)}
+                        className="keep-white px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-xs font-medium !text-white inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Add Note</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAIGenerateStudyNotes()}
+                        disabled={isGeneratingNotes}
+                        className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Sparkles className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+                        <span>Generate AI Guide</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNoteSearchQuery("");
+                        setSelectedNoteCategory("all");
+                        setSelectedNoteGroup("all");
+                        setShowOnlyDuplicates(false);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
+                    >
+                      Reset Filters
+                    </button>
+                  )}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
                   {filteredNotes.map((note) => {
                     const dupRelations = existingDuplicatesReport.byNoteId[note.id] || [];
                     const topDup = dupRelations[0];
                     const isDupHighlighted = Boolean(topDup);
+                    const hasManualExpand = typeof expandedNoteIds[note.id] === "boolean";
+                    const isCardExpanded = hasManualExpand
+                      ? expandedNoteIds[note.id]
+                      : allNotesExpanded ||
+                        highlightedNoteId === note.id ||
+                        (showOnlyDuplicates && isDupHighlighted) ||
+                        currentHub.notes.length <= 2;
+
+                    const isQuestionCard =
+                      note.category === "qa" ||
+                      note.category === "fill_in_blank" ||
+                      note.category === "multiple_choice" ||
+                      note.category === "multiple_select" ||
+                      note.category === "true_false" ||
+                      Boolean(note.question && note.answer);
+
+                    const displayHeading =
+                      isQuestionCard
+                        ? note.question || note.title
+                        : note.category === "definition" || (note.term && note.definition)
+                        ? note.term || note.title
+                        : note.title;
+
+                    const summaryPreviewText =
+                      note.category === "definition" || (note.term && note.definition)
+                        ? note.definition || note.content
+                        : note.category === "multiple_choice" || note.category === "multiple_select"
+                        ? Array.isArray(note.options) && note.options.length > 0
+                          ? note.options.map((opt, idx) => `${String.fromCharCode(65 + idx)}) ${opt}`).join(" · ")
+                          : note.content
+                        : note.category === "qa"
+                        ? note.answer || note.content
+                        : note.category === "url"
+                        ? note.urlNotes || note.url || note.content
+                        : note.content;
+
+                    const imageCount = note.screenshots?.length || 0;
+
                     return (
                     <div
                       key={note.id}
                       data-note-id={note.id}
-                      className={`p-5 rounded-xl bg-white dark:bg-[#141727] border transition-all flex flex-col justify-between group shadow-sm dark:shadow-lg ${
+                      className={`p-5 rounded-xl bg-white dark:bg-[#141727] border transition-colors flex flex-col justify-between group ${
                         highlightedNoteId === note.id
-                          ? "border-amber-500 ring-2 ring-amber-400/60 dark:border-amber-400 dark:ring-amber-400/40 shadow-amber-500/15"
+                          ? "border-amber-500 ring-2 ring-amber-400/50 dark:border-amber-400 dark:ring-amber-400/35"
                           : isDupHighlighted
-                          ? "border-amber-400 bg-amber-50/40 dark:bg-amber-950/15 dark:border-amber-500/55 ring-1 ring-amber-400/35"
-                          : "border-slate-200 dark:border-violet-900/30 hover:border-violet-400 dark:hover:border-violet-700/50"
+                          ? "border-amber-400 bg-amber-50/35 dark:bg-amber-950/15 dark:border-amber-500/50"
+                          : "border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
                       }`}
                     >
                       <div className="space-y-3">
                         {topDup && (
-                          <div className="px-2.5 py-2 rounded-lg bg-amber-100/80 dark:bg-amber-950/55 border border-amber-300 dark:border-amber-500/40 space-y-1 text-[11px]">
+                          <div className="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-600/40 space-y-1 text-[11px]">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0 flex-1 text-amber-950 dark:text-amber-200">
                                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-300 shrink-0" />
@@ -2622,7 +3451,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 {topDup.matchedWords.slice(0, 6).map((mw, mIdx) => (
                                   <mark
                                     key={mIdx}
-                                    className="px-1 py-0.2 rounded bg-amber-300/80 text-amber-950 dark:bg-amber-400/30 dark:text-amber-100 font-medium"
+                                    className="px-1 rounded bg-amber-300/80 text-amber-950 dark:bg-amber-400/30 dark:text-amber-100 font-medium"
                                   >
                                     {mw}
                                   </mark>
@@ -2631,59 +3460,81 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                             )}
                           </div>
                         )}
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold border ${
-                              note.category === "fill_in_blank"
-                                ? "bg-teal-100 text-teal-800 border-teal-300 dark:bg-teal-900/40 dark:text-teal-300 dark:border-teal-700/30"
-                                : note.category === "multiple_choice"
-                                ? "bg-indigo-100 text-indigo-800 border-indigo-300 dark:bg-indigo-900/40 dark:text-indigo-300 dark:border-indigo-700/30"
-                                : note.category === "true_false"
-                                ? "bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-900/40 dark:text-purple-300 dark:border-purple-700/30"
-                                : note.category === "qa"
-                                ? "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700/30"
-                                : note.category === "definition"
-                                ? "bg-sky-100 text-sky-800 border-sky-300 dark:bg-sky-900/40 dark:text-sky-300 dark:border-sky-700/30"
-                                : note.category === "table"
-                                ? "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-700/30"
-                                : note.category === "url"
-                                ? "bg-cyan-100 text-cyan-800 border-cyan-300 dark:bg-cyan-900/40 dark:text-cyan-300 dark:border-cyan-700/30"
-                                : "bg-violet-100 text-violet-800 border-violet-300 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-700/30"
-                            }`}>
-                              {formatCategoryLabel(note.category)}
-                            </span>
-                            {note.chapterTitle && (
-                              <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
-                                {note.chapterTitle}
+
+                        {/* Clean Zero-Pill Header + Actions */}
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                              <span className={`font-semibold ${
+                                note.category === "fill_in_blank"
+                                  ? "text-teal-700 dark:text-teal-300"
+                                  : note.category === "multiple_choice"
+                                  ? "text-indigo-700 dark:text-indigo-300"
+                                  : note.category === "multiple_select"
+                                  ? "text-blue-700 dark:text-blue-300"
+                                  : note.category === "true_false"
+                                  ? "text-purple-700 dark:text-purple-300"
+                                  : note.category === "qa"
+                                  ? "text-amber-700 dark:text-amber-300"
+                                  : note.category === "definition"
+                                  ? "text-sky-700 dark:text-sky-300"
+                                  : note.category === "table"
+                                  ? "text-emerald-700 dark:text-emerald-300"
+                                  : note.category === "url"
+                                  ? "text-cyan-700 dark:text-cyan-300"
+                                  : "text-violet-700 dark:text-violet-300"
+                              }`}>
+                                {formatCategoryLabel(note.category)}
                               </span>
-                            )}
-                            {note.sourceFileName && (
-                              <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-cyan-50 text-cyan-800 border border-cyan-200 dark:bg-cyan-950/60 dark:text-cyan-300 dark:border-cyan-700/35">
-                                {note.sourceFileName}
-                              </span>
-                            )}
-                            {!(
-                              (note.category === "fill_in_blank" || note.category === "multiple_choice" || note.category === "true_false" || note.category === "qa" || (note.question && note.answer)) &&
-                              note.title === (note.question || note.title)
-                            ) &&
-                              !(
-                                (note.category === "definition" || (note.term && note.definition)) &&
-                                note.title === (note.term || note.title)
-                              ) && (
-                                <h4 className="text-base font-bold text-slate-900 dark:text-white mt-2 leading-snug">
-                                  {topDup ? (
-                                    <HighlightedDuplicateText text={note.title} matchedWords={topDup.matchedWords} />
-                                  ) : (
-                                    note.title
-                                  )}
-                                </h4>
+                              {note.chapterTitle && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="truncate max-w-[160px]">{note.chapterTitle}</span>
+                                </>
                               )}
+                              {note.sourceFileName && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="truncate max-w-[140px]">{note.sourceFileName}</span>
+                                </>
+                              )}
+                              {imageCount > 0 && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="tabular-nums">{imageCount} {imageCount === 1 ? "image" : "images"}</span>
+                                </>
+                              )}
+                            </div>
+
+                            <h4
+                              onClick={() =>
+                                setExpandedNoteIds(prev => ({ ...prev, [note.id]: !isCardExpanded }))
+                              }
+                              className="text-[15px] font-semibold text-slate-900 dark:text-white leading-snug cursor-pointer hover:text-violet-700 dark:hover:text-violet-300 transition-colors"
+                            >
+                              {topDup ? (
+                                <HighlightedDuplicateText text={displayHeading} matchedWords={topDup.matchedWords} />
+                              ) : (
+                                displayHeading
+                              )}
+                            </h4>
                           </div>
 
-                          <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center gap-0.5 shrink-0">
                             <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedNoteIds(prev => ({ ...prev, [note.id]: !isCardExpanded }))
+                              }
+                              className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                              title={isCardExpanded ? "Collapse note" : "Expand note"}
+                            >
+                              {isCardExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => handleCopyNoteContent(note)}
-                              className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 rounded-lg transition-colors"
+                              className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                               title="Copy to clipboard"
                             >
                               {copiedNoteId === note.id ? (
@@ -2693,14 +3544,65 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               )}
                             </button>
                             <button
+                              type="button"
                               onClick={() => handleDeleteNote(note.id)}
-                              className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-rose-400 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                              className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-rose-400 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                               title="Delete note"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
                         </div>
+
+                        {!isCardExpanded ? (
+                          <div className="space-y-3 pt-1">
+                            {summaryPreviewText && (
+                              <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 leading-relaxed">
+                                {summaryPreviewText}
+                              </p>
+                            )}
+
+                            {note.screenshots && note.screenshots.length > 0 && (
+                              <div className="flex items-center gap-2 overflow-hidden">
+                                {note.screenshots.slice(0, 3).map((src, sIdx) => (
+                                  <button
+                                    key={`${note.id}_thumb_${sIdx}`}
+                                    type="button"
+                                    onClick={() => setLightboxScreenshotUrl(src)}
+                                    className="w-16 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 hover:border-violet-500 shrink-0 cursor-zoom-in"
+                                    title="Click to zoom"
+                                  >
+                                    <img src={src} alt={`${note.title} preview ${sIdx + 1}`} className="w-full h-full object-cover" />
+                                  </button>
+                                ))}
+                                {note.screenshots.length > 3 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedNoteIds(prev => ({ ...prev, [note.id]: true }))}
+                                    className="px-2.5 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white shrink-0 cursor-pointer tabular-nums"
+                                  >
+                                    +{note.screenshots.length - 3} more
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-between pt-1">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedNoteIds(prev => ({ ...prev, [note.id]: true }))}
+                                className="text-xs font-medium text-violet-700 hover:text-violet-900 dark:text-violet-300 dark:hover:text-violet-200 inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <span>{isQuestionCard ? "Practice & Reveal Answer" : "Open Full Note"}</span>
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                              <span className="text-[11px] text-slate-400 tabular-nums">
+                                {new Date(note.updatedAt).toLocaleDateString()}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
 
                         {/* Note Body */}
                         {note.category === "fill_in_blank" ? (
@@ -2985,6 +3887,210 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                           {resolvedCorrectIdx >= 0 && mcqOptions[resolvedCorrectIdx]
                                             ? `${String.fromCharCode(65 + resolvedCorrectIdx)}) ${mcqOptions[resolvedCorrectIdx]}`
                                             : note.answer}
+                                        </p>
+                                      )}
+                                      {note.explanation && (
+                                        <div className="pt-2 border-t border-emerald-200 dark:border-emerald-800/30 space-y-1">
+                                          <span className="text-[10px] font-bold uppercase tracking-wider text-violet-700 dark:text-violet-300 block">
+                                            Explanation
+                                          </span>
+                                          <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-line leading-relaxed">
+                                            {note.explanation}
+                                          </p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()
+                        ) : note.category === "multiple_select" ? (
+                          (() => {
+                            const multiOptions = Array.isArray(note.options) ? note.options : [];
+                            const resolvedCorrectIndices = resolveNoteCorrectIndices(note, multiOptions);
+                            const selectedIndices = noteMultiSelectChoices[note.id] || [];
+                            const isChecked = Boolean(checkedMultiSelectNotes[note.id]);
+                            const isRevealed = Boolean(revealedMcqAnswers[note.id]);
+                            const showResult = isChecked || isRevealed;
+                            const sortedSelected = [...selectedIndices].sort((a, b) => a - b);
+                            const isExactMatch =
+                              resolvedCorrectIndices.length > 0 &&
+                              sortedSelected.length === resolvedCorrectIndices.length &&
+                              resolvedCorrectIndices.every((val, i) => sortedSelected[i] === val);
+                            const correctLabelsSummary =
+                              resolvedCorrectIndices.length > 0
+                                ? resolvedCorrectIndices
+                                    .map(i => `${String.fromCharCode(65 + i)}) ${multiOptions[i]}`)
+                                    .join(", ")
+                                : note.answer || "";
+
+                            return (
+                              <div className="space-y-2.5">
+                                <div className="bg-blue-50/90 dark:bg-blue-950/30 p-3 rounded-lg border border-blue-200 dark:border-blue-800/35 space-y-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-800 dark:text-blue-300 flex items-center gap-1">
+                                      <HelpCircle className="w-3 h-3" />
+                                      Multiple Select
+                                    </span>
+                                    <span className="text-[10px] font-semibold text-blue-700 dark:text-blue-300">
+                                      Select all that apply
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-slate-900 dark:text-slate-100 whitespace-pre-line leading-relaxed">
+                                    {note.question || note.title}
+                                  </p>
+                                </div>
+
+                                {multiOptions.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    {multiOptions.map((opt, optIdx) => {
+                                      const isSelected = selectedIndices.includes(optIdx);
+                                      const isCorrectOpt = resolvedCorrectIndices.includes(optIdx);
+                                      const isWrongSelected = showResult && isSelected && !isCorrectOpt;
+
+                                      let optionBtnClasses =
+                                        "bg-white dark:bg-slate-900/75 border-slate-200 dark:border-slate-700/70 text-slate-800 dark:text-slate-200 hover:border-blue-400 dark:hover:border-blue-500/60";
+                                      let checkBoxClasses =
+                                        "bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-transparent";
+
+                                      if (showResult && isCorrectOpt) {
+                                        optionBtnClasses =
+                                          "bg-emerald-50 dark:bg-emerald-950/35 border-emerald-400 dark:border-emerald-600/60 text-emerald-950 dark:text-emerald-100";
+                                        checkBoxClasses = isSelected
+                                          ? "keep-white bg-emerald-600 border-emerald-600 text-white !text-white"
+                                          : "bg-emerald-100 dark:bg-emerald-900/50 border-emerald-500 text-emerald-700 dark:text-emerald-300";
+                                      } else if (isWrongSelected) {
+                                        optionBtnClasses =
+                                          "bg-rose-50 dark:bg-rose-950/35 border-rose-400 dark:border-rose-600/60 text-rose-950 dark:text-rose-100";
+                                        checkBoxClasses =
+                                          "keep-white bg-rose-600 border-rose-600 text-white !text-white";
+                                      } else if (isSelected) {
+                                        optionBtnClasses =
+                                          "bg-blue-50 dark:bg-blue-950/35 border-blue-400 dark:border-blue-600/60 text-blue-950 dark:text-blue-100";
+                                        checkBoxClasses =
+                                          "keep-white bg-blue-600 border-blue-600 text-white !text-white";
+                                      }
+
+                                      return (
+                                        <button
+                                          key={optIdx}
+                                          type="button"
+                                          onClick={() => {
+                                            setNoteMultiSelectChoices(prev => {
+                                              const current = prev[note.id] || [];
+                                              const next = current.includes(optIdx)
+                                                ? current.filter(i => i !== optIdx)
+                                                : [...current, optIdx].sort((a, b) => a - b);
+                                              return { ...prev, [note.id]: next };
+                                            });
+                                            if (checkedMultiSelectNotes[note.id]) {
+                                              setCheckedMultiSelectNotes(prev => ({ ...prev, [note.id]: false }));
+                                            }
+                                          }}
+                                          className={`w-full text-left px-2.5 py-2 rounded-lg border text-xs flex items-center gap-2 transition-all cursor-pointer ${optionBtnClasses}`}
+                                        >
+                                          <span
+                                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${checkBoxClasses}`}
+                                          >
+                                            {(isSelected || (showResult && isCorrectOpt)) && (
+                                              <Check className="w-3 h-3" />
+                                            )}
+                                          </span>
+                                          <span className="text-[10px] font-mono font-bold opacity-75 shrink-0">
+                                            {String.fromCharCode(65 + optIdx)}.
+                                          </span>
+                                          <span className="flex-1 min-w-0 leading-snug">{opt}</span>
+                                          {showResult && isCorrectOpt && (
+                                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                          )}
+                                          {isWrongSelected && (
+                                            <XCircle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
+                                          )}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+
+                                <div className="bg-emerald-50/90 dark:bg-emerald-950/25 p-3 rounded-lg border border-emerald-200 dark:border-emerald-800/30 space-y-1.5">
+                                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1">
+                                      <CheckCircle2 className="w-3 h-3" />
+                                      Answer
+                                    </span>
+                                    <div className="flex items-center gap-2.5">
+                                      {selectedIndices.length > 0 && !isChecked && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setCheckedMultiSelectNotes(prev => ({ ...prev, [note.id]: true }))
+                                          }
+                                          className="keep-white px-2.5 py-0.5 rounded-md bg-blue-600 hover:bg-blue-500 text-[10px] font-semibold !text-white cursor-pointer"
+                                        >
+                                          Check Answer
+                                        </button>
+                                      )}
+                                      {(selectedIndices.length > 0 || isChecked) && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setNoteMultiSelectChoices(prev => ({ ...prev, [note.id]: [] }));
+                                            setCheckedMultiSelectNotes(prev => ({ ...prev, [note.id]: false }));
+                                            setRevealedMcqAnswers(prev => ({ ...prev, [note.id]: false }));
+                                          }}
+                                          className="text-[10px] font-semibold text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white underline cursor-pointer"
+                                        >
+                                          Reset
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setRevealedMcqAnswers(prev => ({
+                                            ...prev,
+                                            [note.id]: !prev[note.id]
+                                          }))
+                                        }
+                                        className="text-[10px] font-semibold text-emerald-700 hover:text-emerald-900 dark:text-emerald-300 dark:hover:text-emerald-200 underline cursor-pointer"
+                                      >
+                                        {isRevealed ? "Hide Answer" : "Show Answer"}
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {!showResult ? (
+                                    <p className="text-xs italic text-slate-600 dark:text-slate-400">
+                                      {selectedIndices.length > 0
+                                        ? `${selectedIndices.length} selected — click "Check Answer" or select more.`
+                                        : 'Check all matching options above, then click "Check Answer" or "Show Answer".'}
+                                    </p>
+                                  ) : (
+                                    <div className="space-y-1.5">
+                                      {isChecked && resolvedCorrectIndices.length > 0 && (
+                                        <p
+                                          className={`text-[11px] font-medium flex items-center gap-1 ${
+                                            isExactMatch
+                                              ? "text-emerald-700 dark:text-emerald-300"
+                                              : "text-rose-700 dark:text-rose-300"
+                                          }`}
+                                        >
+                                          {isExactMatch ? (
+                                            <>
+                                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                              <span>Correct! You selected every right answer.</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <XCircle className="w-3.5 h-3.5 shrink-0" />
+                                              <span>Not quite — correct answers: {correctLabelsSummary}</span>
+                                            </>
+                                          )}
+                                        </p>
+                                      )}
+                                      {(isRevealed || multiOptions.length === 0) && correctLabelsSummary && (
+                                        <p className="text-xs font-semibold text-emerald-900 dark:text-emerald-200 whitespace-pre-line leading-relaxed">
+                                          {correctLabelsSummary}
                                         </p>
                                       )}
                                       {note.explanation && (
@@ -3378,44 +4484,64 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
                         {/* Attached Screenshots */}
                         {note.screenshots && note.screenshots.length > 0 && (
-                          <div className={`grid gap-2 pt-1 ${note.screenshots.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
-                            {note.screenshots.map((src, sIdx) => (
-                              <button
-                                key={`${note.id}_ss_${sIdx}`}
-                                type="button"
-                                onClick={() => setLightboxScreenshotUrl(src)}
-                                className="relative group rounded-lg overflow-hidden border border-slate-300 dark:border-slate-800 hover:border-violet-500/60 bg-slate-100 dark:bg-black/50 transition-colors cursor-zoom-in"
-                                title="Click to view screenshot full size"
-                              >
-                                <img
-                                  src={src}
-                                  alt={`${note.title} screenshot ${sIdx + 1}`}
-                                  className="w-full max-h-44 object-cover"
-                                />
-                              </button>
-                            ))}
+                          <div className="space-y-1.5 pt-1">
+                            {note.screenshots.length > 4 && (
+                              <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                {note.screenshots.length} stored images (click any to zoom)
+                              </div>
+                            )}
+                            <div
+                              className={`grid gap-2 ${
+                                note.screenshots.length === 1
+                                  ? "grid-cols-1"
+                                  : note.screenshots.length > 4
+                                  ? "grid-cols-2 sm:grid-cols-3 max-h-72 overflow-y-auto pr-1 custom-scrollbar"
+                                  : "grid-cols-2"
+                              }`}
+                            >
+                              {note.screenshots.map((src, sIdx) => (
+                                <button
+                                  key={`${note.id}_ss_${sIdx}`}
+                                  type="button"
+                                  onClick={() => setLightboxScreenshotUrl(src)}
+                                  className="relative group rounded-lg overflow-hidden border border-slate-300 dark:border-slate-800 hover:border-violet-500/60 bg-slate-100 dark:bg-black/50 transition-colors cursor-zoom-in"
+                                  title="Click to view image full size"
+                                >
+                                  <img
+                                    src={src}
+                                    alt={`${note.title} image ${sIdx + 1}`}
+                                    className={`w-full object-cover ${note.screenshots!.length > 4 ? "h-28" : "max-h-44"}`}
+                                  />
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         )}
 
-                        {/* Key Terms */}
+                        {/* Key Terms (Clean Unboxed Inline Tags) */}
                         {note.keyTerms && note.keyTerms.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 pt-1">
+                          <div className="flex flex-wrap gap-2 pt-1 text-[11px] text-indigo-600 dark:text-indigo-300">
                             {note.keyTerms.map((term, tIdx) => (
-                              <span
-                                key={tIdx}
-                                className="text-[10px] px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 dark:bg-indigo-950/50 dark:text-indigo-300 dark:border-indigo-800/30"
-                              >
-                                #{term}
-                              </span>
+                              <span key={tIdx}>#{term}</span>
                             ))}
                           </div>
                         )}
+                          </>
+                        )}
                       </div>
 
-                      <div className="text-[10px] text-slate-500 pt-3 border-t border-slate-200 dark:border-slate-800/50 flex items-center justify-between mt-3">
-                        <span>Updated: {new Date(note.updatedAt).toLocaleDateString()}</span>
-                        <span className="text-slate-500 dark:text-slate-400 font-mono">ID: {note.id.slice(-6)}</span>
-                      </div>
+                      {isCardExpanded && (
+                        <div className="text-[11px] text-slate-400 pt-3 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between mt-3 tabular-nums">
+                          <span>Updated {new Date(note.updatedAt).toLocaleDateString()}</span>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedNoteIds(prev => ({ ...prev, [note.id]: false }))}
+                            className="text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 cursor-pointer"
+                          >
+                            Collapse
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                   })}
@@ -3489,13 +4615,18 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
 
                       {(() => {
                         const missedItems = activeTest.questions
-                          .map((q, idx) => ({ q, idx, userChoice: testUserAnswers[idx] }))
-                          .filter(item => item.userChoice !== item.q.correctIndex);
+                          .map((q, idx) => ({
+                            q,
+                            idx,
+                            userChoice: testUserAnswers[idx],
+                            userMulti: testUserMultiAnswers[idx]
+                          }))
+                          .filter(item => !isQuestionAnswerCorrect(item.q, item.userChoice, item.userMulti));
 
-                        const missedPayload = missedItems.map(({ q, userChoice }) => ({
+                        const missedPayload = missedItems.map(({ q, userChoice, userMulti }) => ({
                           question: q.question,
-                          correctAnswer: q.options[q.correctIndex] || "",
-                          userAnswer: userChoice !== undefined ? (q.options[userChoice] || "") : "",
+                          correctAnswer: formatQuestionCorrectAnswerText(q),
+                          userAnswer: formatQuestionUserAnswerText(q, userChoice, userMulti),
                           explanation: q.explanation || ""
                         }));
 
@@ -3535,12 +4666,14 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 </div>
 
                                 <div className="space-y-2.5">
-                                  {missedItems.map(({ q, idx, userChoice }) => {
+                                  {missedItems.map(({ q, idx, userChoice, userMulti }) => {
                                     const qKey = `score_${q.id || idx}`;
+                                    const correctAnswerText = formatQuestionCorrectAnswerText(q);
+                                    const userAnswerText = formatQuestionUserAnswerText(q, userChoice, userMulti);
                                     const rawMatched = findMatchingNotesForQuestion(
                                       q.question,
                                       q.explanation || "",
-                                      q.options[q.correctIndex] || "",
+                                      correctAnswerText,
                                       currentHub.notes,
                                       2
                                     );
@@ -3561,13 +4694,13 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                           Q{idx + 1}: {q.question}
                                         </p>
                                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-                                          {userChoice !== undefined && q.options[userChoice] && (
+                                          {userAnswerText && (
                                             <span className="text-rose-700 dark:text-rose-300">
-                                              Your answer: <strong>{q.options[userChoice]}</strong>
+                                              Your answer: <strong>{userAnswerText}</strong>
                                             </span>
                                           )}
                                           <span className="text-emerald-700 dark:text-emerald-300">
-                                            Correct: <strong>{q.options[q.correctIndex]}</strong>
+                                            Correct: <strong>{correctAnswerText}</strong>
                                           </span>
                                         </div>
 
@@ -3662,8 +4795,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                         qKey,
                                                         {
                                                           question: q.question,
-                                                          correctAnswer: q.options[q.correctIndex] || "",
-                                                          userAnswer: userChoice !== undefined ? q.options[userChoice] || "" : "",
+                                                          correctAnswer: correctAnswerText,
+                                                          userAnswer: userAnswerText,
                                                           explanation: q.explanation || ""
                                                         },
                                                         style
@@ -3742,6 +4875,19 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                     <div className="p-6 rounded-2xl bg-white border border-slate-200 dark:bg-[#141727] dark:border-indigo-900/30 space-y-6 shadow-md dark:shadow-xl">
                       {(() => {
                         const q = activeTest.questions[currentQuestionIndex];
+                        const isMultiSelect = isMultiSelectQuestion(q);
+                        const expectedCorrectIndices = getQuestionCorrectIndices(q);
+                        const isCurrentCorrect = isQuestionAnswerCorrect(
+                          q,
+                          selectedOptionIndex ?? undefined,
+                          selectedMultiIndices
+                        );
+                        const currentCorrectText = formatQuestionCorrectAnswerText(q);
+                        const currentUserAnswerText = formatQuestionUserAnswerText(
+                          q,
+                          selectedOptionIndex ?? undefined,
+                          selectedMultiIndices
+                        );
                         return (
                           <>
                             <div className="space-y-2">
@@ -3749,7 +4895,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 <span className="text-xs font-mono font-semibold text-indigo-700 dark:text-indigo-400">
                                   Question {currentQuestionIndex + 1}
                                 </span>
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {isMultiSelect && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded font-semibold border bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-700/40">
+                                      Select all that apply
+                                    </span>
+                                  )}
                                   {q.sourceLabel && (
                                     <span
                                       className={`text-[10px] px-2 py-0.5 rounded font-semibold border ${
@@ -3777,17 +4928,21 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               </h4>
                             </div>
 
-                            {/* Multiple Choice Options */}
+                            {/* Answer Options */}
                             <div className="space-y-2.5">
                               {q.options.map((option, optIdx) => {
-                                const isSelected = selectedOptionIndex === optIdx;
-                                const isCorrect = optIdx === q.correctIndex;
+                                const isSelected = isMultiSelect
+                                  ? selectedMultiIndices.includes(optIdx)
+                                  : selectedOptionIndex === optIdx;
+                                const isCorrect = expectedCorrectIndices.includes(optIdx);
                                 
                                 let btnClasses = "w-full text-left p-4 rounded-xl border text-sm font-medium transition-all flex items-center justify-between ";
 
                                 if (!isAnswerSubmitted) {
                                   btnClasses += isSelected
-                                    ? "bg-indigo-50 border-indigo-500 text-indigo-950 shadow-md shadow-indigo-500/10 dark:bg-indigo-600/20 dark:border-indigo-500 dark:text-white dark:shadow-indigo-900/30"
+                                    ? isMultiSelect
+                                      ? "bg-blue-50 border-blue-500 text-blue-950 shadow-md shadow-blue-500/10 dark:bg-blue-600/20 dark:border-blue-500 dark:text-white dark:shadow-blue-900/30"
+                                      : "bg-indigo-50 border-indigo-500 text-indigo-950 shadow-md shadow-indigo-500/10 dark:bg-indigo-600/20 dark:border-indigo-500 dark:text-white dark:shadow-indigo-900/30"
                                     : "bg-slate-50 border-slate-200 text-slate-800 hover:border-slate-300 hover:bg-slate-100 dark:bg-slate-900/60 dark:border-slate-800/80 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-900";
                                 } else {
                                   if (isCorrect) {
@@ -3802,11 +4957,30 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                 return (
                                   <button
                                     key={optIdx}
-                                    onClick={() => handleSelectOption(optIdx)}
+                                    onClick={() => (isMultiSelect ? handleToggleMultiOption(optIdx) : handleSelectOption(optIdx))}
                                     disabled={isAnswerSubmitted}
                                     className={btnClasses}
                                   >
                                     <div className="flex items-center gap-3">
+                                      {isMultiSelect && (
+                                        <span
+                                          className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${
+                                            isAnswerSubmitted && isCorrect
+                                              ? isSelected
+                                                ? "keep-white bg-emerald-600 border-emerald-600 text-white !text-white"
+                                                : "bg-emerald-100 dark:bg-emerald-900/50 border-emerald-500 text-emerald-700 dark:text-emerald-300"
+                                              : isAnswerSubmitted && isSelected && !isCorrect
+                                              ? "keep-white bg-rose-600 border-rose-600 text-white !text-white"
+                                              : isSelected
+                                              ? "keep-white bg-blue-600 border-blue-600 text-white !text-white"
+                                              : "bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-600 text-transparent"
+                                          }`}
+                                        >
+                                          {(isSelected || (isAnswerSubmitted && isCorrect)) && (
+                                            <Check className="w-3.5 h-3.5" />
+                                          )}
+                                        </span>
+                                      )}
                                       <span className="w-6 h-6 rounded-lg bg-white border border-slate-300 text-slate-700 dark:bg-black/40 dark:border-white/10 dark:text-slate-200 flex items-center justify-center text-xs font-mono font-bold shrink-0">
                                         {String.fromCharCode(65 + optIdx)}
                                       </span>
@@ -3837,12 +5011,12 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                   </p>
                                 </div>
 
-                                {selectedOptionIndex !== null && selectedOptionIndex !== q.correctIndex && (() => {
+                                {!isCurrentCorrect && (() => {
                                   const qKey = `active_${q.id || currentQuestionIndex}`;
                                   const rawMatched = findMatchingNotesForQuestion(
                                     q.question,
                                     q.explanation || "",
-                                    q.options[q.correctIndex] || "",
+                                    currentCorrectText,
                                     currentHub.notes,
                                     3
                                   );
@@ -3869,8 +5043,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                               [
                                                 {
                                                   question: q.question,
-                                                  correctAnswer: q.options[q.correctIndex] || "",
-                                                  userAnswer: q.options[selectedOptionIndex] || "",
+                                                  correctAnswer: currentCorrectText,
+                                                  userAnswer: currentUserAnswerText,
                                                   explanation: q.explanation || ""
                                                 }
                                               ],
@@ -3977,8 +5151,8 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                                                     qKey,
                                                     {
                                                       question: q.question,
-                                                      correctAnswer: q.options[q.correctIndex] || "",
-                                                      userAnswer: q.options[selectedOptionIndex] || "",
+                                                      correctAnswer: currentCorrectText,
+                                                      userAnswer: currentUserAnswerText,
                                                       explanation: q.explanation || ""
                                                     },
                                                     style
@@ -4023,7 +5197,7 @@ export const GoalKnowledgeHubModal: React.FC<GoalKnowledgeHubModalProps> = ({
                               {!isAnswerSubmitted ? (
                                 <button
                                   onClick={handleSubmitQuestionAnswer}
-                                  disabled={selectedOptionIndex === null}
+                                  disabled={isMultiSelect ? selectedMultiIndices.length === 0 : selectedOptionIndex === null}
                                   className="keep-white px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white !text-white shadow-lg shadow-indigo-500/20 dark:shadow-indigo-900/40 disabled:opacity-50 transition-all ml-auto"
                                 >
                                   Submit Answer

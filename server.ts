@@ -2,6 +2,8 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import dns from "dns";
+import net from "net";
 import crypto from "crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
@@ -28,8 +30,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(express.json({ limit: "25mb" }));
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
 // Initialize Gemini client lazily
 let aiClient: GoogleGenAI | null = null;
@@ -85,9 +87,63 @@ function isGeminiKeyError(err: any): boolean {
   return (status === 403 || status === 400 || /\b(403|400)\b/.test(msg)) && /key|api/i.test(msg);
 }
 
+// Track temporary per-model cooldowns after 429 rate limits or 503 high-demand spikes
+// so consecutive requests automatically route to healthy models first.
+const geminiModelCooldownUntil = new Map<string, number>();
+
+function parseGeminiRetryDelayMs(err: any): number | null {
+  const msg = String(err?.message || err || "");
+  const match = msg.match(/retry(?:\s+in|\s+after)?\s+([\d.]+)\s*(ms|s)\b/i);
+  if (match) {
+    const val = Number(match[1]);
+    if (Number.isFinite(val) && val > 0) {
+      return match[2].toLowerCase() === "ms" ? Math.round(val) : Math.round(val * 1000);
+    }
+  }
+  return null;
+}
+
+function markGeminiModelCooldown(model: string, err: any) {
+  if (!model || isGeminiKeyError(err)) return;
+  const parsedDelay = parseGeminiRetryDelayMs(err);
+  let cooldownMs = 0;
+  if (isGeminiQuotaOrRateLimitError(err)) {
+    cooldownMs = parsedDelay ? Math.min(180_000, Math.max(15_000, parsedDelay)) : 65_000;
+  } else if (isGeminiDemandOrTransientError(err)) {
+    cooldownMs = parsedDelay ? Math.min(60_000, Math.max(10_000, parsedDelay)) : 20_000;
+  }
+  if (cooldownMs > 0) {
+    geminiModelCooldownUntil.set(model, Date.now() + cooldownMs);
+  }
+}
+
+function clearGeminiModelCooldown(model: string) {
+  geminiModelCooldownUntil.delete(model);
+}
+
+function orderModelsByAvailability(models: string[]): string[] {
+  const unique = Array.from(new Set(models.filter(Boolean)));
+  const now = Date.now();
+  const ready: string[] = [];
+  const cooling: Array<{ model: string; until: number }> = [];
+
+  for (const m of unique) {
+    const until = geminiModelCooldownUntil.get(m) || 0;
+    if (until <= now) {
+      if (until > 0) geminiModelCooldownUntil.delete(m);
+      ready.push(m);
+    } else {
+      cooling.push({ model: m, until });
+    }
+  }
+
+  cooling.sort((a, b) => a.until - b.until);
+  return [...ready, ...cooling.map((c) => c.model)];
+}
+
 /**
- * Resilient Gemini Content Generator with multi-tier model fallback.
- * Cascades from gemini-4-hydrogen -> gemini-3.1-flash-lite.
+ * Resilient Gemini Content Generator with cooldown-aware multi-tier model fallback.
+ * Cascades between gemini-4-hydrogen and gemini-3.1-flash-lite.
  */
 async function generateWithFallback(params: {
   contents: any;
@@ -102,11 +158,10 @@ async function generateWithFallback(params: {
   const ai = getAi();
   const requestTimeout = params.timeoutMs || 4000;
 
-  const modelChain = [
+  const uniqueModels = orderModelsByAvailability([
     params.primaryModel || "gemini-4-hydrogen",
     params.fallbackModel || "gemini-3.1-flash-lite"
-  ];
-  const uniqueModels = Array.from(new Set(modelChain));
+  ]);
 
   for (let i = 0; i < uniqueModels.length; i++) {
     const model = uniqueModels[i];
@@ -126,19 +181,17 @@ async function generateWithFallback(params: {
       clearTimeout(timer);
 
       if (result && result.text) {
+        clearGeminiModelCooldown(model);
         return result;
       }
     } catch (err: any) {
       clearTimeout(timer);
+      markGeminiModelCooldown(model, err);
       const isLast = i === uniqueModels.length - 1;
-      const isDemandSpike = isGeminiDemandOrTransientError(err) || isGeminiQuotaOrRateLimitError(err);
-
-      if (!isLast) {
-        const nextModel = uniqueModels[i + 1];
-        console.info(`[AI Service] Model ${model} ${isDemandSpike ? "busy (429/503/timeout)" : "unavailable"}. Transitioning to ${nextModel}...`);
+      if (!isLast && !isGeminiKeyError(err)) {
         await new Promise((r) => setTimeout(r, isGeminiDemandOrTransientError(err) ? 600 : 250));
       } else {
-        console.info(`[AI Service] All cloud models unavailable (${isQuotaOrRateLimitLabel(err)}). Using fallback where available.`);
+        break;
       }
     }
   }
@@ -147,18 +200,18 @@ async function generateWithFallback(params: {
 }
 
 function isQuotaOrRateLimitLabel(err: any): string {
-  if (isGeminiQuotaOrRateLimitError(err)) return "quota/rate-limit 429";
-  if (isGeminiDemandOrTransientError(err)) return "temporary high demand (503)";
-  if (isGeminiKeyError(err)) return "API key error";
+  if (isGeminiQuotaOrRateLimitError(err)) return "rate/quota limit";
+  if (isGeminiDemandOrTransientError(err)) return "high demand";
+  if (isGeminiKeyError(err)) return "API key configuration";
   const raw = err?.message ? String(err.message) : "";
-  if (!raw || raw.trim().startsWith("{")) return "temporary service error";
+  if (!raw || raw.trim().startsWith("{")) return "temporary service notice";
   return raw.slice(0, 120);
 }
 
 /**
- * Generates Gemini content across model tiers with exponential-backoff retries
- * for transient 503/high-demand errors, and rethrows final errors so endpoints can
- * surface accurate HTTP status codes (e.g. 429 RESOURCE_EXHAUSTED, 503 UNAVAILABLE).
+ * Generates Gemini content across cooldown-prioritized model tiers with
+ * exponential-backoff retries for transient spikes, and rethrows final errors
+ * so endpoints can surface accurate HTTP status codes (429 / 503 / 401).
  */
 async function generateContentWithModelFallback(params: {
   contents: any;
@@ -167,7 +220,11 @@ async function generateContentWithModelFallback(params: {
   timeoutMs?: number;
 }): Promise<any> {
   const ai = getAi();
-  const baseModels = Array.from(new Set(params.models && params.models.length > 0 ? params.models : ["gemini-4-hydrogen", "gemini-3.1-flash-lite"]));
+  const baseModels = orderModelsByAvailability(
+    params.models && params.models.length > 0
+      ? params.models
+      : ["gemini-4-hydrogen", "gemini-3.1-flash-lite"]
+  );
   const requestTimeout = params.timeoutMs || 28000;
   let lastErr: any = null;
 
@@ -188,16 +245,17 @@ async function generateContentWithModelFallback(params: {
 
         const result = await Promise.race([apiPromise, timeoutPromise]) as any;
         clearTimeout(timer);
+        clearGeminiModelCooldown(model);
         return result;
       } catch (err: any) {
         clearTimeout(timer);
         lastErr = err;
+        markGeminiModelCooldown(model, err);
         if (isGeminiKeyError(err)) {
           throw err;
         }
         const isLastInPass = i === modelList.length - 1;
         if (!isLastInPass) {
-          console.info(`[AI Extraction] ${model} failed (${isQuotaOrRateLimitLabel(err)}); trying ${modelList[i + 1]}...`);
           await new Promise((r) => setTimeout(r, delayMsOnSwitch));
         }
       }
@@ -205,14 +263,18 @@ async function generateContentWithModelFallback(params: {
     return null;
   };
 
-  // Pass 1: primary order with moderate delay
+  // Pass 1: cooldown-ordered models
   const firstPass = await attemptModels(baseModels, 600);
   if (firstPass) return firstPass;
 
-  // Exponential backoff retry pass ONLY on transient 503/high-demand/timeout spikes
-  if (isGeminiDemandOrTransientError(lastErr)) {
-    const backoffMs = 1500;
-    console.info(`[AI Extraction] Temporary high demand across initial models (${isQuotaOrRateLimitLabel(lastErr)}); backing off ${backoffMs}ms before retry...`);
+  // Exponential backoff retry pass on transient 503 high-demand or short RPM rate-limit spikes
+  const retryHintMs = parseGeminiRetryDelayMs(lastErr);
+  const shouldRetryShortSpike =
+    isGeminiDemandOrTransientError(lastErr) ||
+    (isGeminiQuotaOrRateLimitError(lastErr) && retryHintMs !== null && retryHintMs <= 3000);
+
+  if (shouldRetryShortSpike) {
+    const backoffMs = retryHintMs ? Math.min(2500, Math.max(1200, retryHintMs)) : 1500;
     await new Promise((r) => setTimeout(r, backoffMs));
     const retryOrder = baseModels.length > 1 ? [...baseModels].reverse() : baseModels;
     const secondPass = await attemptModels(retryOrder, 900);
@@ -1403,12 +1465,25 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
         .filter((q: any) => q && typeof q.question === "string" && q.question.trim() && Array.isArray(q.options) && q.options.length >= 2)
         .map((q: any, idx: number) => {
           const opts = q.options.map((o: any) => String(o).trim()).filter(Boolean).slice(0, 6);
-          const corrIdx = typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex < opts.length ? q.correctIndex : 0;
+          const rawIndices = Array.isArray(q.correctIndices)
+            ? Array.from(
+                new Set(
+                  q.correctIndices
+                    .map((n: any) => Number(n))
+                    .filter((n: number) => Number.isInteger(n) && n >= 0 && n < opts.length)
+                )
+              ).sort((a: number, b: number) => a - b)
+            : [];
+          const isMulti = Boolean(q.isMultipleSelect || rawIndices.length > 1);
+          const corrIdx = typeof q.correctIndex === "number" && q.correctIndex >= 0 && q.correctIndex < opts.length
+            ? q.correctIndex
+            : (rawIndices[0] ?? 0);
           return {
             id: typeof q.id === "string" && q.id.trim() ? q.id : `note_q_${Date.now()}_${idx}`,
             question: q.question.trim(),
             options: opts,
             correctIndex: corrIdx,
+            ...(isMulti ? { isMultipleSelect: true, correctIndices: rawIndices.length > 0 ? rawIndices : [corrIdx] } : {}),
             explanation: typeof q.explanation === "string" && q.explanation.trim() ? q.explanation.trim() : "Verified from your saved study note.",
             difficulty: q.difficulty === "easy" || q.difficulty === "hard" ? q.difficulty : "medium",
             sourceType: "note" as const,
@@ -1418,7 +1493,7 @@ app.post("/api/coach/generate-knowledge-test", async (req, res) => {
         .filter((q: any) => q.options.length >= 2);
 
   // Detect if there are other note types (definitions, summaries, concepts, tables, Q&A, fill-in-the-blank, etc.)
-  const hasRichNoteContext = /\[(Definition|Q&A|Fill-in-the-Blank|Table|concept|cheat_sheet|code_snippet|summary|formula|Resource:)/i.test(safeContext);
+  const hasRichNoteContext = /\[(Definition|Q&A|Fill-in-the-Blank|Multiple Select|Table|concept|cheat_sheet|code_snippet|summary|formula|Resource:)/i.test(safeContext);
   const directCap =
     effectiveMode === "notes_only"
       ? (hasRichNoteContext ? Math.max(1, Math.ceil(clampedCount * 0.5)) : clampedCount)
@@ -2078,7 +2153,6 @@ ${explanation ? `\nQuiz Explanation: ${String(explanation).trim()}` : ""}`;
       }
     });
   } catch (err: any) {
-    console.info("[AI Topic Lesson] Generation notice:", isQuotaOrRateLimitLabel(err));
     if (isGeminiQuotaOrRateLimitError(err)) {
       return res.status(429).json({
         error: "Gemini API quota or rate limit exceeded (429 RESOURCE_EXHAUSTED). Please wait a moment and try again.",
@@ -2150,6 +2224,137 @@ function validatePublicStudyUrl(rawUrl: string): { valid: boolean; normalizedUrl
   }
   return { valid: true, normalizedUrl: parsed.toString() };
 }
+
+function isPrivateOrReservedIp(ip: string): boolean {
+  const cleanIp = ip.replace(/^::ffff:/i, "");
+  if (net.isIPv4(cleanIp)) {
+    const parts = cleanIp.split(".").map(Number);
+    if (parts.length !== 4) return true;
+    const [a, b] = parts;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a >= 224) return true; // multicast/reserved
+    return false;
+  }
+  if (net.isIPv6(cleanIp)) {
+    const lower = cleanIp.toLowerCase();
+    if (lower === "::" || lower === "::1") return true;
+    if (/^(fc|fd|fe8|fe9|fea|feb|ff)/i.test(lower)) return true;
+    return false;
+  }
+  return true;
+}
+
+async function resolvePublicStudyHost(urlStr: string): Promise<{ ok: boolean; reason?: string }> {
+  const check = validatePublicStudyUrl(urlStr);
+  if (!check.valid || !check.normalizedUrl) {
+    return { ok: false, reason: check.reason || "Invalid URL." };
+  }
+  const hostname = new URL(check.normalizedUrl).hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(hostname)) {
+    return isPrivateOrReservedIp(hostname)
+      ? { ok: false, reason: "Private or reserved IP addresses are not allowed." }
+      : { ok: true };
+  }
+  try {
+    const records = await dns.promises.lookup(hostname, { all: true });
+    if (!records || records.length === 0) {
+      return { ok: false, reason: "Host could not be resolved." };
+    }
+    for (const rec of records) {
+      if (isPrivateOrReservedIp(rec.address)) {
+        return { ok: false, reason: "Private or reserved destination IP is not allowed." };
+      }
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "Could not resolve host." };
+  }
+}
+
+const ALLOWED_PROXY_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+  "image/bmp",
+  "image/avif"
+]);
+
+app.post("/api/coach/proxy-image", async (req, res) => {
+  try {
+    const rawUrl = req.body?.url;
+    const validation = validatePublicStudyUrl(rawUrl);
+    if (!validation.valid || !validation.normalizedUrl) {
+      return res.status(400).json({ error: validation.reason || "Invalid image URL." });
+    }
+
+    let currentUrl = validation.normalizedUrl;
+    let finalResponse: Response | null = null;
+    for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+      const hostCheck = await resolvePublicStudyHost(currentUrl);
+      if (!hostCheck.ok) {
+        return res.status(403).json({ error: hostCheck.reason || "Destination not allowed." });
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7000);
+      try {
+        const resp = await fetch(currentUrl, {
+          method: "GET",
+          redirect: "manual",
+          headers: {
+            "Accept": "image/avif,image/webp,image/png,image/jpeg,image/gif,*/*;q=0.5",
+            "User-Agent": "Mozilla/5.0 (compatible; StudyPlanner/1.0)"
+          },
+          signal: controller.signal
+        });
+
+        if (resp.status >= 300 && resp.status < 400) {
+          const location = resp.headers.get("location");
+          if (!location) {
+            return res.status(400).json({ error: "Invalid image redirect." });
+          }
+          currentUrl = new URL(location, currentUrl).toString();
+          continue;
+        }
+        finalResponse = resp;
+        break;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    if (!finalResponse || !finalResponse.ok) {
+      return res.status(502).json({ error: "Could not retrieve remote image." });
+    }
+
+    const rawContentType = (finalResponse.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const mime = rawContentType === "image/jpg" ? "image/jpeg" : rawContentType;
+    if (!ALLOWED_PROXY_IMAGE_MIMES.has(mime)) {
+      return res.status(415).json({ error: "Remote URL did not return a supported image format." });
+    }
+
+    const contentLength = Number(finalResponse.headers.get("content-length") || "0");
+    if (contentLength > 5 * 1024 * 1024) {
+      return res.status(413).json({ error: "Remote image exceeds 5 MB limit." });
+    }
+
+    const arrayBuf = await finalResponse.arrayBuffer();
+    if (arrayBuf.byteLength === 0 || arrayBuf.byteLength > 5 * 1024 * 1024) {
+      return res.status(413).json({ error: "Remote image size is out of bounds." });
+    }
+
+    const base64 = Buffer.from(arrayBuf).toString("base64");
+    return res.json({ dataUrl: `data:${mime};base64,${base64}` });
+  } catch {
+    return res.status(502).json({ error: "Failed to fetch pasted image." });
+  }
+});
 
 function getCanonicalYouTubeUrl(urlStr: string): string | null {
   try {
@@ -2322,7 +2527,6 @@ Task (mode="${mode}"):
         if (isGeminiQuotaOrRateLimitError(ytErr) || isGeminiDemandOrTransientError(ytErr) || isGeminiKeyError(ytErr)) {
           throw ytErr;
         }
-        console.info("YouTube direct fileData extraction fallback to URL context:", isQuotaOrRateLimitLabel(ytErr));
       }
     }
 
@@ -2435,18 +2639,21 @@ Return ONLY valid JSON matching this schema:
       ? rawParsed.extractedTitle.trim()
       : (canonicalYoutubeUrl ? "YouTube Video Study Guide" : new URL(targetUrl).hostname);
 
-    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
+    const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "multiple_select", "true_false", "definition"]);
     const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
     const notes = rawNotes
       .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
       .slice(0, 6)
       .map((n: any, idx: number) => {
         const cat = allowedCategories.has(n.category) ? n.category : "summary";
-        const isQA = (cat === "qa" || cat === "fill_in_blank" || cat === "multiple_choice" || cat === "true_false") && n.question && n.answer;
+        const isQA = (cat === "qa" || cat === "fill_in_blank" || cat === "multiple_choice" || cat === "multiple_select" || cat === "true_false") && n.question && n.answer;
         const isFillBlank = cat === "fill_in_blank" && n.question && n.answer;
         const isDef = cat === "definition" && n.term && n.definition;
         const opts = Array.isArray(n.options) ? n.options.map(String).filter(Boolean) : undefined;
         const correctIdx = typeof n.correctOptionIndex === "number" ? n.correctOptionIndex : undefined;
+        const correctIndices = Array.isArray(n.correctOptionIndices)
+          ? Array.from(new Set(n.correctOptionIndices.map(Number).filter((x: number) => Number.isInteger(x) && x >= 0))).sort((a: number, b: number) => a - b)
+          : undefined;
         return {
           id: `note_${baseTs}_${idx}`,
           title: isQA
@@ -2466,7 +2673,8 @@ Return ONLY valid JSON matching this schema:
           answer: isQA ? String(n.answer).trim() : undefined,
           explanation: isQA && n.explanation ? String(n.explanation).trim() : undefined,
           options: opts && opts.length >= 2 ? opts : undefined,
-          correctOptionIndex: typeof correctIdx === "number" ? correctIdx : undefined,
+          correctOptionIndex: typeof correctIdx === "number" ? correctIdx : (correctIndices?.[0]),
+          correctOptionIndices: correctIndices && correctIndices.length > 0 ? correctIndices : undefined,
           term: isDef ? String(n.term).trim() : undefined,
           definition: isDef ? String(n.definition).trim() : undefined,
           url: targetUrl,
@@ -2531,7 +2739,6 @@ Return ONLY valid JSON matching this schema:
       sources: groundingSources.slice(0, 5)
     });
   } catch (err: any) {
-    console.info("URL extraction notice:", isQuotaOrRateLimitLabel(err));
     if (isGeminiQuotaOrRateLimitError(err)) {
       return res.status(429).json({
         error: "Gemini API quota or rate limit exceeded (429). Please wait a moment and try again, or check your Gemini API plan and billing details in AI Studio.",
@@ -2701,7 +2908,11 @@ app.post("/api/coach/extract-from-upload", (req, res) => {
         }
       }
 
-      const safeTranscript = combinedTranscript.slice(0, 35000);
+      const cleanedTranscriptForAi = combinedTranscript.replace(
+        /data:image\/(?:png|jpeg|jpg|webp|gif|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/=\s]{80,}/gi,
+        "[Embedded Image]"
+      );
+      const safeTranscript = cleanedTranscriptForAi.slice(0, 35000);
 
       if (!verifiedVideoPath && !safeTranscript) {
         await cleanupFiles();
@@ -2832,7 +3043,7 @@ Return ONLY valid JSON matching the requested schema.`;
       contentParts.push({ text: promptText });
 
       let rawParsed: any = null;
-      const uploadModels = ["gemini-4-hydrogen", "gemini-3.1-flash-lite"];
+      const uploadModels = orderModelsByAvailability(["gemini-4-hydrogen", "gemini-3.1-flash-lite"]);
       const uploadTimeoutMs = verifiedVideoPath ? 75000 : 35000;
       let lastModelErr: any = null;
 
@@ -2856,15 +3067,16 @@ Return ONLY valid JSON matching the requested schema.`;
             clearTimeout(timer);
             const parsed = parseJsonFromModelText(response?.text || "");
             if (parsed) {
+              clearGeminiModelCooldown(modelName);
               rawParsed = parsed;
               return;
             }
           } catch (mErr: any) {
             clearTimeout(timer);
             lastModelErr = mErr;
+            markGeminiModelCooldown(modelName, mErr);
             if (isGeminiKeyError(mErr)) return;
             if (i < modelList.length - 1) {
-              console.info(`[Upload Extraction] ${modelName} unavailable (${isQuotaOrRateLimitLabel(mErr)}); trying ${modelList[i + 1]}...`);
               await new Promise((r) => setTimeout(r, switchDelayMs));
             }
           }
@@ -2873,10 +3085,17 @@ Return ONLY valid JSON matching the requested schema.`;
 
       await tryUploadModelsPass(uploadModels, 650);
 
-      // Exponential backoff retry pass on transient 503 high-demand spikes
-      if (!rawParsed && lastModelErr && !isGeminiKeyError(lastModelErr) && isGeminiDemandOrTransientError(lastModelErr)) {
-        const backoffMs = 1600;
-        console.info(`[Upload Extraction] Temporary high demand (${isQuotaOrRateLimitLabel(lastModelErr)}); backing off ${backoffMs}ms before retry...`);
+      // Exponential backoff retry pass on transient 503 high-demand or short RPM rate-limit spikes
+      const uploadRetryHintMs = parseGeminiRetryDelayMs(lastModelErr);
+      const shouldRetryUploadSpike =
+        !rawParsed &&
+        lastModelErr &&
+        !isGeminiKeyError(lastModelErr) &&
+        (isGeminiDemandOrTransientError(lastModelErr) ||
+          (isGeminiQuotaOrRateLimitError(lastModelErr) && uploadRetryHintMs !== null && uploadRetryHintMs <= 3000));
+
+      if (shouldRetryUploadSpike) {
+        const backoffMs = uploadRetryHintMs ? Math.min(2500, Math.max(1200, uploadRetryHintMs)) : 1600;
         await new Promise((r) => setTimeout(r, backoffMs));
         await tryUploadModelsPass([...uploadModels].reverse(), 900);
       }
@@ -2892,18 +3111,21 @@ Return ONLY valid JSON matching the requested schema.`;
         (typeof rawParsed.extractedTitle === "string" && rawParsed.extractedTitle.trim()) ||
         (safeOriginalFileName ? safeOriginalFileName.replace(/\.[^.]+$/, "") : "Uploaded Lecture Study Guide");
 
-      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "true_false", "definition"]);
+      const allowedCategories = new Set(["concept", "cheat_sheet", "code_snippet", "summary", "formula", "table", "qa", "fill_in_blank", "multiple_choice", "multiple_select", "true_false", "definition"]);
       const rawNotes = Array.isArray(rawParsed.studyNotes) ? rawParsed.studyNotes : [];
       const notes = rawNotes
         .filter((n: any) => n && (n.content || (n.question && n.answer) || (n.term && n.definition)))
         .slice(0, 6)
         .map((n: any, idx: number) => {
           const cat = allowedCategories.has(n.category) ? n.category : "summary";
-          const isQA = (cat === "qa" || cat === "fill_in_blank" || cat === "multiple_choice" || cat === "true_false") && n.question && n.answer;
+          const isQA = (cat === "qa" || cat === "fill_in_blank" || cat === "multiple_choice" || cat === "multiple_select" || cat === "true_false") && n.question && n.answer;
           const isFillBlank = cat === "fill_in_blank" && n.question && n.answer;
           const isDef = cat === "definition" && n.term && n.definition;
           const opts = Array.isArray(n.options) ? n.options.map(String).filter(Boolean) : undefined;
           const correctIdx = typeof n.correctOptionIndex === "number" ? n.correctOptionIndex : undefined;
+          const correctIndices = Array.isArray(n.correctOptionIndices)
+            ? Array.from(new Set(n.correctOptionIndices.map(Number).filter((x: number) => Number.isInteger(x) && x >= 0))).sort((a: number, b: number) => a - b)
+            : undefined;
           return {
             id: `note_${baseTs}_${idx}`,
             title: isQA
@@ -2923,7 +3145,8 @@ Return ONLY valid JSON matching the requested schema.`;
             answer: isQA ? String(n.answer).trim() : undefined,
             explanation: isQA && n.explanation ? String(n.explanation).trim() : undefined,
             options: opts && opts.length >= 2 ? opts : undefined,
-            correctOptionIndex: typeof correctIdx === "number" ? correctIdx : undefined,
+            correctOptionIndex: typeof correctIdx === "number" ? correctIdx : (correctIndices?.[0]),
+            correctOptionIndices: correctIndices && correctIndices.length > 0 ? correctIndices : undefined,
             term: isDef ? String(n.term).trim() : undefined,
             definition: isDef ? String(n.definition).trim() : undefined,
             sourceFileName: safeOriginalFileName,
@@ -2989,7 +3212,6 @@ Return ONLY valid JSON matching the requested schema.`;
       });
     } catch (err: any) {
       await cleanupFiles();
-      console.info("Lecture upload extraction notice:", isQuotaOrRateLimitLabel(err));
       if (isGeminiQuotaOrRateLimitError(err)) {
         return res.status(429).json({
           error: "Gemini API quota or rate limit exceeded (429). Please wait a moment and try again, or check your Gemini API plan and billing details in AI Studio.",

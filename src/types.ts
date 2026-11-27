@@ -112,7 +112,7 @@ export interface Goal {
 export interface StudyArtifactNote {
   id: string;
   title: string;
-  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "table" | "qa" | "fill_in_blank" | "multiple_choice" | "true_false" | "definition" | "url";
+  category: "concept" | "cheat_sheet" | "code_snippet" | "summary" | "formula" | "table" | "qa" | "fill_in_blank" | "multiple_choice" | "multiple_select" | "true_false" | "definition" | "url";
   content: string; // Markdown or formatted text
   tableHeaders?: string[];
   tableRows?: string[][];
@@ -121,6 +121,7 @@ export interface StudyArtifactNote {
   explanation?: string;
   options?: string[];
   correctOptionIndex?: number;
+  correctOptionIndices?: number[];
   term?: string;
   definition?: string;
   url?: string;
@@ -146,8 +147,11 @@ export interface KnowledgeQuestion {
   question: string;
   options: string[];
   correctIndex: number;
+  correctIndices?: number[];
+  isMultipleSelect?: boolean;
   explanation: string;
   userSelectedIndex?: number;
+  userSelectedIndices?: number[];
   difficulty?: "easy" | "medium" | "hard";
   sourceType?: "note" | "ai";
   sourceLabel?: string;

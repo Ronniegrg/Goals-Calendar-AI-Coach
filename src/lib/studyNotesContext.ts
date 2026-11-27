@@ -2,6 +2,74 @@ import { KnowledgeQuestion, StudyArtifactNote } from "../types";
 
 export type TestSourceMode = "hybrid" | "notes_only" | "ai_only";
 
+export function normalizeIndicesList(indices: unknown, optionCount: number): number[] {
+  if (!Array.isArray(indices) || optionCount <= 0) return [];
+  const valid = new Set<number>();
+  for (const raw of indices) {
+    const num = Number(raw);
+    if (Number.isInteger(num) && num >= 0 && num < optionCount) {
+      valid.add(num);
+    }
+  }
+  return Array.from(valid).sort((a, b) => a - b);
+}
+
+export function isMultiSelectQuestion(
+  q: Pick<KnowledgeQuestion, "isMultipleSelect" | "correctIndices">
+): boolean {
+  return Boolean(
+    q.isMultipleSelect ||
+      (Array.isArray(q.correctIndices) && q.correctIndices.length > 1)
+  );
+}
+
+export function getQuestionCorrectIndices(
+  q: Pick<KnowledgeQuestion, "isMultipleSelect" | "correctIndices" | "correctIndex" | "options">
+): number[] {
+  const optLen = Array.isArray(q.options) ? q.options.length : 0;
+  if (isMultiSelectQuestion(q)) {
+    const normalized = normalizeIndicesList(q.correctIndices, optLen);
+    if (normalized.length > 0) return normalized;
+  }
+  if (typeof q.correctIndex === "number" && q.correctIndex >= 0 && (optLen === 0 || q.correctIndex < optLen)) {
+    return [q.correctIndex];
+  }
+  return optLen > 0 ? [0] : [];
+}
+
+export function isQuestionAnswerCorrect(
+  q: Pick<KnowledgeQuestion, "isMultipleSelect" | "correctIndices" | "correctIndex" | "options">,
+  singleChoice?: number,
+  multiChoices?: number[]
+): boolean {
+  if (isMultiSelectQuestion(q)) {
+    const expected = getQuestionCorrectIndices(q);
+    const chosen = normalizeIndicesList(multiChoices, q.options.length);
+    if (expected.length === 0 || chosen.length !== expected.length) return false;
+    return expected.every((val, idx) => chosen[idx] === val);
+  }
+  return singleChoice !== undefined && singleChoice === q.correctIndex;
+}
+
+export function formatQuestionCorrectAnswerText(
+  q: Pick<KnowledgeQuestion, "isMultipleSelect" | "correctIndices" | "correctIndex" | "options">
+): string {
+  const indices = getQuestionCorrectIndices(q);
+  return indices.map(i => q.options[i]).filter(Boolean).join(", ");
+}
+
+export function formatQuestionUserAnswerText(
+  q: Pick<KnowledgeQuestion, "isMultipleSelect" | "correctIndices" | "options">,
+  singleChoice?: number,
+  multiChoices?: number[]
+): string {
+  if (isMultiSelectQuestion(q)) {
+    const chosen = normalizeIndicesList(multiChoices, q.options.length);
+    return chosen.map(i => q.options[i]).filter(Boolean).join(", ");
+  }
+  return singleChoice !== undefined ? (q.options[singleChoice] || "") : "";
+}
+
 export function formatStudyMaterialForPrompt(
   notes: StudyArtifactNote[],
   maxNotes = 24
@@ -10,6 +78,22 @@ export function formatStudyMaterialForPrompt(
   return notes
     .slice(0, maxNotes)
     .map((n, idx) => {
+      if (n.category === "multiple_select") {
+        const opts = Array.isArray(n.options) ? n.options : [];
+        const choicesText = opts
+          .map((opt, optIdx) => `${String.fromCharCode(65 + optIdx)}) ${opt}`)
+          .join(" | ");
+        const correctIdxs = normalizeIndicesList(n.correctOptionIndices, opts.length);
+        const correctSummary =
+          correctIdxs.length > 0
+            ? correctIdxs.map(i => `${String.fromCharCode(65 + i)}) ${opts[i]}`).join("; ")
+            : n.answer || n.content;
+        return `${idx + 1}. [Multiple Select - Select All That Apply] Q: ${n.question || n.title}${
+          choicesText ? ` | Choices: ${choicesText}` : ""
+        } | Correct Answers: ${correctSummary}${
+          n.explanation ? ` | Explanation: ${n.explanation}` : ""
+        }`;
+      }
       if (n.category === "multiple_choice") {
         const choicesText = (n.options || [])
           .map((opt, optIdx) => `${String.fromCharCode(65 + optIdx)}) ${opt}`)
@@ -69,6 +153,32 @@ export function formatStudyMaterialForPrompt(
     .join("\n");
 }
 
+export function resolveNoteCorrectIndices(note: StudyArtifactNote, options: string[]): number[] {
+  const fromArray = normalizeIndicesList(note.correctOptionIndices, options.length);
+  if (fromArray.length > 0) return fromArray;
+  if (
+    typeof note.correctOptionIndex === "number" &&
+    note.correctOptionIndex >= 0 &&
+    note.correctOptionIndex < options.length
+  ) {
+    return [note.correctOptionIndex];
+  }
+  const ansLower = (note.answer || "").trim().toLowerCase();
+  if (!ansLower) return [];
+  const tokens = ansLower
+    .split(/[,;\n]+/)
+    .map(t => t.replace(/^[a-z]\)\s*/i, "").trim())
+    .filter(Boolean);
+  const matched: number[] = [];
+  options.forEach((opt, idx) => {
+    const optLower = opt.trim().toLowerCase();
+    if (optLower === ansLower || tokens.includes(optLower)) {
+      matched.push(idx);
+    }
+  });
+  return matched;
+}
+
 export function extractDirectQuestionsFromNotes(
   notes: StudyArtifactNote[]
 ): KnowledgeQuestion[] {
@@ -76,7 +186,33 @@ export function extractDirectQuestionsFromNotes(
 
   const extracted: KnowledgeQuestion[] = [];
   notes.forEach((note, idx) => {
-    if (note.category === "multiple_choice") {
+    if (note.category === "multiple_select") {
+      const options = Array.isArray(note.options)
+        ? note.options.map(o => String(o).trim()).filter(Boolean)
+        : [];
+      const qText = (note.question || note.title || "").trim();
+      if (!qText || options.length < 2) return;
+      const resolvedIndices = resolveNoteCorrectIndices(note, options);
+      const correctIndices = resolvedIndices.length > 0 ? resolvedIndices : [0];
+      const correctLabels = correctIndices
+        .map(i => `${String.fromCharCode(65 + i)}) ${options[i]}`)
+        .join(", ");
+
+      extracted.push({
+        id: `note_q_${note.id}_${idx}`,
+        question: qText,
+        options,
+        correctIndex: correctIndices[0],
+        correctIndices,
+        isMultipleSelect: true,
+        explanation:
+          note.explanation?.trim() ||
+          `From your saved Multiple Select note: Correct answers are ${correctLabels}.`,
+        difficulty: "medium",
+        sourceType: "note",
+        sourceLabel: "From Your Note · Multiple Select"
+      });
+    } else if (note.category === "multiple_choice") {
       const options = Array.isArray(note.options)
         ? note.options.map(o => String(o).trim()).filter(Boolean)
         : [];
